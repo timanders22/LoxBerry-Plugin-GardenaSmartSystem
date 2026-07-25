@@ -1,177 +1,103 @@
 <?php
+/**
+ * Kommando-/Status-Endpunkt fuer den Loxone Miniserver (Virtueller Ausgang).
+ * Neu geschrieben fuer die GARDENA smart system API v2.
+ *
+ * Aufrufe (HTTP GET, ohne Authentifizierung - nur fuers lokale Netz gedacht):
+ *   ?action=refresh                  -> Daten sofort abholen und versenden (wie Cron)
+ *   ?action=list                     -> Geraete/Services als JSON (aus dem Cache)
+ *   ?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600
+ *   ?action=command&device=NAME&type=VALVE_CONTROL&cmd=STOP_UNTIL_NEXT_TASK
+ *
+ * Gaengige Kommandos (API v2):
+ *   MOWER_CONTROL:        START_SECONDS_TO_OVERRIDE (+seconds), START_DONT_OVERRIDE,
+ *                         PARK_UNTIL_NEXT_TASK, PARK_UNTIL_FURTHER_NOTICE
+ *   VALVE_CONTROL:        START_SECONDS_TO_OVERRIDE (+seconds), STOP_UNTIL_NEXT_TASK, PAUSE, UNPAUSE
+ *   POWER_SOCKET_CONTROL: START_SECONDS_TO_OVERRIDE (+seconds), START_OVERRIDE, STOP_UNTIL_NEXT_TASK
+ */
 
-    error_reporting(-1);
-	ini_set('display_errors','On');
-    include("data.inc.php");
-    include("gardena.class.inc.php");
-    include("functions.inc.php");
-    
-    $gardena = new gardena($user, $pw);
-    $mower = $gardena -> getFirstDeviceOfCategory($gardena::CATEGORY_MOWER);
-    $gateway = $gardena -> getFirstDeviceOfCategory($gardena::CATEGORY_GATEWAY);
-    
-//echo var_dump($gardena);
+include 'header.inc.php';
 
-foreach($gardena -> locations as $location)
-{
-	echo "Location:" . $location -> name . "<br>";
-	echo "authorized_at:" . $location -> authorized_at . "<br>";
-	echo "address:" . $location -> geo_position -> address . "<br>";
-	echo "latitude:" . $location -> geo_position -> latitude . "<br>";
-	echo "longitude:" . $location -> geo_position -> longitude . "<br>";
+header('Content-Type: text/plain; charset=utf-8');
+
+$gcfg = @parse_ini_file($lbpconfigdir . '/gardena.cfg', true, INI_SCANNER_RAW);
+$g = (is_array($gcfg) && !empty($gcfg['GARDENA'])) ? $gcfg['GARDENA'] : array();
+
+if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
+    echo "FEHLER: Application Key/Secret nicht konfiguriert (Plugin-Oberflaeche oeffnen).\n";
+    exit;
 }
-foreach($gardena -> devices as $locationId => $devices)
-{   
-	//Erstellung von SendeDaten im Format
-	//[DeviceCategory].[DeviceName].[DataCategorie].[DataName]:[DataValue] (optional:[ = DataValueString])
-	$dataToSend = "";
-	
-	$DeviceCategory ="";
-	$DeviceName ="";
-	$DataCategorie = "";
-	$DataName ="";
-	$DataValue ="";
-	$DataValueString ="";
-	
-	//Liste alle Geräte
-	foreach($devices as $device)
-	{
-		$DeviceCategory = $device -> category;
-		$DeviceName = $device -> name;
-		echo "<b>Device Category:" . $device -> category . "</b><br>";
-		echo "Device Name:" . $device -> name . "<br>";
-		echo "configuration_synchronized:". $device -> configuration_synchronized . "<br>";
-	
-		//Liste alle Kategorien
-		foreach ($device -> abilities as $ability)
-		{
-			$DataCategorie = $ability -> name;
-			echo "<b>Categorie: </b>". $ability -> name . "</b><br>";
-			
-			//Liste alle Eigenschaften
-			foreach($ability -> properties as $property)
-		    {
-		    	$DataValueString = "";
-		    	$DataName = $property -> name;
-		    	echo $property -> name . ":  ";
-		    	if(is_string($property -> value)){
-		    		echo "Datatyp String - Value: ". $property -> value;
-		    		$DataValueString = $property -> value;
-		    	}
-		    	elseif(is_int($property -> value)){
-		    		echo "Datatyp Int - Value: ". $property -> value;
-		    		$DataValue = $property -> value;
-		    	}
-		    	elseif(is_bool($property -> value)){
-		    			echo "Datatyp Bool - ";
-		    		if ($property -> value){
-		    			echo "Value: ". "1";
-		    			$DataValue = 1;
-		    		}
-		    		else{
-		    			echo "Value: ". "0";
-		    			$DataValue = 0;
-		    		}	    			
-		    	}
-		    	else{
-		    		echo "Error: DataType Value ". $DataName . " unknown.";
-					$DataValue = 255;
-		    	}
-		    	
-		    	if (array_key_exists('unit', $property)){
-		    	echo $property -> unit . "<br>";
-		    	}
-		    	else echo "<br>";
-		    	if (array_key_exists('timestamp', $property)){
-		    	echo "timestamp:" . $property -> timestamp . "<br>";
-		    	}
-            	if (sizeof($property -> supported_values) > 0)
-            	{
-	  				echo "--->Possible Values: " . var_export($property -> supported_values, true) . "<br>";
-	        		$valPos = 0;
-	        		if(is_bool($property -> value)){
-			    		if ($property -> value){
-			    			$valPos = array_search ("true", $property -> supported_values);
-			    		}
-			    		else{
-			    			$valPos = array_search ("false", $property -> supported_values);
-			    		}
-	        		}
-	        		else{
-	        			$valPos = array_search ($property -> value , $property -> supported_values);
-	        		}
-	        		if ($valPos === False){
-	        			echo "Error: Data Value not found!<br>";
-	        			$DataValue = 255;
-	        		}
-	        		else {
-	        			echo "Data Value at Position: " . $valPos . "<br>";
-	        			$DataValue = $valPos;
-	        		}
-            	}
-				
-				//Bulid String for Transfer
-	            $dataToSend = $DeviceCategory . "." . $DeviceName . "." . $DataCategorie . "." . $DataName . ":" . $DataValue;
-	            if ($DataValueString) $dataToSend = $dataToSend . "[" . $DataValueString ."]";
-	            echo "&nbsp Data to send: " . $dataToSend . "<br>";
-            	//TODO transfer Data
-            	
-		    }
-			echo "<br>";
-		}
-	} 
-}            
 
+$action = isset($_GET['action']) ? $_GET['action'] : '';
 
-	if(!empty($_GET["action"])) //action hat einen Wert
-	{
-		if ($_GET["action"] === "INFO")
-		{
+// ---------- Geraeteliste aus Cache ----------
+if ($action === 'list') {
+    $cache = @file_get_contents($lbpconfigdir . '/devices_cache.json');
+    header('Content-Type: application/json; charset=utf-8');
+    echo ($cache !== false) ? $cache : '{"error":"Noch kein Cache - bitte einmal ?action=refresh aufrufen."}';
+    exit;
+}
 
-		}
-		else if ($_GET["action"] === "PARK_UNTIL_FURTHER_NOTICE")
-		{
-			$gardena -> sendCommand($mower, $gardena -> CMD_MOWER_PARK_UNTIL_FURTHER_NOTICE);
-		}
-		else if ($_GET["action"] === "PARK_UNTIL_NEXT_TIMER")
-		{
-			$gardena -> sendCommand($mower, $gardena -> CMD_MOWER_PARK_UNTIL_NEXT_TIMER);
-		}
-		else if ($_GET["action"] === "RESUME_SCHEDUL")
-		{
-			$gardena -> sendCommand($mower, $gardena -> CMD_MOWER_RESUME_SCHEDUL);
-		}
-		else if ($_GET["action"] === "START")
-		{		
-			if(!empty($_GET["duration"]))
-			{
-				if(ctype_digit($_GET["duration"]))
-				{
-					$CMD_MOWER_START_XXHOURS = array("name" => "start_override_timer", "parameters" => array("duration" => $_GET["duration"]));
-					echo "START for:";
-					echo var_dump($CMD_MOWER_START_XXHOURS);
-					echo "<br>";
-					$gardena -> sendCommand($mower, $CMD_MOWER_START_XXHOURS);
-				}
-				else
-				{
-					echo "<br>ERROR: Parameter duration is not a Number";
-				}			
-			}
-			else
-			{
-				echo "START for 6h<br>";
-				$gardena -> sendCommand($mower, $gardena -> CMD_MOWER_START_06HOURS);		
-			}	
-		}
-		else
-		{
-			echo "<br>ERROR: Parameter action has not a valid value";
-		}
-	}
-	else
-	{
-		echo "Possible Param: <br><b>action</b><br>Values: INFO, PARK_UNTIL_FURTHER_NOTICE, PARK_UNTIL_NEXT_TIMER, RESUME_SCHEDUL, START<br>";
-		echo "<br><b>[duration]</b><br>Value:Duration in minutes, only for Param action START. Without the Param duration the mower will start for 6h";
-	}
-?>
+// ---------- Sofort-Abruf ----------
+if ($action === 'refresh') {
+    // gardenaMain im Hintergrund starten (schreibt Log + Cache, sendet UDP/MQTT)
+    $php = PHP_BINARY !== '' ? PHP_BINARY : '/usr/bin/php';
+    shell_exec(escapeshellarg($php) . ' ' . escapeshellarg(__DIR__ . '/gardenaMain.php') . ' > /dev/null 2>&1 &');
+    echo "OK: Abruf gestartet (Ergebnis im Log und unter ?action=list).\n";
+    exit;
+}
+
+// ---------- Kommando ----------
+if ($action === 'command') {
+    $devQuery = isset($_GET['device']) ? trim($_GET['device']) : '';
+    $type = isset($_GET['type']) ? strtoupper(trim($_GET['type'])) : 'MOWER_CONTROL';
+    $cmd = isset($_GET['cmd']) ? strtoupper(trim($_GET['cmd'])) : '';
+    $seconds = (isset($_GET['seconds']) && ctype_digit($_GET['seconds'])) ? (int) $_GET['seconds'] : null;
+
+    $allowed_types = array('MOWER_CONTROL', 'VALVE_CONTROL', 'POWER_SOCKET_CONTROL');
+    $allowed_cmds = array('START_SECONDS_TO_OVERRIDE', 'START_DONT_OVERRIDE', 'START_OVERRIDE',
+        'PARK_UNTIL_NEXT_TASK', 'PARK_UNTIL_FURTHER_NOTICE', 'STOP_UNTIL_NEXT_TASK', 'PAUSE', 'UNPAUSE');
+    if (!in_array($type, $allowed_types, true)) { echo "FEHLER: Ungueltiger type.\n"; exit; }
+    if (!in_array($cmd, $allowed_cmds, true)) {
+        echo "FEHLER: Ungueltiges cmd. Erlaubt: " . implode(', ', $allowed_cmds) . "\n"; exit;
+    }
+    if ($cmd === 'START_SECONDS_TO_OVERRIDE' && $seconds === null) { $seconds = 3600; }
+
+    // Service-ID im Cache suchen (Geraetename oder Geraete-ID)
+    $cache = json_decode((string) @file_get_contents($lbpconfigdir . '/devices_cache.json'), true);
+    $serviceMap = array('MOWER_CONTROL' => 'MOWER', 'VALVE_CONTROL' => 'VALVE', 'POWER_SOCKET_CONTROL' => 'POWER_SOCKET');
+    $serviceId = '';
+    if (is_array($cache) && !empty($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            foreach ($loc['devices'] as $devId => $dev) {
+                if ($devQuery !== '' && strcasecmp($dev['name'], $devQuery) !== 0 && strcasecmp($devId, $devQuery) !== 0) { continue; }
+                $svcType = $serviceMap[$type];
+                if (isset($dev['services'][$svcType]['_service_id']['value'])) {
+                    $serviceId = $dev['services'][$svcType]['_service_id']['value'];
+                    break 2;
+                }
+            }
+        }
+    }
+    if ($serviceId === '') {
+        echo "FEHLER: Kein passendes Geraet/Service gefunden (device='" . $devQuery . "', type=" . $type . "). Erst ?action=refresh ausfuehren; Geraetenamen zeigt ?action=list.\n";
+        exit;
+    }
+
+    $gardena = new gardena($g['CLIENT_ID'], $g['CLIENT_SECRET'], $lbpconfigdir);
+    if (!$gardena->authenticate()) { echo 'FEHLER: Anmeldung fehlgeschlagen: ' . $gardena->last_error . "\n"; exit; }
+    if ($gardena->sendCommand($serviceId, $type, $cmd, $seconds)) {
+        echo 'OK: ' . $cmd . ' an ' . $serviceId . " gesendet.\n";
+    } else {
+        echo 'FEHLER: ' . $gardena->last_error . "\n";
+    }
+    exit;
+}
+
+// ---------- Hilfe ----------
+echo "GARDENA smart system Plugin - Endpunkte:\n";
+echo "?action=refresh   Daten sofort abrufen und an Miniserver/MQTT senden\n";
+echo "?action=list      Geraeteliste als JSON\n";
+echo "?action=command&device=NAME&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK\n";
+echo "?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600\n";
+echo "?action=command&device=NAME&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800\n";

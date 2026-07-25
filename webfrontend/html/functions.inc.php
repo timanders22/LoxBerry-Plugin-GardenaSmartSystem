@@ -1,36 +1,60 @@
 <?php
-    
-    function sendUDP($data, $destIP, $destPort)
-    {
-    //start a new connection udp connection
-    if(!($socket = socket_create(AF_INET, SOCK_DGRAM, 0))) {
+
+function gardena_log($level, $msg)
+{
+    if ($level === 'ERR' && function_exists('LOGERR')) { LOGERR($msg); return; }
+    if ($level === 'DEB' && function_exists('LOGDEB')) { LOGDEB($msg); return; }
+    if (function_exists('LOGINF')) { LOGINF($msg); }
+}
+
+function sendUDP($data, $destIP, $destPort)
+{
+    if (!($socket = socket_create(AF_INET, SOCK_DGRAM, 0))) {
         $errorcode = socket_last_error();
         $errormsg = socket_strerror($errorcode);
-    	LOGCRIT("Couldn't create socket to send UDP Data: [$errorcode] $errormsg, terminating");
-    	LOGEND("Processing terminated");
-	    exit;
+        gardena_log('ERR', "UDP-Socket konnte nicht erstellt werden: [$errorcode] $errormsg");
+        return false;
     }
-    LOGDEB("Socket to send UDP Data created");
-
-    //send udp datagram
-    $numBytesSent = 0;
-    $dataEnc = "";
-    $dataEnc = mb_convert_encoding($data, "UTF-8");
-    $numBytesSent = socket_sendto($socket, $dataEnc , strlen($dataEnc) , 0 , $destIP , $destPort);
-    if( $numBytesSent == -1) {
+    $dataEnc = mb_convert_encoding($data, 'UTF-8', 'UTF-8');
+    $numBytesSent = socket_sendto($socket, $dataEnc, strlen($dataEnc), 0, $destIP, (int) $destPort);
+    if ($numBytesSent === false || $numBytesSent == -1) {
         $errorcode = socket_last_error();
         $errormsg = socket_strerror($errorcode);
-        LOGERR("Couldn't send UDP Data: [$errorcode] $errormsg");
+        gardena_log('ERR', "UDP-Daten konnten nicht gesendet werden: [$errorcode] $errormsg");
+        socket_close($socket);
+        return false;
     }
-    else{
-        LOGDEB("UDP Data sent");
-    }
-
-
-    # close udp connection
     socket_close($socket);
+    return true;
+}
 
-    # ToDo: mybe check if all bytes in resultstr were sent
+/**
+ * MQTT-Publish ueber das LoxBerry MQTT Gateway (UDP-Interface).
+ * Kein eigener MQTT-Client noetig - das Gateway nimmt auf seinem UDP-Port
+ * Nachrichten der Form "publish <topic> <wert>" entgegen (auch retain).
+ * Voraussetzung: MQTT Gateway im LoxBerry aktiviert (LB 2.x: Plugin, ab LB 3 Bestandteil des Systems).
+ */
+function mqttPublish($topic, $value, $retain = true)
+{
+    static $udpport = null;
+    if ($udpport === null) {
+        $udpport = 0;
+        if (function_exists('mqtt_connectiondetails')) {
+            $creds = mqtt_connectiondetails();
+            if (is_array($creds) && !empty($creds['udpinport'])) {
+                $udpport = (int) $creds['udpinport'];
+            }
+        }
+        if (!$udpport) {
+            gardena_log('ERR', 'MQTT Gateway: UDP-Port nicht ermittelbar - ist das MQTT Gateway aktiviert?');
+        } else {
+            gardena_log('DEB', 'MQTT Gateway UDP-Port: ' . $udpport);
+        }
     }
-         
-?>
+    if (!$udpport) { return false; }
+
+    // Topic darf keine Leerzeichen enthalten; Werte mit Leerzeichen sind ok
+    $topic = str_replace(' ', '_', (string) $topic);
+    $msg = ($retain ? 'retain ' : 'publish ') . $topic . ' ' . $value;
+    return sendUDP($msg, '127.0.0.1', $udpport);
+}

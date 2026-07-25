@@ -1,182 +1,113 @@
 #!/usr/bin/php
 <?php
-include("header.inc.php");
+/**
+ * GardenaMain - wird alle 5 Minuten per Cron aufgerufen.
+ * Holt alle Geraetedaten von der GARDENA smart system API v2 und sendet sie
+ * per UDP an den Miniserver und/oder per MQTT (LoxBerry MQTT Gateway).
+ */
 
-$miniserverIP = "";
-$log = Null;
-$gardenaCfg = Null;
-$gardena = Null;
-$msArray = Null;
-$msID = 0;
+include 'header.inc.php';
 
-// Creates a log object, automatically assigned to your plugin, with the group name "GardenaLog"
-$log = LBLog::newLog( [ "name" => "GardenaLog", "package" => $lbpplugindir, "logdir" => $lbplogdir, "loglevel" => 6] );
-// After log object is created, logging is started with LOGSTART
-// A start timestamp and other information is added automatically
-LOGSTART("GardenaMain script started");
+$log = LBLog::newLog(array('name' => 'GardenaLog', 'package' => $lbpplugindir, 'logdir' => $lbplogdir));
+LOGSTART('GardenaMain gestartet');
 
-$gardenaCfg = new Config_Lite("$lbpconfigdir/gardena.cfg",LOCK_EX,INI_SCANNER_RAW);
-
-if ($gardenaCfg == Null){
-	LOGCRIT("Unable to read config file, terminating");
-	LOGEND("Processing terminated");
-	exit;
+$gcfg = @parse_ini_file($lbpconfigdir . '/gardena.cfg', true, INI_SCANNER_RAW);
+if (!is_array($gcfg) || empty($gcfg['GARDENA'])) {
+    LOGCRIT('Konfigurationsdatei nicht lesbar: ' . $lbpconfigdir . '/gardena.cfg');
+    LOGEND('Abbruch'); exit(1);
 }
-else {
-	LOGOK("Reading config file successfull");
-}
+$g = $gcfg['GARDENA'];
 
-if ($gardenaCfg->get("GARDENA","ENABLED")){
-	LOGOK("Plugin is enabled");
-} else{
-	LOGOK("Plugin is disabled");
-	LOGEND("Processing terminated");
-	exit;
+if (empty($g['ENABLED']) || $g['ENABLED'] == '0') {
+    LOGINF('Plugin ist deaktiviert (ENABLED=0).');
+    LOGEND('Ende'); exit(0);
+}
+if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
+    LOGCRIT('Application Key / Secret fehlt - bitte in der Plugin-Oberflaeche eintragen (developer.husqvarnagroup.cloud).');
+    LOGEND('Abbruch'); exit(1);
 }
 
+$udp_enabled = !isset($g['UDP_ENABLED']) || $g['UDP_ENABLED'] != '0';
+$mqtt_enabled = isset($g['MQTT_ENABLED']) && $g['MQTT_ENABLED'] == '1';
+$mqtt_topic = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
 
-
-//Neues Gardena Objekt anlegen. Username und Passwort werden aus cfg Datei gelesen.
-//Umgang mit ini file: https://www.loxwiki.eu/display/LOXBERRY/Writing+ini+files+in+PHP
-$gardena = new gardena($gardenaCfg->get("GARDENA","USERNAME"), $gardenaCfg->get("GARDENA","PASSWORD"), $log);
-
-$msArray = LBSystem::get_miniservers();
-if (!is_array($msArray)){
-	LOGCRIT("No Miniserver configured, terminating");
-   	LOGEND("Processing terminated");
-    exit;
+// Miniserver fuer UDP ermitteln
+$miniserverIP = '';
+$udpport = !empty($g['UDPPORT']) ? (int) $g['UDPPORT'] : 5005;
+if ($udp_enabled) {
+    $msArray = LBSystem::get_miniservers();
+    $msID = !empty($g['MINISERVER']) ? (int) $g['MINISERVER'] : 1;
+    if (is_array($msArray) && isset($msArray[$msID])) {
+        $miniserverIP = $msArray[$msID]['IPAddress'];
+        LOGINF('UDP-Ziel: Miniserver ' . $msID . ' (' . $miniserverIP . ':' . $udpport . ')');
+    } else {
+        LOGERR('Konfigurierter Miniserver ' . $msID . ' nicht gefunden - UDP-Versand deaktiviert.');
+        $udp_enabled = false;
+    }
 }
-else{
-	LOGDEB("Miniservers configured.");
-}
-
-$msID = $gardenaCfg->get("GARDENA","MINISERVER");
-
-if ($msID < 1){
-	LOGCRIT("No Miniserver in Gardena Config File configured, terminating");
-    LOGEND("Processing terminated");
-    exit;
-}
-if (count($msArray) < $msID){
-	LOGCRIT("In Loxberry configured Miniservers and the selected miniserver in Gardena Config File do not match, terminating");
-    LOGEND("Processing terminated");
-    exit;
-}
-$miniserverIP = $msArray[$msID]['IPAddress'];
-
-//echo var_dump($gardena);
-
-foreach($gardena -> locations as $location)
-{
-	echo "Location:" . $location -> name . "<br>";
-	echo "authorized_at:" . $location -> authorized_at . "<br>";
-	echo "address:" . $location -> geo_position -> address . "<br>";
-	echo "latitude:" . $location -> geo_position -> latitude . "<br>";
-	echo "longitude:" . $location -> geo_position -> longitude . "<br>";
+if ($mqtt_enabled) { LOGINF('MQTT aktiv, Basis-Topic: ' . $mqtt_topic); }
+if (!$udp_enabled && !$mqtt_enabled) {
+    LOGERR('Weder UDP noch MQTT aktiv - nichts zu tun.');
+    LOGEND('Ende'); exit(0);
 }
 
-foreach($gardena -> devices as $locationId => $devices)
-{   
-	//Erstellung von SendeDaten im Format
-	//[DeviceCategory].[DeviceName].[DataCategorie].[DataName]:[DataValue] (optional:[ = DataValueString])
-	$dataToSend = "";
-	
-	$DeviceCategory ="";
-	$DeviceName ="";
-	$DataCategorie = "";
-	$DataName ="";
-	$DataValue ="";
-	$DataValueString ="";
-	
-	//List of all Devices
-	foreach($devices as $device)
-	{
-		$DeviceCategory = $device -> category;
-		$DeviceName = $device -> name;
-		echo "<b>Device Category:" . $device -> category . "</b><br>";
-		echo "Device Name:" . $device -> name . "<br>";
-		echo "configuration_synchronized:". $device -> configuration_synchronized . "<br>";
-	
-		//Liste alle Kategorien
-		foreach ($device -> abilities as $ability)
-		{
-			$DataCategorie = $ability -> name;
-			echo "<b>Categorie: </b>". $ability -> name . "</b><br>";
-			
-			//Liste alle Eigenschaften
-			foreach($ability -> properties as $property)
-		    {
-		    	$DataValue ="";
-		    	$DataValueString = "";
-		    	$DataName = $property -> name;
-		    	echo $property -> name . ":  ";
-		    	if(is_string($property -> value)){
-		    		echo "Datatyp String - Value: ". $property -> value;
-		    		$DataValueString = $property -> value;
-		    	}
-		    	elseif(is_int($property -> value)){
-		    		echo "Datatyp Int - Value: ". $property -> value;
-		    		$DataValue = $property -> value;
-		    	}
-		    	elseif(is_bool($property -> value)){
-		    			echo "Datatyp Bool - ";
-		    		if ($property -> value){
-		    			echo "Value: ". "1";
-		    			$DataValue = 1;
-		    		}
-		    		else{
-		    			echo "Value: ". "0";
-		    			$DataValue = 0;
-		    		}	    			
-		    	}
-		    	else{
-		    		echo "Error: DataType Value ". $DataName . " unknown.";
-					$DataValue = 255;
-		    	}
-		    	
-		    	if (array_key_exists('unit', $property)){
-		    	echo $property -> unit . "<br>";
-		    	}
-		    	else echo "<br>";
-		    	if (array_key_exists('timestamp', $property)){
-		    	echo "timestamp:" . $property -> timestamp . "<br>";
-		    	}
-            	if (sizeof($property -> supported_values) > 0)
-            	{
-	  				echo "--->Possible Values: " . var_export($property -> supported_values, true) . "<br>";
-	        		$valPos = 0;
-	        		if(is_bool($property -> value)){
-			    		if ($property -> value){
-			    			$valPos = array_search ("true", $property -> supported_values);
-			    		}
-			    		else{
-			    			$valPos = array_search ("false", $property -> supported_values);
-			    		}
-	        		}
-	        		else{
-	        			$valPos = array_search ($property -> value , $property -> supported_values);
-	        		}
-	        		if ($valPos === False){
-	        			echo "Error: Data Value not found!<br>";
-	        			$DataValue = 255;
-	        		}
-	        		else {
-	        			echo "Data Value at Position: " . $valPos . "<br>";
-	        			$DataValue = $valPos;
-	        		}
-            	}
-				
-				//Bulid String for Transfer
-	            $dataToSend = $DeviceCategory . "." . $DeviceName . "." . $DataCategorie . "." . $DataName . ":" . $DataValue;
-	            if ($DataValueString) $dataToSend = $dataToSend . "[" . $DataValueString ."]";
-	            echo "&nbsp Data to send: " . $dataToSend . "<br>";
-            	//Tansfer Data
-            	sendUDP($dataToSend, $miniserverIP, $gardenaCfg->get("GARDENA","UDPPORT"));
-            	//Wait 0.25Sec for next loop - this is to limit the stress of the miniserver
-            	usleep(250000);
-		    }
-			echo "<br>";
-		}
-	} 
-}            
-?>
+// API v2
+$gardena = new gardena($g['CLIENT_ID'], $g['CLIENT_SECRET'], $lbpconfigdir);
+if (!$gardena->authenticate()) {
+    LOGCRIT('Anmeldung an der Husqvarna/GARDENA-API fehlgeschlagen: ' . $gardena->last_error);
+    LOGEND('Abbruch'); exit(1);
+}
+
+$locations = $gardena->getLocations();
+if (empty($locations)) {
+    LOGCRIT('Keine Locations gefunden: ' . $gardena->last_error);
+    LOGEND('Abbruch'); exit(1);
+}
+
+$statuscache = array('updated' => date('d.m.Y H:i:s'), 'locations' => array());
+$sent = 0;
+
+foreach ($locations as $location) {
+    $locId = $location['id'];
+    $locName = isset($location['attributes']['name']) ? $location['attributes']['name'] : $locId;
+    LOGINF('Location: ' . $locName);
+
+    $devices = $gardena->getDevices($locId);
+    if (empty($devices)) {
+        LOGERR('Keine Geraete in Location ' . $locName . ': ' . $gardena->last_error);
+        continue;
+    }
+    $statuscache['locations'][] = array('id' => $locId, 'name' => $locName, 'devices' => $devices);
+
+    foreach ($devices as $deviceId => $device) {
+        $devName = $device['name'];
+        foreach ($device['services'] as $type => $attrs) {
+            foreach ($attrs as $attrName => $attr) {
+                if ($attrName === '_service_id') { continue; }
+                $value = $attr['value'];
+                if (is_bool($value)) { $value = $value ? 1 : 0; }
+                if (is_array($value)) { $value = json_encode($value); }
+
+                // UDP-Format (kompatibel zum alten Plugin):
+                // DeviceTyp.DeviceName.Service.Attribut:Wert
+                if ($udp_enabled) {
+                    $dataToSend = $type . '.' . $devName . '.' . $attrName . ':' . $value;
+                    LOGDEB('UDP: ' . $dataToSend);
+                    sendUDP($dataToSend, $miniserverIP, $udpport);
+                    usleep(100000); // Miniserver nicht fluten
+                }
+                // MQTT: gardena/<DeviceName>/<SERVICE>/<attribut>
+                if ($mqtt_enabled) {
+                    mqttPublish($mqtt_topic . '/' . $devName . '/' . $type . '/' . $attrName, $value, true);
+                }
+                $sent++;
+            }
+        }
+    }
+}
+
+// Geraete-Cache fuer die Admin-Oberflaeche
+@file_put_contents($lbpconfigdir . '/devices_cache.json', json_encode($statuscache, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+LOGOK($sent . ' Werte versendet.');
+LOGEND('GardenaMain fertig');
