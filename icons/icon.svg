@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- GARDENA smart system - LoxBerry Plugin Icon -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a9b2e"/>
+      <stop offset="1" stop-color="#2e7d32"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="url(#bg)"/>
+  <!-- Rasenflaeche -->
+  <path d="M48 380 Q 160 340 256 380 T 464 380 L464 420 Q 464 464 420 464 L92 464 Q 48 464 48 420 Z" fill="#256428"/>
+  <g stroke="#1b4d1e" stroke-width="6" stroke-linecap="round">
+    <line x1="110" y1="392" x2="104" y2="368"/>
+    <line x1="150" y1="386" x2="146" y2="362"/>
+    <line x1="360" y1="388" x2="366" y2="364"/>
+    <line x1="404" y1="394" x2="410" y2="370"/>
+  </g>
+  <!-- Maehroboter -->
+  <g>
+    <path d="M140 330 Q 140 270 210 258 L 310 258 Q 372 264 372 322 L 372 348 Q 372 362 356 362 L 156 362 Q 140 362 140 348 Z" fill="#f5f5f5"/>
+    <path d="M140 330 Q 140 270 210 258 L 250 258 L 250 362 L 156 362 Q 140 362 140 348 Z" fill="#e0e0e0"/>
+    <circle cx="188" cy="366" r="26" fill="#333"/>
+    <circle cx="188" cy="366" r="12" fill="#777"/>
+    <circle cx="330" cy="366" r="26" fill="#333"/>
+    <circle cx="330" cy="366" r="12" fill="#777"/>
+    <rect x="270" y="278" width="72" height="26" rx="13" fill="#ff8f00"/>
+  </g>
+  <!-- Funkwellen (smart) -->
+  <g stroke="#ffffff" stroke-width="16" fill="none" stroke-linecap="round">
+    <path d="M196 176 Q 256 128 316 176"/>
+    <path d="M164 136 Q 256 62 348 136"/>
+  </g>
+  <circle cx="256" cy="212" r="18" fill="#ffffff"/>
+  <!-- Wassertropfen -->
+  <path d="M416 120 Q 444 160 444 182 Q 444 210 416 210 Q 388 210 388 182 Q 388 160 416 120 Z" fill="#4fc3f7"/>
+</svg>
