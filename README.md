@@ -1,153 +1,97 @@
-# Loxberry Plugin: Gardena-Smart-System
-Dieses Plugin ermöglicht es Daten von einem Gardena-Smart-System an die Miniserver über UDP zu senden. 
+# LoxBerry-Plugin: GARDENA smart system
 
-Das Plugin unterstützt auch mehrere Geräte innerhalb eines Accounts. Jeder Messwert (Sensor) wird als einzelnes UDP Paket an den Miniserver gesendet. Das Paket hat immer folgende Aufbau:
+Holt zyklisch (alle 5 Minuten) die Daten aller GARDENA-smart-system-Geräte
+(Mähroboter, Bewässerungscomputer/Ventile, Sensoren, Steckdosen, Gateway) und
+sendet sie an den Loxone Miniserver – per **UDP** und/oder **MQTT**
+(LoxBerry MQTT Gateway, retained). Kommandos (Mähen starten, Parken,
+Bewässerung starten/stoppen …) können über einen Virtuellen Ausgang gesendet werden.
 
-[DeviceCategory].[DeviceName].[DataCategorie].[DataName]:[DataValue] (optional:[ = DataValueString])
+## Version 1.0.0 – was ist neu
 
-Folgende Daten können gelesen werden:
+- **Neue API**: Husqvarna/GARDENA **smart system API v2** mit OAuth2
+  (Application Key + Secret). Die alte sg-1-API mit Benutzername/Passwort wurde
+  von Gardena abgeschaltet – deshalb funktionierten ältere Versionen nicht mehr.
+- **Neue Admin-Oberfläche** für LoxBerry 3/4 (die alte Perl-Oberfläche nutzte das
+  LoxBerry-1.x-Templatesystem und war auf aktuellen Systemen kaputt).
+- **MQTT-Unterstützung** über das LoxBerry MQTT Gateway (keine Zusatzsoftware nötig).
+- PHP 7.4 und PHP 8.x kompatibel; SVG-Icon (PNG als Fallback).
 
-Location:My Garden
-authorized_at
-address
-latitude
-longitude
+## Einrichtung
 
-Device Category:gateway
+1. Auf https://developer.husqvarnagroup.cloud mit dem GARDENA-Konto anmelden.
+2. **Create application** → Name egal, Redirect-URL z. B. `http://localhost`.
+3. In der Application unter **Connect an API** die **GARDENA smart system API** verbinden.
+4. **Application Key** und **Application Secret** in der Plugin-Oberfläche eintragen,
+   Plugin aktivieren, speichern – der Verbindungstest zeigt sofort, ob es klappt.
 
-Categorie: device_info
-manufacturer
-product
-serial_number
-sgtin
-version
-category
-last_time_online
+## Loxone
 
-Categorie: gateway
-ip_address
-time_zone
-homekit_setup_payload
+- **Werte**: Virtueller UDP-Eingang (Standard-Port 5005), Format
+  `SERVICE.Gerätename.attribut:wert` – oder via MQTT Gateway
+  (Topics `gardena/<Gerät>/<SERVICE>/<attribut>`).
+- **Kommandos** (Virtueller Ausgang, Befehl bei EIN), Beispiele:
+  - `/plugins/gardenasmartsystem/index.php?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600`
+  - `...&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK`
+  - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
+- Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list`
 
-Device Category:mower
+## Hinweise
 
-Categorie: device_info
-manufacturer
-product
-serial_number
-version
-category
-last_time_online
-sgtin
+- Husqvarna begrenzt die API-Nutzung (Rate Limit); der 5-Minuten-Zyklus liegt
+  weit darunter.
+- Logs: LoxBerry Log Manager → Paket `gardenasmartsystem`.
 
-Categorie: battery
-level
-charging
---->Possible Values: array ( 0 => 'true', 1 => 'false', )
+## Herkunft, Lizenz und Änderungen
 
-Categorie: radio
-quality
-connection_status
---->Possible Values: array ( 0 => 'unknown', 1 => 'status_device_unreachable', 2 => 'status_device_alive', )
-state:
---->Possible Values: array ( 0 => 'bad', 1 => 'poor', 2 => 'good', 3 => 'undefined', )
+Dieses Plugin ist eine **abgeleitete Arbeit** des ursprünglichen Plugins von
+**Michael Jani** (Repository: https://github.com/DiabloVmax1200/LoxBerry-Plugin-GardenaSmartSystem),
+veröffentlicht unter der **Apache-Lizenz 2.0**. Lizenztext (`LICENSE`) und
+Copyright-Hinweise bleiben unverändert erhalten; die Plugin-Kennung
+(`NAME`/`EMAIL` in `plugin.cfg`) wurde bewusst **nicht** geändert.
 
-Categorie: firmware
-firmware_status
-firmware_upload_progress
-firmware_available_version
-inclusion_status
-firmware_update_start
-firmware_command
---->Possible Values: array ( 0 => 'idle', 1 => 'firmware_cancel', 2 => 'firmware_flash', 3 => 'firmware_upload', 4 => 'unsupported', )
+Gemäß Apache-2.0 (Abschnitt 4b) hier die Liste der geänderten Bestandteile:
 
-Categorie: mower
-manual_operation
-status
---->Possible Values: array ( 0 => 'paused', 1 => 'ok_cutting', 2 => 'ok_searching', 3 => 'ok_charging', 4 => 'ok_leaving', 5 => 'wait_updating', 6 => 'wait_power_up', 7 => 'parked_timer', 8 => 'parked_park_selected', 9 => 'off_disabled', 10 => 'off_hatch_open', 11 => 'unknown', 12 => 'error', 13 => 'error_at_power_up', 14 => 'off_hatch_closed', 15 => 'ok_cutting_timer_overridden', 16 => 'parked_autotimer', 17 => 'parked_daily_limit_reached', 18 => 'undefined', )
-error
---->Possible Values: array ( 0 => 'no_message', 1 => 'outside_working_area', 2 => 'no_loop_signal', 3 => 'wrong_loop_signal', 4 => 'loop_sensor_problem_front', 5 => 'loop_sensor_problem_rear', 6 => 'loop_sensor_problem_left', 7 => 'loop_sensor_problem_right', 8 => 'wrong_pin_code', 9 => 'trapped', 10 => 'upside_down', 11 => 'low_battery', 12 => 'empty_battery', 13 => 'no_drive', 14 => 'temporarily_lifted', 15 => 'lifted', 16 => 'stuck_in_charging_station', 17 => 'charging_station_blocked', 18 => 'collision_sensor_problem_rear', 19 => 'collision_sensor_problem_front', 20 => 'wheel_motor_blocked_right', 21 => 'wheel_motor_blocked_left', 22 => 'wheel_drive_problem_right', 23 => 'wheel_drive_problem_left', 24 => 'cutting_motor_drive_defect', 25 => 'cutting_system_blocked', 26 => 'invalid_sub_device_combination', 27 => 'settings_restored', 28 => 'memory_circuit_problem', 29 => 'slope_too_steep', 30 => 'charging_system_problem', 31 => 'stop_button_problem', 32 => 'tilt_sensor_problem', 33 => 'mower_tilted', 34 => 'wheel_motor_overloaded_right', 35 => 'wheel_motor_overloaded_left', 36 => 'charging_current_too_high', 37 => 'electronic_problem', 38 => 'cutting_motor_problem', 39 => 'limited_cutting_height_range', 40 => 'unexpected_cutting_height_adj', 41 => 'cutting_height_problem_drive', 42 => 'cutting_height_problem_curr', 43 => 'cutting_height_problem_dir', 44 => 'cutting_height_blocked', 45 => 'cutting_height_problem', 46 => 'no_response_from_charger', 47 => 'ultrasonic_problem', 48 => 'temporary_problem', 49 => 'guide_1_not_found', 50 => 'guide_2_not_found', 51 => 'guide_3_not_found', 52 => 'gps_tracker_module_error', 53 => 'weak_gps_signal', 54 => 'difficult_finding_home', 55 => 'guide_calibration_accomplished', 56 => 'guide_calibration_failed', 57 => 'temporary_battery_problem', 58 => 'battery_problem', 59 => 'too_many_batteries', 60 => 'alarm_mower_switched_off', 61 => 'alarm_mower_stopped', 62 => 'alarm_mower_lifted', 63 => 'alarm_mower_tilted', 64 => 'alarm_mower_in_motion', 65 => 'alarm_outside_geofence', 66 => 'connection_changed', 67 => 'connection_not_changed', 68 => 'com_board_not_available', 69 => 'slipped', 70 => 'invalid_battery_combination', 71 => 'imbalanced_cutting_disc', 72 => 'safety_function_faulty', )
-last_error_code
-source_for_next_start
---->Possible Values: array ( 0 => 'no_source', 1 => 'completed_cutting_daily_limit', 2 => 'week_timer', 3 => 'countdown_timer', 4 => 'mower_charging', 5 => 'completed_cutting_autotimer', 6 => 'undefined', )
-timestamp_next_start
-override_end_time
-timestamp_last_error_code
+- `webfrontend/html/gardena.class.inc.php` — vollständig neu: GARDENA smart
+  system **API v2** (OAuth2, Application Key/Secret) statt der abgeschalteten
+  sg-1-API; ab v1.0.1 HTTP wahlweise über cURL oder PHP-Streams
+- `webfrontend/htmlauth/index.php`, `webfrontend/html/*` — neue Oberfläche für
+  LoxBerry 3/4 anstelle des LoxBerry-1.x-Templatesystems (Perl entfallen)
+- `cron/cron.05min` — neuer Abrufzyklus, UDP- und MQTT-Ausgabe
+- `dpkg/apt` — `libstring-escape-perl` entfernt (Perl-Teile entfallen),
+  `php-curl` nur noch als Empfehlung
+- `plugin.cfg` — Versionsstand 1.0.1
 
-Categorie: mower_stats
-cutting_time
-timestamp
-charging_cycles
-collisions
-running_time
+Forum-Thread des ursprünglichen Plugins:
+https://www.loxforum.com/forum/projektforen/loxberry/plugins/160685-plugin-gardena-smart-system
 
-Categorie: mower_type
-base_software_up_to_date
-mmi_version
-mainboard_version
-comboard_version
-device_type
-device_variant
+## Fehlerbehebung: „404 Not Found" bei php7.4-curl während der Installation
 
+Meldung im Installationsprotokoll (Beispiel):
 
-Device Category:sensor
-Categorie: device_info
-manufacturer
-product
-serial_number
-version
-category
-last_time_online
-sgtin
+```
+Err:2 https://packages.sury.org/php bookworm/main amd64 php7.4-curl ... 404 Not Found
+E: Unable to fetch some archives, maybe run apt-get update ...
+CRITICAL: Error installing php7.4-curl libstring-escape-perl - Error 100
+```
 
-Categorie: battery
-level
-disposable_battery_status
---->Possible Values: array ( 0 => 'out_of_operation', 1 => 'replace_now', 2 => 'low', 3 => 'ok', 4 => 'undefined', )
+**Ursache:** Das Paket `php-curl` ist ein Sammelpaket, das auf die PHP-Version des
+Systems zeigt. Auf LoxBerrys mit dem Fremd-Repository *packages.sury.org* landet man
+damit bei `php7.4-curl`. Sury hält von jeder PHP-Version aber immer nur den neuesten
+Build vor — ist der lokale Paketindex ein paar Wochen alt, zeigt er auf ein Paket,
+das dort nicht mehr liegt: 404. Mit dem Plugin selbst hat das nichts zu tun.
 
-Categorie: radio
-quality
-connection_status:
---->Possible Values: array ( 0 => 'unknown', 1 => 'status_device_unreachable', 2 => 'status_device_alive', )
-state
---->Possible Values: array ( 0 => 'bad', 1 => 'poor', 2 => 'good', 3 => 'undefined', )
+**Lösung am LoxBerry (SSH):**
 
-Categorie: ambient_temperature
-temperature
-frost_warning
---->Possible Values: array ( 0 => 'no_frost', 1 => 'frost', 2 => 'undefined', )
+```
+sudo apt-get update
+sudo apt-get install -y php-curl
+```
 
-Categorie: soil_temperature
-temperature
+**Ab v1.0.1 ist das kein Beinbruch mehr:** Das Plugin nutzt cURL nur noch, wenn die
+Erweiterung vorhanden ist, und weicht sonst automatisch auf PHP-Streams aus. Es
+läuft also auch dann, wenn die Paketinstallation fehlgeschlagen ist; die Oberfläche
+weist dann auf die fehlende Erweiterung hin.
 
-Categorie: humidity
-humidity
-
-Categorie: light
-light
-
-Categorie: identification
-
-Categorie: firmware
-firmware_status
-firmware_upload_progress
-firmware_available_version
-inclusion_status
-firmware_update_start
-firmware_command
---->Possible Values: array ( 0 => 'idle', 1 => 'firmware_cancel', 2 => 'firmware_flash', 3 => 'firmware_upload', 4 => 'unsupported', )
-
-## Feedback und Diskussion
-Das PlugIn wird von mir noch weiterentwickelt und ich freue mich über Anregungen und Feedback. 
-
-## Change-Log
-- 2018-07-12  Erstellung PlugIn v 0.0.5
-
-## Known-Issues
-- Logging erfolgt nicht korrekt
-- Noch keine Selektion der zu versendenten Werte möglich
-- Noch keine anständige Dokumentation
-
-
-## Sensor-Werte
-todo
+**`libstring-escape-perl`** aus der Meldung wird seit v1.0.0 nicht mehr benötigt —
+die Perl-Bestandteile der abgeschalteten sg-1-API sind entfallen. Wer die Meldung
+sieht, installiert noch die ältere Fassung (v0.0.7) des Plugins.
