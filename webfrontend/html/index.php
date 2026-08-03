@@ -3,11 +3,17 @@
  * Kommando-/Status-Endpunkt fuer den Loxone Miniserver (Virtueller Ausgang).
  * Neu geschrieben fuer die GARDENA smart system API v2.
  *
- * Aufrufe (HTTP GET, ohne Authentifizierung - nur fuers lokale Netz gedacht):
- *   ?action=refresh                  -> Daten sofort abholen und versenden (wie Cron)
- *   ?action=list                     -> Geraete/Services als JSON (aus dem Cache)
- *   ?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600
- *   ?action=command&device=NAME&type=VALVE_CONTROL&cmd=STOP_UNTIL_NEXT_TASK
+ * Aufrufe (HTTP GET):
+ *   ?action=list                     -> Geraete/Services als JSON (aus dem Cache), rein lesend
+ *   ?action=refresh&token=...        -> Daten sofort abholen und versenden (wie Cron)
+ *   ?action=command&token=...&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600
+ *   ?action=command&token=...&device=NAME&type=VALVE_CONTROL&cmd=STOP_UNTIL_NEXT_TASK
+ *
+ * Alles, was etwas ausloest (command, refresh), verlangt das Token aus der
+ * gardena.cfg. Ohne diese Pruefung koennte jedes Geraet im Netz - und ueber
+ * eine unbedacht weitergeleitete Portfreigabe auch jeder von aussen - den
+ * Maeher starten oder die Bewaesserung aufdrehen. Das Token steht in der
+ * Plugin-Oberflaeche, dort gibt es auch die fertigen Loxone-URLs.
  *
  * Gaengige Kommandos (API v2):
  *   MOWER_CONTROL:        START_SECONDS_TO_OVERRIDE (+seconds), START_DONT_OVERRIDE,
@@ -23,12 +29,30 @@ header('Content-Type: text/plain; charset=utf-8');
 $gcfg = @parse_ini_file($lbpconfigdir . '/gardena.cfg', true, INI_SCANNER_RAW);
 $g = (is_array($gcfg) && !empty($gcfg['GARDENA'])) ? $gcfg['GARDENA'] : array();
 
+$action = isset($_GET['action']) ? $_GET['action'] : '';
+
+// ---------- Zugriffsschutz fuer alles, was etwas ausloest ----------
+// ?action=list bleibt lesend und ohne Token erreichbar (Diagnose im Browser).
+if ($action === 'command' || $action === 'refresh') {
+    $given = isset($_GET['token']) ? $_GET['token'] : '';
+    if (!gardena_token_ok(isset($g['TOKEN']) ? $g['TOKEN'] : '', $given)) {
+        header('HTTP/1.1 403 Forbidden');
+        if (empty($g['TOKEN'])) {
+            echo "FEHLER: Es ist noch kein Token hinterlegt. Bitte einmal die Plugin-Oberflaeche\n"
+               . "oeffnen - dort wird eines erzeugt und die fertige Loxone-URL angezeigt.\n";
+        } else {
+            echo "FEHLER: Ungueltiges oder fehlendes Token.\n"
+               . "Aufruf: ?action=" . ($action === 'command' ? 'command' : 'refresh')
+               . "&token=... (Token steht in der Plugin-Oberflaeche)\n";
+        }
+        exit;
+    }
+}
+
 if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
     echo "FEHLER: Application Key/Secret nicht konfiguriert (Plugin-Oberflaeche oeffnen).\n";
     exit;
 }
-
-$action = isset($_GET['action']) ? $_GET['action'] : '';
 
 // ---------- Geraeteliste aus Cache ----------
 if ($action === 'list') {
@@ -95,9 +119,11 @@ if ($action === 'command') {
 }
 
 // ---------- Hilfe ----------
-echo "GARDENA smart system Plugin - Endpunkte:\n";
-echo "?action=refresh   Daten sofort abrufen und an Miniserver/MQTT senden\n";
-echo "?action=list      Geraeteliste als JSON\n";
-echo "?action=command&device=NAME&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK\n";
-echo "?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600\n";
-echo "?action=command&device=NAME&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800\n";
+echo "GARDENA smart system Plugin - Endpunkte:\n\n";
+echo "Ohne Token (nur lesend):\n";
+echo "  ?action=list      Geraeteliste als JSON\n\n";
+echo "Mit Token (loest etwas aus - Token steht in der Plugin-Oberflaeche):\n";
+echo "  ?action=refresh&token=...   Daten sofort abrufen und an Miniserver/MQTT senden\n";
+echo "  ?action=command&token=...&device=NAME&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK\n";
+echo "  ?action=command&token=...&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600\n";
+echo "  ?action=command&token=...&device=NAME&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800\n";

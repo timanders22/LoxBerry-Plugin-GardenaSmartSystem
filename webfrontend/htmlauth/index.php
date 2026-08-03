@@ -9,6 +9,7 @@ ini_set('display_errors', '1');
 
 require_once 'loxberry_system.php';
 require_once 'loxberry_web.php';
+require_once __DIR__ . '/../html/functions.inc.php';
 
 global $lbpconfigdir, $lbpplugindir;
 $gconfigfile = $lbpconfigdir . '/gardena.cfg';
@@ -18,7 +19,24 @@ function gsel($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 // ---------- Speichern ----------
 $gsaved = false;
 $gtest = '';
+$gtokenmsg = '';
+
+// Bestehendes Token einlesen, bevor gespeichert wird - es darf beim Speichern
+// der uebrigen Felder nicht verlorengehen.
+$gprev = @parse_ini_file($gconfigfile, true, INI_SCANNER_RAW);
+$gtoken = (is_array($gprev) && !empty($gprev['GARDENA']['TOKEN'])) ? $gprev['GARDENA']['TOKEN'] : '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['newtoken'])) {
+    $gtoken = gardena_token_new();
+    if (gardena_cfg_set($gconfigfile, 'TOKEN', $gtoken)) {
+        $gtokenmsg = 'Neues Token erzeugt. Die Adressen in Loxone muessen entsprechend angepasst werden.';
+    } else {
+        $gtokenmsg = 'FEHLER: Das neue Token konnte nicht gespeichert werden.';
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
+    if ($gtoken === '') { $gtoken = gardena_token_new(); }
     $gnew = array(
         'ENABLED' => (isset($_POST['enabled']) && $_POST['enabled'] == '1') ? '1' : '0',
         'CLIENT_ID' => trim((string) ($_POST['client_id'] ?? '')),
@@ -28,6 +46,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         'UDPPORT' => max(1, min(65535, (int) ($_POST['udpport'] ?? 5005))),
         'MQTT_ENABLED' => (isset($_POST['mqtt_enabled']) && $_POST['mqtt_enabled'] == '1') ? '1' : '0',
         'MQTT_TOPIC' => trim((string) ($_POST['mqtt_topic'] ?? 'gardena')) ?: 'gardena',
+        'TOKEN' => $gtoken,
     );
     $ini = "[GARDENA]\n";
     foreach ($gnew as $k => $v) { $ini .= $k . '=' . $v . "\n"; }
@@ -60,7 +79,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 $gini = @parse_ini_file($gconfigfile, true, INI_SCANNER_RAW);
 $gc = (is_array($gini) && !empty($gini['GARDENA'])) ? $gini['GARDENA'] : array();
 $gc += array('ENABLED' => '0', 'CLIENT_ID' => '', 'CLIENT_SECRET' => '', 'MINISERVER' => '1',
-    'UDP_ENABLED' => '1', 'UDPPORT' => '5005', 'MQTT_ENABLED' => '1', 'MQTT_TOPIC' => 'gardena');
+    'UDP_ENABLED' => '1', 'UDPPORT' => '5005', 'MQTT_ENABLED' => '1', 'MQTT_TOPIC' => 'gardena',
+    'TOKEN' => '');
+
+// Beim ersten Oeffnen der Oberflaeche ein Token erzeugen. Ohne Token weist
+// index.php jeden Schaltbefehl ab - das Plugin waere also unbenutzbar.
+if ($gc['TOKEN'] === '') {
+    $gc['TOKEN'] = gardena_token_new();
+    if (!gardena_cfg_set($gconfigfile, 'TOKEN', $gc['TOKEN'])) {
+        $gtokenmsg = 'FEHLER: Das Token konnte nicht in die gardena.cfg geschrieben werden - '
+                   . 'bitte Schreibrechte auf ' . $gconfigfile . ' pruefen.';
+    }
+}
+$gtokenurl = '&amp;token=' . rawurlencode($gc['TOKEN']);
 
 // Miniserver-Liste
 $gms = LBSystem::get_miniservers();
@@ -99,6 +130,7 @@ Nachinstallieren am LoxBerry (SSH):<br>
 &bdquo;404 Not Found&ldquo; auf packages.sury.org fehl, ist nur der Paketindex veraltet.</span></div>
 <?php } ?>
 <?php if ($gsaved) { ?><div class="alert ok"><b>Konfiguration gespeichert.</b></div><?php } ?>
+<?php if ($gtokenmsg !== '') { ?><div class="alert <?= strpos($gtokenmsg, 'FEHLER') === 0 ? 'err' : 'ok' ?>"><?= gsel($gtokenmsg) ?></div><?php } ?>
 <?php if ($gtest !== '') { ?><div class="alert <?= strpos($gtest, 'OK:') === 0 ? 'ok' : 'err' ?>"><?= gsel($gtest) ?></div><?php } ?>
 
 <div class="alert info">
@@ -178,7 +210,7 @@ im LoxBerry MQTT Gateway abonnieren mit <span class="mono">gardena/#</span>.</p>
 <h2>Ger&auml;te (letzter Abruf<?= !empty($gcache['updated']) ? ': ' . gsel($gcache['updated']) : '' ?>)</h2>
 <?php if (empty($gcache['locations'])) { ?>
 <p>Noch keine Daten. Nach dem Speichern l&auml;uft der Abruf automatisch alle 5 Minuten, oder sofort per
-<a href="/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=refresh" target="_blank">Jetzt abrufen</a>.</p>
+<a href="/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=refresh<?= $gtokenurl ?>" target="_blank">Jetzt abrufen</a>.</p>
 <?php } else { foreach ($gcache['locations'] as $gloc) { ?>
 <p><b><?= gsel($gloc['name']) ?></b></p>
 <table>
@@ -193,15 +225,32 @@ im LoxBerry MQTT Gateway abonnieren mit <span class="mono">gardena/#</span>.</p>
 </table>
 <?php } } ?>
 
+<h2>Zugriffstoken</h2>
+<div class="alert info">
+Schaltbefehle (M&auml;her starten, Bew&auml;sserung aufdrehen) verlangen dieses Token. Ohne die Pr&uuml;fung
+k&ouml;nnte jedes Ger&auml;t im Netz &ndash; und &uuml;ber eine unbedacht weitergeleitete Portfreigabe auch
+jemand von aussen &ndash; den M&auml;her losschicken. Das Token steht schon in den Adressen unten;
+es muss nur einmal in die Virtuellen Ausg&auml;nge &uuml;bernommen werden.
+</div>
+<label>Token</label>
+<input type="text" value="<?= gsel($gc['TOKEN']) ?>" readonly onclick="this.select();">
+<form method="post" style="display:inline;">
+<button class="btn" type="submit" name="newtoken" value="1"
+        onclick="return confirm('Neues Token erzeugen? Alle Virtuellen Ausg\u00e4nge in Loxone m\u00fcssen danach angepasst werden.');">
+Neues Token erzeugen</button>
+</form>
+
 <h2>Einbindung in Loxone</h2>
 <div class="alert info">
 <b>Werte empfangen:</b> Virtueller UDP-Eingang auf Port <?= (int) $gc['UDPPORT'] ?> bzw. MQTT Gateway.<br>
-<b>Kommandos senden</b> (Virtueller Ausgang, Befehl bei EIN):<br>
-<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</span><br>
-<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</span><br>
-<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command&amp;device=NAME&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</span><br>
+<b>Kommandos senden</b> (Virtueller Ausgang, Befehl bei EIN) &ndash; Token ist bereits eingesetzt,
+<span class="mono">NAME</span> noch durch den Ger&auml;tenamen ersetzen:<br>
+<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</span><br>
+<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</span><br>
+<span class="mono">/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</span><br>
 Test/Doku: <a href="/plugins/<?= gsel($lbpplugindir) ?>/index.php" target="_blank">Endpunkt-&Uuml;bersicht</a> |
 <a href="/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=list" target="_blank">Ger&auml;teliste (JSON)</a> |
+<a href="/plugins/<?= gsel($lbpplugindir) ?>/index.php?action=refresh<?= $gtokenurl ?>" target="_blank">Jetzt abrufen</a> |
 <a href="/admin/system/logmanager.cgi?package=<?= gsel($lbpplugindir) ?>" target="_blank">Logs</a>
 </div>
 

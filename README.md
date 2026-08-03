@@ -30,10 +30,21 @@ Bewässerung starten/stoppen …) können über einen Virtuellen Ausgang gesende
   `SERVICE.Gerätename.attribut:wert` – oder via MQTT Gateway
   (Topics `gardena/<Gerät>/<SERVICE>/<attribut>`).
 - **Kommandos** (Virtueller Ausgang, Befehl bei EIN), Beispiele:
-  - `/plugins/gardenasmartsystem/index.php?action=command&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600`
+  - `/plugins/gardenasmartsystem/index.php?action=command&token=TOKEN&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600`
   - `...&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK`
   - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
-- Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list`
+- Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list` (ohne Token, rein lesend)
+
+### Zugriffstoken
+
+Alles, was etwas auslöst (`action=command`, `action=refresh`), verlangt ein Token.
+Ohne diese Prüfung könnte jedes Gerät im Netz – und über eine unbedacht weitergeleitete
+Portfreigabe auch jemand von außen – den Mäher losschicken oder die Bewässerung aufdrehen.
+
+Das Token wird beim ersten Öffnen der Plugin-Oberfläche automatisch erzeugt und dort
+angezeigt; die fertigen Loxone-Adressen enthalten es bereits. Ist noch keins hinterlegt,
+werden Schaltbefehle abgewiesen (fail closed). Über „Neues Token erzeugen“ lässt es sich
+jederzeit wechseln – die Virtuellen Ausgänge in Loxone müssen dann angepasst werden.
 
 ## Hinweise
 
