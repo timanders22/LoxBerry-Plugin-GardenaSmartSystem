@@ -1,0 +1,37 @@
+#!/bin/bash
+# Gardena Smart System - Deinstallation (laeuft als ROOT)
+#
+# Das Plugin legt weder einen Systemdienst noch eine sudo-Regel oder einen
+# Benutzer an - es gibt also nichts am System rueckgaengig zu machen. Was es
+# hinterlaesst, sind Dateien mit Zugangsdaten:
+#
+#   gardena.cfg          Application Key und Application Secret im KLARTEXT,
+#                        dazu das Zugriffstoken des Miniserver-Endpunkts
+#   gardena_token.json   ein gueltiges OAuth2-Token der Husqvarna-Wolke
+#   devices_cache.json   Klarnamen der Geraete, Service-Kennungen, Ladestaende
+#
+# LoxBerry raeumt config/ und data/ beim Entfernen normalerweise selbst auf.
+# Verlassen wird sich darauf hier NICHT: der Aufwand ist ein rm, und der
+# Schaden im Fehlerfall ist ein Anmeldegeheimnis, das auf der Karte
+# liegenbleibt - fuer ein Konto, mit dem sich Maeher und Bewaesserung
+# schalten lassen.
+
+ARGV3=$3   # Installationsordner des Plugins
+ARGV5=$5   # Wurzelverzeichnis des LoxBerry
+
+BASE="${ARGV5:-${LBHOMEDIR:-/opt/loxberry}}"
+PDIR="${ARGV3:-gardenasmartsystem}"
+
+for verzeichnis in "$BASE/config/plugins/$PDIR" "$BASE/data/plugins/$PDIR" \
+                   "$BASE/log/plugins/$PDIR"; do
+    if [ -d "$verzeichnis" ]; then
+        rm -rf "$verzeichnis"
+        echo "<OK> $verzeichnis entfernt."
+    fi
+done
+
+echo "<INFO> Zugangsdaten und Zugriffstoken des Plugins sind geloescht."
+echo "<INFO> Die Anwendung im Husqvarna Developer Portal bleibt bestehen -"
+echo "<INFO> wer sie nicht mehr braucht, entfernt sie dort von Hand:"
+echo "<INFO>   https://developer.husqvarnagroup.cloud/"
+exit 0

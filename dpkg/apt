@@ -1,5 +1,12 @@
 # These packages will be installed by apt-get -y install PACKAGENAME
 # One line per package, use exact packagename as you would do for apt-get.
 #
+# php-curl ist nur eine Empfehlung, keine harte Voraussetzung: Das Plugin
+# faellt automatisch auf PHP-Streams zurueck, wenn die Erweiterung fehlt.
+# Schlaegt die Installation hier mit "404 Not Found" auf packages.sury.org
+# fehl, ist lediglich der Paketindex veraltet - "sudo apt-get update" und
+# danach "sudo apt-get install -y php-curl" loesen das.
+#
+# libstring-escape-perl wird seit v1.0.0 NICHT mehr gebraucht (die
+# Perl-Bestandteile der alten sg-1-API sind entfallen).
 php-curl
-libstring-escape-perl

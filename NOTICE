@@ -1,0 +1,58 @@
+LoxBerry-Plugin-GardenaSmartSystem
+==================================
+
+Dieses Werk steht unter der Apache License 2.0 (siehe LICENSE).
+
+Urspruenglicher Autor
+---------------------
+Michael Jani
+https://github.com/DiabloVmax1200/LoxBerry-Plugin-GardenaSmartSystem
+
+Die Kennung des Plugins - [AUTHOR] NAME und EMAIL sowie [PLUGIN] NAME und
+FOLDER in der plugin.cfg - ist bewusst unveraendert geblieben. LoxBerry
+erkennt ein Plugin genau daran. Wer sie aendert, bekommt bei bestehenden
+Installationen eine zweite, parallel laufende Fassung statt eines Updates -
+und beide wuerden dann dasselbe GARDENA-Konto abfragen und an denselben
+UDP-Port des Miniservers senden.
+
+
+Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
+-----------------------------------------------------------------------
+
+Das Original steht bei Fassung 0.0.7. Diese Fassung ist 1.1.0. Geaendert
+wurde im Wesentlichen:
+
+1.0.0  Umstellung auf die Husqvarna/GARDENA API v2 mit OAuth2. Die alte
+       Schnittstelle, gegen die das Original gebaut war, gibt es nicht mehr.
+       Neue Oberflaeche fuer LoxBerry 3 und 4, MQTT ueber das
+       LoxBerry-MQTT-Gateway, lauffaehig unter PHP 7.4 und 8.
+
+1.0.1  Die Installation setzt php-curl nicht mehr zwingend voraus; fehlt es,
+       wird ueber PHP-Streams ausgewichen. Die Oberflaeche sagt, welcher Weg
+       gerade benutzt wird.
+
+1.0.2  Zugriffstoken fuer ?action=command und ?action=refresh. Vorher konnte
+       jedes Geraet im Netz Maeher und Ventile schalten. Das Token wird beim
+       ersten Oeffnen der Oberflaeche erzeugt und dort angezeigt.
+
+1.1.0  gardenaMain.php und die drei Bibliotheken lagen im
+       Apache-Wurzelverzeichnis und waren ohne Anmeldung aufrufbar; sie
+       liegen jetzt in bin/. Auch ?action=list verlangt jetzt das Token - aus
+       der Geraeteliste liessen sich vorher die Service-Kennungen ablesen,
+       also genau das, was ein Schaltbefehl braucht. Die Update-Skripte
+       kommen ohne den festen Pfad /tmp/uploads/ aus. Die Konfiguration wird
+       beim Speichern zusammengefuehrt statt ueberschrieben. Sperre gegen
+       gleichzeitige Abrufe. Oberflaeche nach LoxBerry-Hausstandard mit
+       Reitern, durchgehend zweisprachig (Deutsch und Englisch).
+
+Entfallen sind dabei: templates/de/content.html und templates/en/content.html
+(ersetzt durch templates/lang/language_de.ini und language_en.ini),
+webfrontend/htmlauth/index.cgi (ersetzt durch index.php) sowie die aus einer
+macOS-Umgebung stammenden .DS_Store-Dateien.
+
+
+Marken
+------
+GARDENA und Husqvarna sind Marken ihrer jeweiligen Inhaber. Dieses Plugin
+steht in keiner Verbindung zu diesen Unternehmen und wird von ihnen weder
+herausgegeben noch unterstuetzt.

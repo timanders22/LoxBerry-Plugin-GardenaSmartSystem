@@ -1,45 +1,40 @@
 #!/bin/sh
-
-# Bash script which is executed by bash *BEFORE* installation is started (but
-# *AFTER* preupdate). Use with caution and remember, that all systems may be
-# different! Better to do this in your own Pluginscript if possible.
+# Gardena Smart System - preinstall (laeuft als Benutzer loxberry)
 #
-# Exit code must be 0 if executed successfull.
+# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER> [<TEMPPATH>]
+
+ARGV1=$1   # Name bzw. Pfad des temporaeren Ordners
+ARGV6=$6   # ab LoxBerry 2: der vollstaendige Pfad des entpackten Archivs
+
+# Den entpackten Ordner FINDEN, nicht raten.
 #
-# Will be executed as user "loxberry".
+# Bis 1.0.2 stand hier fest /tmp/uploads/$ARGV1. Diesen Pfad gibt es nur,
+# wenn das Plugin von Hand ueber die LoxBerry-Oberflaeche hochgeladen wird.
+# Beim Auto-Update und bei der Installation von der Kommandozeile liegt das
+# Archiv woanders - dann lief find ins Leere, dos2unix bekam keine Dateien,
+# und der Fehler fiel niemandem auf, weil find still bleibt.
 #
-# We add 5 arguments when executing the script:
-# command <TEMPFOLDER> <NAME> <FOLDER> <VERSION> <BASEFOLDER>
-#
-# For logging, print to STDOUT. You can use the following tags for showing
-# different colorized information during plugin installation:
-#
-# <OK> This was ok!"
-# <INFO> This is just for your information."
-# <WARNING> This is a warning!"
-# <ERROR> This is an error!"
-# <FAIL> This is a fail!"
+# Deshalb der Reihe nach: erst der ausdrueckliche Pfad aus dem sechsten
+# Argument, dann das erste Argument selbst (falls es schon ein Pfad ist),
+# zuletzt der alte Ort.
+PSRC=""
+for k in "$ARGV6" "$ARGV1" "/tmp/uploads/$ARGV1" "/tmp/$ARGV1"; do
+    if [ -n "$k" ] && [ -d "$k" ]; then PSRC="$k"; break; fi
+done
 
-# To use important variables from command line use the following code:
-ARGV0=$0 # Zero argument is shell command
-#echo "<INFO> Command is: $ARGV0"
+if [ -z "$PSRC" ]; then
+    echo "<WARNING> Entpackter Plugin-Ordner nicht gefunden - Zeilenenden werden nicht umgestellt."
+    echo "<INFO> Das ist nur dann ein Problem, wenn die Dateien unter Windows bearbeitet wurden."
+    exit 0
+fi
 
-ARGV1=$1 # First argument is temp folder during install
-#echo "<INFO> Temporary folder is: $ARGV1"
+echo "<INFO> Quellordner: $PSRC"
+if command -v dos2unix >/dev/null 2>&1; then
+    find "$PSRC" -type f \( -name '*.php' -o -name '*.sh' -o -name '*.cfg' -o -name '*.ini' \
+         -o -name 'cron.*' -o -name 'apt' \) -print0 | xargs -0 -r dos2unix -q
+    echo "<OK> Zeilenenden umgestellt."
+else
+    echo "<INFO> dos2unix ist nicht vorhanden - uebersprungen."
+fi
 
-ARGV2=$2 # Second argument is Plugin-Name for scipts etc.
-#echo "<INFO> (Short) Name is: $ARGV2"
-
-ARGV3=$3 # Third argument is Plugin installation folder
-#echo "<INFO> Installation folder is: $ARGV3"
-
-ARGV4=$4 # Forth argument is Plugin version
-#echo "<INFO> Installation folder is: $ARGV4"
-
-ARGV5=$5 # Fifth argument is Base folder of LoxBerry
-#echo "<INFO> Base folder is: $ARGV5"
-
-find /tmp/uploads/$ARGV1 -type f -print0 | xargs -0 dos2unix -q 
-
-# Exit with Status 0
 exit 0

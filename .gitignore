@@ -1,0 +1,14 @@
+# Laufzeitdaten und Zwischenstaende gehoeren nicht ins Paket.
+*.tmp
+*.pid
+
+# Vom Plugin zur Laufzeit angelegt - nie mitliefern, sie enthalten
+# Zugangsdaten bzw. Geraetedaten des Anwenders.
+config/gardena_token.json
+config/devices_cache.json
+
+# Betriebssystem- und Editorreste
+.DS_Store
+Thumbs.db
+*~
+*.swp

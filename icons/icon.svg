@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Smart Mower Symbol -->
+    <g transform="translate(166, 78)">
+      <path d="M 90 20 C 35 20, 10 48, 5 80 C 0 108, 20 135, 45 140 C 55 142, 125 142, 135 140 C 160 135, 180 108, 175 80 C 170 48, 145 20, 90 20 Z" />
+      <path d="M 90 35 C 50 35, 30 52, 28 75 C 26 95, 45 105, 90 105 C 135 105, 154 95, 152 75 C 150 52, 130 35, 90 35 Z" fill="#6dac20" />
+      <rect x="66" y="48" width="48" height="26" rx="5" fill="#ffffff" />
+      <circle cx="10" cy="95" r="12" fill="#ffffff"/>
+      <circle cx="170" cy="95" r="12" fill="#ffffff"/>
+    </g>
+
+    <!-- Smart Water Control Symbol -->
+    <g transform="translate(115, 220)">
+      <path d="M 35 5 C 35 5, 5 50, 5 70 C 5 88, 19 102, 35 102 C 65 102, 65 88, 65 70 C 65 50, 35 5, 35 5 Z" />
+      <circle cx="35" cy="72" r="12" fill="#6dac20" />
+      <path d="M -10 52 A 20 20 0 0 0 -10 88" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+      <path d="M -22 42 A 32 32 0 0 0 -22 98" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.75" />
+    </g>
+
+    <!-- Smart Sensor Symbol -->
+    <g transform="translate(327, 220)">
+      <path d="M 35 5 C 10 25, 5 60, 35 95 C 65 60, 60 25, 35 5 Z" />
+      <line x1="35" y1="20" x2="35" y2="82" stroke="#6dac20" stroke-width="5" />
+      <rect x="30" y="93" width="10" height="22" rx="2" fill="#ffffff" />
+      <path d="M 80 52 A 20 20 0 0 1 80 88" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" />
+      <path d="M 92 42 A 32 32 0 0 1 92 98" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.75" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 160 345 L 352 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="380" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="2">GARDENA SMART SYSTEM</text>
+  <text x="256" y="425" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="38" letter-spacing="3">LOXBERRY</text>
+</svg>
