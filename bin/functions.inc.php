@@ -27,6 +27,35 @@
  * Log-Manager), ersatzweise eine eigene Datei im Log-Verzeichnis des
  * Plugins. Verloren geht nichts mehr.
  */
+
+/* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
+ *
+ * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
+ * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
+ * Installation genauso wie eine an einem anderen Ort - und es trifft auch
+ * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
+ * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
+ * abfangen muss).
+ *
+ * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
+ * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
+ */
+if (!function_exists('lb_wurzel_ermitteln')) {
+    function lb_wurzel_ermitteln()
+    {
+        $d = __DIR__;
+        for ($i = 0; $i < 8; $i++) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+                return $d;
+            }
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
+            $d = $eltern;
+        }
+        return '';
+    }
+}
+
 function gardena_log($level, $msg)
 {
     $level = strtoupper((string) $level);
@@ -114,7 +143,7 @@ function gardena_mqtt_udpport()
     }
     if (!$port) {
         $home = isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '';
-        if ($home === '') { $home = getenv('LBHOMEDIR') ?: '/opt/loxberry'; }
+        if ($home === '') { $home = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln(); }
         $gen = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
         // is_array() vor dem verschachtelten Zugriff: waere der Wert eine
         // Zeichenkette mit Inhalt, verrechnete PHP den Schluessel zu
@@ -511,7 +540,7 @@ function gardena_t($schluessel)
             $home = getenv('LBHOMEDIR') ?: '';
         }
         if ($home === '' || !is_dir($home)) {
-            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
                 if (is_dir($k)) { $home = $k; break; }
             }
         }
