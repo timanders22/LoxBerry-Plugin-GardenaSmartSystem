@@ -212,7 +212,7 @@ $ghatcurl = gardena::hasCurl();
 $ghatsockets = function_exists('socket_create');
 $gpl = ge($lbpplugindir);
 
-LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', '');
+LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', 'help.html');
 ?>
 <style>
 .sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
