@@ -74,4 +74,24 @@ netz_zurueck() {
 }
 netz_zurueck "gardena.cfg" "ba8589cf2ef0c5d8ed0fc1135a0463178b477d00400053ac8a5c7f991dbc0b7e"
 
+
+# Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,
+# womit man vergleichen koennte, also ist das Kriterium "fehlt oder leer".
+# Eine vorhandene Datei wird nie ueberschrieben.
+netz_ohne_vorgabe() {
+    ziel="$NETZ_CFG/$1"
+    zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$1"
+    [ -f "$zweit" ] || return 0
+    if [ ! -s "$ziel" ]; then
+        if cp -p "$zweit" "$ziel" 2>/dev/null; then
+            chmod 0600 "$ziel" 2>/dev/null
+            echo "<OK> $1 aus der Zweitschrift wiederhergestellt."
+        else
+            echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
+        fi
+    fi
+}
+netz_ohne_vorgabe "gardena_token.json"
+netz_ohne_vorgabe "devices_cache.json"
+
 exit 0

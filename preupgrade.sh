@@ -63,4 +63,17 @@ if [ -s "$NETZ_CFG/gardena.cfg" ]; then
 fi
 echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
+
+# NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.
+# Das Archiv liefert sie nie, also standen sie bis jetzt auf keiner Liste;
+# geloescht werden sie vom Installer trotzdem, samt Token und Zugangsdaten.
+if [ -s "$NETZ_CFG/gardena_token.json" ]; then
+    cp -p "$NETZ_CFG/gardena_token.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena_token.json" 2>/dev/null \
+        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena_token.json" 2>/dev/null
+fi
+if [ -s "$NETZ_CFG/devices_cache.json" ]; then
+    cp -p "$NETZ_CFG/devices_cache.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.devices_cache.json" 2>/dev/null \
+        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.devices_cache.json" 2>/dev/null
+fi
+
 exit 0

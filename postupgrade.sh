@@ -43,9 +43,21 @@ if [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; th
     chmod 0600 "$BASE/config/plugins/$PFOLDER/gardena_token.json" 2>/dev/null
     echo "<OK> Konfiguration zurueckgestellt."
 else
+    # Kein blinder Alarm: der Installer loescht beim Update AUCH
+    # data/plugins/<ordner> und damit die Sicherung, die preupgrade.sh
+    # dorthin geschrieben hat - diese Kette kann hier gar nichts finden.
+    # Gerettet wird aus der Zweitschrift neben dem Ordner, und das tut
+    # postinstall.sh, das VOR postupgrade laeuft. Also erst nachsehen,
+    # wie es wirklich steht; eine Warnung bei heiler Konfiguration
+    # erschreckt ohne Grund und entwertet die echte.
+    NETZ_PRUEF="${5:-$LBHOMEDIR}/config/plugins/${3:-gardenasmartsystem}/gardena.cfg"
+    if [ -s "$NETZ_PRUEF" ]; then
+        echo "<OK> Die Einstellungen sind vorhanden (aus der Zweitschrift)."
+    else
     echo "<WARNING> Keine gesicherte Konfiguration gefunden."
     echo "<WARNING> Application Key, Secret und Zugriffstoken muessen in der"
     echo "<WARNING> Plugin-Oberflaeche neu eingetragen werden."
+    fi
 fi
 
 # Die frueher hier angehaengte Zeile LOCALTIME=0 ist ersatzlos entfallen.
