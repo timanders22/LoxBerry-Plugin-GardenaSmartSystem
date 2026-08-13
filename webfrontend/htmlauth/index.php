@@ -345,6 +345,7 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <div class="sm-small"><?= gt('EINST.UDP_FORMAT') ?></div>
 
 <h2><?= gt('EINST.H_MQTT') ?></h2>
+<?php if (!function_exists('gard_hs_autostart')) { function gard_hs_autostart() { $h = getenv('LBHOMEDIR') ?: '/opt/loxberry'; $g = $h . '/config/system/general.json'; if (!is_file($g)) { return null; } $j = json_decode((string) @file_get_contents($g), true); if (!is_array($j) || !isset($j['Mqtt'])) { return null; } return !empty($j['Mqtt']['Gatewayautostart']); } } if (gard_hs_autostart() === false) { ?><div class="sm-alert sm-warn"><b>MQTT:</b> <?php echo gt('EINST.W_AUTOSTART'); ?></div><?php } ?>
 <div class="sm-row">
     <div>
         <label><?= gt('EINST.MQTT_VERSAND') ?></label>
