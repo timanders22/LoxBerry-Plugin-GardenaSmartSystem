@@ -281,9 +281,39 @@ function gardena_token_ok($expected, $given)
  * Die gardena.cfg lesen. Rueckgabe: das Array des Abschnitts [GARDENA],
  * ergaenzt um die Vorgaben - nie null, nie false.
  */
+/**
+ * Eine INI-Datei lesen, die mit '#' kommentiert ist.
+ *
+ * WARUM DAS NOETIG IST
+ * Die gardena.cfg kommentiert mit '#'. PHPs INI-Zerleger kennt als
+ * Kommentarzeichen aber nur ';' - '#' wurde mit PHP 7 entfernt. Er versucht
+ * die Kommentarzeilen als Zuweisungen zu lesen und bricht an der ersten mit
+ * einem Sonderzeichen ab. parse_ini_file() gibt dann false zurueck.
+ *
+ * Gemessen am 15.08.2026 gegen die mitgelieferte config/gardena.cfg, PHP
+ * 7.4.33 und 8.4.24 - beide false. Die Folge war schwerwiegend: der Dienst
+ * bricht in gardenaMain.php mit LOGCRIT und exit(1) ab, und die Oberflaeche
+ * las nur noch die Vorgaben (ENABLED=0, keine Zugangsdaten). Betroffen ist
+ * jede Installation, deren gardena.cfg diese Kommentarzeilen enthaelt - also
+ * jede Neuinstallation, denn gardena_cfg_write() arbeitet zeilenweise und
+ * laesst vorhandene Kommentare stehen.
+ *
+ * Entfernt werden nur Zeilen, deren erstes sichtbares Zeichen '#' ist. Ein
+ * '#' INNERHALB eines Wertes bleibt erhalten.
+ *
+ * Rueckgabe wie parse_ini_file(): das Array oder false.
+ */
+function gardena_ini_lesen($datei)
+{
+    $roh = @file_get_contents($datei);
+    if ($roh === false) { return false; }
+    return @parse_ini_string(preg_replace('/^[ \t]*#.*$/m', '', $roh),
+                             true, INI_SCANNER_RAW);
+}
+
 function gardena_cfg_read($cfgfile)
 {
-    $ini = @parse_ini_file($cfgfile, true, INI_SCANNER_RAW);
+    $ini = gardena_ini_lesen($cfgfile);
     $g = (is_array($ini) && isset($ini['GARDENA']) && is_array($ini['GARDENA']))
         ? $ini['GARDENA'] : array();
     // Eine Datei OHNE Abschnitt kann entstehen, wenn etwas schiefgegangen

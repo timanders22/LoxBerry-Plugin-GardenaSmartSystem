@@ -6,6 +6,33 @@ sendet sie an den Loxone Miniserver – per **UDP** und/oder **MQTT**
 (LoxBerry MQTT Gateway, retained). Kommandos (Mähen starten, Parken,
 Bewässerung starten/stoppen …) können über einen Virtuellen Ausgang gesendet werden.
 
+## Neu in 1.1.8
+
+**Das Plugin konnte seine eigene Konfiguration nicht lesen.** Die
+`gardena.cfg` kommentiert mit `#`. PHPs INI-Zerleger kennt als
+Kommentarzeichen seit PHP 7 aber nur noch `;` — er liest die Kommentarzeilen
+als Zuweisungen und bricht an der ersten mit einem Sonderzeichen ab.
+`parse_ini_file()` gab daraufhin `false` zurück, gemessen gegen die
+mitgelieferte `config/gardena.cfg` unter PHP 7.4.33 und 8.4.24, beide gleich.
+
+Die Folge war an zwei Stellen unterschiedlich schwer:
+
+* **Der Dienst startete nicht.** `gardenaMain.php` bricht bei nicht lesbarer
+  Konfiguration mit `LOGCRIT` und `exit(1)` ab — genau das trat ein.
+* **Die Oberfläche las nur die Vorgaben.** `gardena_cfg_read()` lieferte
+  `ENABLED=0`, leere Zugangsdaten und kein Token, egal was eingetragen war.
+
+Betroffen ist jede Installation, deren `gardena.cfg` diese Kommentarzeilen
+enthält — also jede **Neuinstallation**. Bei einer aktualisierten Anlage
+hängt es davon ab, ob die Zeilen jemals hineingekommen sind:
+`gardena_cfg_write()` arbeitet zeilenweise und lässt vorhandene Kommentare
+stehen, fügt aber keine hinzu.
+
+Behoben mit einer gemeinsamen Funktion `gardena_ini_lesen()`, die beide
+Stellen benutzen — damit sie nicht wieder auseinanderlaufen. Sie entfernt vor
+dem Zerlegen nur ganze Zeilen, deren erstes sichtbares Zeichen `#` ist; ein
+`#` **innerhalb** eines Wertes bleibt erhalten.
+
 ## Version 1.0.0 – was ist neu
 
 - **Neue API**: Husqvarna/GARDENA **smart system API v2** mit OAuth2

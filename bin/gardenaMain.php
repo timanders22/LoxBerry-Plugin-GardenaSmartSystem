@@ -36,7 +36,11 @@ if ($sperre === false) {
     exit(0);
 }
 
-$gcfg = @parse_ini_file($lbpconfigdir . '/gardena.cfg', true, INI_SCANNER_RAW);
+// gardena_ini_lesen() statt parse_ini_file(): die gardena.cfg kommentiert mit
+// '#', das kennt PHPs INI-Zerleger nicht mehr - er gaebe false zurueck, und
+// dieser Dienst braeche gleich darunter mit exit(1) ab. Begruendung samt
+// Messung steht bei der Funktion in functions.inc.php.
+$gcfg = gardena_ini_lesen($lbpconfigdir . '/gardena.cfg');
 if (!is_array($gcfg) || empty($gcfg['GARDENA'])) {
     LOGCRIT('Konfigurationsdatei nicht lesbar: ' . $lbpconfigdir . '/gardena.cfg');
     LOGEND('Abbruch'); exit(1);
