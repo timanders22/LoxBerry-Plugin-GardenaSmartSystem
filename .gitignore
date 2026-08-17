@@ -6,6 +6,11 @@
 # Zugangsdaten bzw. Geraetedaten des Anwenders.
 config/gardena_token.json
 config/devices_cache.json
+# Seit 1.2.0: Zustand des letzten Laufs (ok, letzter Erfolg, Zahl der
+# zugestellten Werte, letzte Fehlermeldung). Laufzeitdatum, kein Geheimnis -
+# gehoert trotzdem nicht ins Archiv, sonst kaeme jede Neuinstallation mit dem
+# Zustand eines fremden Gartens.
+config/gardena_status.json
 
 # Betriebssystem- und Editorreste
 .DS_Store
