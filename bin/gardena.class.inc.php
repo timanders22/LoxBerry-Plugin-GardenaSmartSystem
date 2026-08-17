@@ -27,6 +27,16 @@ class gardena
     private $logfunc;
     public  $last_error = '';
 
+    /* Husqvarna begrenzt die Zahl der Abrufe. Wird die Grenze ueberschritten,
+     * antwortet die Gegenstelle mit HTTP 429 - und wer dann einfach im
+     * Fuenf-Minuten-Takt weiter anklopft, verlaengert die Sperre, statt sie
+     * abzuwarten. Bis 1.2.0 wurde 429 wie jeder andere Fehler behandelt:
+     * protokollieren, null zurueckgeben, fuenf Minuten spaeter wieder
+     * anklopfen. Diese beiden Felder machen den Fall unterscheidbar. */
+    public  $last_http = 0;
+    /** Sekunden aus der Kopfzeile Retry-After; 0, wenn sie fehlt. */
+    public  $retry_after = 0;
+
     public function __construct($client_id, $client_secret, $tokendir = '/tmp')
     {
         $this->client_id = trim((string) $client_id);
@@ -51,13 +61,41 @@ class gardena
     }
 
     /**
+     * Retry-After aus den Antwortkopfzeilen lesen.
+     *
+     * Der Wert kann eine Sekundenzahl oder ein Zeitpunkt sein (RFC 7231).
+     * Beide Formen werden gelesen; was sich nicht deuten laesst, ergibt 0 -
+     * dann entscheidet der Aufrufer selbst ueber die Wartezeit. Geraten wird
+     * nichts.
+     */
+    private function retryAfterLesen($zeilen)
+    {
+        foreach ((array) $zeilen as $z) {
+            if (!preg_match('/^\s*Retry-After\s*:\s*(.+?)\s*$/i', (string) $z, $m)) { continue; }
+            $w = $m[1];
+            if (preg_match('/^[0-9]+$/', $w)) { return (int) $w; }
+            $t = strtotime($w);
+            if ($t !== false && $t > time()) { return $t - time(); }
+            return 0;
+        }
+        return 0;
+    }
+
+    /**
      * Eine HTTP-Anfrage ausfuehren - bevorzugt per cURL, sonst per PHP-Stream.
      * Rueckgabe: array(Inhalt|false, HTTP-Code, Fehlertext)
      */
     private function http($method, $url, $headers = array(), $body = null, $timeout = 30)
     {
+        $this->retry_after = 0;
         if (self::hasCurl()) {
+            $kopf = array();
             $ch = curl_init($url);
+            // Die Kopfzeilen mitlesen, ohne sie in den Rumpf zu mischen:
+            // CURLOPT_HEADER wuerde sie vor den Inhalt setzen, und alles
+            // dahinter muesste wieder auseinandergeschnitten werden.
+            curl_setopt($ch, CURLOPT_HEADERFUNCTION,
+                function ($ch, $zeile) use (&$kopf) { $kopf[] = $zeile; return strlen($zeile); });
             curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
@@ -72,6 +110,8 @@ class gardena
             $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err = ($result === false) ? ('cURL-Fehler: ' . curl_error($ch)) : '';
             curl_close($ch);
+            $this->last_http = $http;
+            if ($http === 429) { $this->retry_after = $this->retryAfterLesen($kopf); }
             return array($result, $http, $err);
         }
         // Ersatzweg ohne php-curl
@@ -105,6 +145,10 @@ class gardena
             }
         }
         $err = ($result === false) ? 'HTTP-Fehler (PHP-Streams): Verbindung fehlgeschlagen' : '';
+        $this->last_http = $http;
+        if ($http === 429 && isset($http_response_header) && is_array($http_response_header)) {
+            $this->retry_after = $this->retryAfterLesen($http_response_header);
+        }
         return array($result, $http, $err);
     }
 
@@ -204,6 +248,14 @@ class gardena
             $this->last_error = 'GET ' . $path . ': HTTP ' . $http . ' - ' . substr((string) $result, 0, 300);
             if ($http === 403) {
                 $this->last_error .= ' (Hinweis: Ist im Developer Portal die GARDENA smart system API mit der Application verbunden?)';
+            }
+            if ($http === 429) {
+                // Das Abrufkontingent ist erschoepft. Wer jetzt im gleichen
+                // Takt weiter anklopft, verlaengert die Sperre.
+                $this->last_error = 'GET ' . $path . ': HTTP 429 - das Abrufkontingent der '
+                    . 'Husqvarna-API ist erschoepft'
+                    . ($this->retry_after > 0 ? ' (Retry-After: ' . $this->retry_after . ' s)' : '')
+                    . '.';
             }
             $this->log('ERR', $this->last_error);
             return null;

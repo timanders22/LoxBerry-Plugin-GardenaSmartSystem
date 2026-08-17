@@ -88,11 +88,40 @@ function gardena_log($level, $msg)
  * UDP und MQTT
  * ================================================================== */
 
+/**
+ * Kann dieses PHP ueberhaupt UDP?
+ *
+ * Bis 1.1.9 stand in sendUDP() nur ein @ vor socket_create(). Das
+ * unterdrueckt Warnungen - eine "Call to undefined function" ist aber ein
+ * toedlicher Fehler und laesst sich nicht unterdruecken. Fehlte die
+ * Erweiterung php-sockets, starb der Cron-Lauf beim ERSTEN Wert: der
+ * Geraete-Zwischenspeicher wurde nie geschrieben, die Oberflaeche zeigte
+ * dauerhaft "Noch keine Daten", die Vorlagenknoepfe blieben ausgeblendet,
+ * ?action=command fand nie eine Dienstkennung, und das Protokoll brach ohne
+ * LOGEND mitten ab. Die Oberflaeche warnte korrekt vor der fehlenden
+ * Erweiterung (function_exists), der Dienst nicht.
+ *
+ * dpkg/apt installiert php-sockets nicht - postinstall.sh rechnet ausdruecklich
+ * mit ihrem Fehlen. Der Fall ist also vorgesehen und muss getragen werden.
+ *
+ * Betrifft BEIDE Wege: das MQTT-Gateway wird ebenfalls ueber UDP beschickt.
+ */
+function gardena_udp_moeglich()
+{
+    return function_exists('socket_create') && function_exists('socket_sendto')
+        && function_exists('socket_close');
+}
+
 function sendUDP($data, $destIP, $destPort)
 {
     $destPort = (int) $destPort;
     if ($destIP === '' || $destPort < 1 || $destPort > 65535) {
         gardena_log('ERR', 'UDP: unbrauchbares Ziel (' . $destIP . ':' . $destPort . ')');
+        return false;
+    }
+    if (!gardena_udp_moeglich()) {
+        gardena_log('ERR', 'Die PHP-Erweiterung sockets fehlt - es kann WEDER ueber UDP '
+            . 'NOCH ueber MQTT gesendet werden. Nachinstallieren: apt-get install -y php-sockets');
         return false;
     }
     if (!($socket = @socket_create(AF_INET, SOCK_DGRAM, SOL_UDP))) {
@@ -101,7 +130,14 @@ function sendUDP($data, $destIP, $destPort)
             . $errorcode . '] ' . socket_strerror($errorcode));
         return false;
     }
-    $dataEnc = mb_convert_encoding((string) $data, 'UTF-8', 'UTF-8');
+    // mbstring steht nicht in dpkg/apt und ist damit nicht zugesichert. Der
+    // Aufruf soll ungueltiges UTF-8 aus der fremden Wolke wegraeumen; fehlt
+    // die Erweiterung, geht die Zeichenkette unveraendert hinaus. Das ist
+    // schlechter als die Bereinigung, aber unendlich viel besser als ein
+    // toedlicher Fehler mitten im Sendelauf.
+    $dataEnc = function_exists('mb_convert_encoding')
+        ? mb_convert_encoding((string) $data, 'UTF-8', 'UTF-8')
+        : (string) $data;
     $numBytesSent = @socket_sendto($socket, $dataEnc, strlen($dataEnc), 0, $destIP, $destPort);
     if ($numBytesSent === false) {
         $errorcode = socket_last_error($socket);
@@ -215,6 +251,245 @@ function mqttPublish($topic, $value, $retain = true)
 }
 
 /* ==================================================================
+ * Thema und Eingangsname - EINE Quelle fuer Sender und Vorlage
+ *
+ * Bis 1.1.9 wurden beide getrennt gebaut, und sie liefen auseinander:
+ *
+ *   gesendet  (mqttPublish -> gardena_mqtt_thema)
+ *       jedes Zeichen ausserhalb A-Za-z0-9_/- wird zu '_'
+ *   Vorlage   (webfrontend/htmlauth/index.php)
+ *       nur str_replace('/', '_', ...) auf den ROHEN Geraetenamen
+ *
+ * Gemessen unter PHP 7.4.33 und 8.4.24:
+ *
+ *   Geraet "Maehroboter"           -> Thema  gardena/Maehroboter/...
+ *                                     Vorlage gardena_Maehroboter_...   gleich
+ *   Geraet "Maehroboter Vorgarten" -> Thema  gardena/Maehroboter_Vorgarten/...
+ *                                     Vorlage gardena_Maehroboter Vorgarten_...
+ *   Geraet mit Umlaut              -> im Thema ZWEI Unterstriche (das Muster
+ *                                     arbeitet byteweise), in der Vorlage der
+ *                                     Umlaut selbst
+ *
+ * Nur ein Name aus reinen ASCII-Buchstaben, Ziffern und Bindestrich traf.
+ * Bei jedem anderen legte die Vorlage Eingaenge an, die NIE einen Wert
+ * bekommen und auf DefVal="0" stehenbleiben - in Loxone sieht das aus wie
+ * "Akku 0 %". Das Gateway legte daneben einen zweiten Satz unter den
+ * wirklichen Namen an. Der Anwender sucht den Fehler dann in Loxone Config.
+ *
+ * Seit 1.2.0 bauen beide Seiten ueber diese zwei Funktionen. Der Aufruf von
+ * gardena_mqtt_thema() in mqttPublish() bleibt stehen und schadet nicht: das
+ * Ergebnis besteht nur noch aus erlaubten Zeichen, ein zweiter Durchlauf
+ * aendert daran nichts.
+ *
+ * Die Umschreibung SELBST wurde bewusst NICHT angefasst. Ein Umlaut ergibt
+ * weiterhin zwei Unterstriche. Das ist unschoen, aber jede Aenderung daran
+ * benennt auf einer bestehenden Anlage saemtliche Themen um - die vorhandenen
+ * virtuellen Eingaenge in Loxone und die retained-Werte im Broker haengen
+ * daran. Das waere ein bewusster Schnitt mit Umstiegshinweis, keine
+ * Fehlerbehebung.
+ * ================================================================== */
+
+/** Das MQTT-Thema eines einzelnen Wertes. */
+function gardena_wert_thema($basis, $geraet, $dienst, $attribut)
+{
+    return gardena_mqtt_thema($basis . '/' . $geraet . '/' . $dienst . '/' . $attribut);
+}
+
+/**
+ * Der Name, unter dem das MQTT-Gateway den virtuellen Eingang anlegt:
+ * das Thema mit '/' als '_'. Genau dieser Name gehoert in die Loxone-Vorlage.
+ */
+function gardena_wert_eingang($basis, $geraet, $dienst, $attribut)
+{
+    return str_replace('/', '_', gardena_wert_thema($basis, $geraet, $dienst, $attribut));
+}
+
+/**
+ * Wird der Name eines Geraetes fuer das Thema umgeschrieben?
+ * Fuer die Anzeige in der Oberflaeche - der Anwender soll sehen, unter
+ * welchem Namen sein Geraet beim Miniserver ankommt.
+ */
+function gardena_name_umgeschrieben($geraet)
+{
+    return gardena_mqtt_thema($geraet) !== (string) $geraet;
+}
+
+/* ==================================================================
+ * Senden und zaehlen
+ * ================================================================== */
+
+/**
+ * Fehlt der Wert - im Unterschied zu "ist 0"?
+ *
+ * Die Antwort der Wolke enthaelt Attribute, deren 'value' null ist. Bis
+ * 1.2.0 gingen die als leere Zeichenkette hinaus:
+ *
+ *     MOWER.Rasen.batteryLevel:
+ *
+ * Die Zeile endet auf den Doppelpunkt, und ein virtueller Eingang mit
+ * Befehlserkennung liest daraus 0. In Loxone sieht ein fehlender Wert damit
+ * aus wie ein gemessener Ladestand von 0 % - die stille Falschaussage, die
+ * unter allen Fehlerarten am teuersten ist. Ueber MQTT ging zusaetzlich eine
+ * leere retained-Nutzlast hinaus.
+ *
+ * Ein Wert, den es nicht gibt, wird deshalb NICHT gesendet. Der virtuelle
+ * Eingang behaelt dann seinen letzten Wert - dass er alt ist, beantwortet
+ * das Lebenszeichen (STATUS.Plugin.zeitstempel), nicht eine erfundene Null.
+ * Gezaehlt werden die uebersprungenen Werte trotzdem: sie stehen im Zustand
+ * und in der Selbstpruefung, damit ein dauerhaft leeres Attribut auffaellt,
+ * statt sich zu verstecken.
+ *
+ * '' und 0 sind KEINE fehlenden Werte - die hat die Wolke so geschickt.
+ */
+function gardena_wert_fehlt($wert)
+{
+    if ($wert === null) { return true; }
+    // Ein Feld, das sich nicht in JSON fassen laesst (ungueltiges UTF-8 aus
+    // einer fremden Wolke ist keine ferne Moeglichkeit), ergaebe ebenfalls
+    // eine leere Nutzlast.
+    if (is_array($wert) && json_encode($wert) === false) { return true; }
+    return false;
+}
+
+/** Einen Wert der fremden Wolke in etwas Sendbares verwandeln. */
+function gardena_wert_flach($wert)
+{
+    if (is_bool($wert)) { return $wert ? 1 : 0; }
+    if (is_array($wert)) {
+        $js = json_encode($wert);
+        return ($js === false) ? '' : $js;
+    }
+    return $wert;
+}
+
+/**
+ * Einen Wert auf beiden Wegen hinausgeben - und den Erfolg ZAEHLEN.
+ *
+ * Bis 1.1.9 wurden die Rueckgaben von sendUDP() und mqttPublish() verworfen
+ * und ein Zaehler unbedingt hochgezaehlt; der Lauf endete danach mit
+ * LOGOK('<n> Werte versendet.'). War das MQTT-Gateway im LoxBerry nicht
+ * eingerichtet, stieg mqttPublish() sofort aus - und das Protokoll meldete
+ * trotzdem Erfolg. Eine Meldung, die den Anwender beruhigt, waehrend nichts
+ * ankommt, ist schlimmer als gar keine.
+ *
+ * Rueckgabe: array(versucht, gescheitert)
+ */
+function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
+                             $udp_ziel, $udp_port, $mqtt_ein)
+{
+    $wert = gardena_wert_flach($wert);
+    $versucht = 0;
+    $fehl = 0;
+    if ((string) $udp_ziel !== '') {
+        $versucht++;
+        // Umbrueche raus: Loxone wertet den UDP-Eingang zeilenweise aus. Der
+        // Geraetename kommt aus der Gardena-App, der Wert aus einer fremden
+        // Wolke - beides ist ungeprueft.
+        $zeile = gardena_mqtt_nutzlast($dienst . '.' . $geraet . '.' . $attribut . ':' . $wert);
+        gardena_log('DEB', 'UDP: ' . $zeile);
+        if (!sendUDP($zeile, $udp_ziel, $udp_port)) { $fehl++; }
+    }
+    if ($mqtt_ein) {
+        $versucht++;
+        if (!mqttPublish(gardena_wert_thema($basis, $geraet, $dienst, $attribut), $wert, true)) {
+            $fehl++;
+        }
+    }
+    return array($versucht, $fehl);
+}
+
+/* ==================================================================
+ * Lebenszeichen und Zustand
+ *
+ * Bis 1.1.9 veroeffentlichte das Plugin ausschliesslich Geraetewerte.
+ * Scheiterte die Anmeldung oder antwortete die Wolke nicht, endete der Lauf
+ * mit exit(1) und schickte GAR NICHTS. Die virtuellen Eingaenge behielten
+ * ihren letzten Wert, in der App sah alles normal aus - der Maeher konnte
+ * tagelang stehen, ohne dass es jemandem auffiel.
+ *
+ * Seit 1.2.0 geht am Ende JEDES Laufs ein Lebenszeichen hinaus, auch nach
+ * einem Abbruch. Vier Werte, auf demselben Weg wie die Geraetewerte:
+ *
+ *   UDP   STATUS.Plugin.ok:1
+ *   MQTT  <Basis>/Plugin/STATUS/ok
+ *
+ *   ok           1 = der Lauf ist vollstaendig durchgelaufen und alle Werte
+ *                    sind zugestellt; 0 = Abbruch oder verlorene Werte
+ *   zeitstempel  Loxone-Zeit des letzten ERFOLGREICHEN Laufs (Sekunden seit
+ *                dem 01.01.2009; 0 = noch nie erfolgreich)
+ *   werte        Zahl der zugestellten Werte des letzten Laufs
+ *   fehler       Klartext der letzten Fehlermeldung, sonst leer
+ *
+ * In Loxone genuegt damit ein Vergleich auf 'ok' und das Alter des
+ * Zeitstempels, um Stille von Normalbetrieb zu unterscheiden. Die Schwelle
+ * gehoert deutlich ueber den Abholtakt gelegt, damit ein einzelner
+ * verpasster Durchlauf keine Meldung ausloest.
+ * ================================================================== */
+
+/** Unix-Zeit in Loxone-Zeit (Sekunden seit 01.01.2009). */
+function gardena_loxzeit($unix)
+{
+    $unix = (int) $unix;
+    return ($unix > 1230768000) ? ($unix - 1230768000) : 0;
+}
+
+function gardena_status_datei($cfgdir)
+{
+    return rtrim((string) $cfgdir, '/') . '/gardena_status.json';
+}
+
+function gardena_status_lesen($cfgdir)
+{
+    $d = json_decode((string) @file_get_contents(gardena_status_datei($cfgdir)), true);
+    if (!is_array($d)) { $d = array(); }
+    $d += array('ok' => 0, 'letzter_erfolg' => 0, 'letzter_lauf' => 0,
+                'werte' => 0, 'verloren' => 0, 'ohne_inhalt' => 0, 'fehler' => '',
+                // ab 1.2.0
+                'signatur' => '', 'letzte_volle_meldung' => 0, 'sperre_bis' => 0,
+                'themen' => array(), 'locations' => array(), 'locations_stand' => 0);
+    return $d;
+}
+
+/**
+ * Den Zustand fortschreiben. $neu ersetzt nur die uebergebenen Schluessel -
+ * 'letzter_erfolg' ueberlebt damit einen gescheiterten Lauf.
+ */
+function gardena_status_schreiben($cfgdir, $neu)
+{
+    $d = gardena_status_lesen($cfgdir);
+    foreach ($neu as $k => $v) { $d[$k] = $v; }
+    return gardena_json_write(gardena_status_datei($cfgdir), $d, 0640);
+}
+
+/**
+ * Das Lebenszeichen hinausgeben.
+ * Rueckgabe: array(versucht, gescheitert) - wie gardena_wert_senden().
+ */
+function gardena_lebenszeichen($basis, $status, $udp_ziel, $udp_port, $mqtt_ein)
+{
+    $werte = array(
+        'ok' => !empty($status['ok']) ? 1 : 0,
+        'zeitstempel' => gardena_loxzeit(isset($status['letzter_erfolg']) ? $status['letzter_erfolg'] : 0),
+        'werte' => isset($status['werte']) ? (int) $status['werte'] : 0,
+        // Kein Fehler ergibt '-', nicht die leere Zeichenkette: eine UDP-Zeile,
+        // die auf den Doppelpunkt endet, liest ein virtueller Eingang mit
+        // Befehlserkennung als 0 - und 0 ist hier schon der Wert von 'ok'.
+        // Ein sichtbares Zeichen laesst sich von beidem unterscheiden.
+        'fehler' => (isset($status['fehler']) && (string) $status['fehler'] !== '')
+            ? (string) $status['fehler'] : '-',
+    );
+    $versucht = 0;
+    $fehl = 0;
+    foreach ($werte as $name => $wert) {
+        list($v, $f) = gardena_wert_senden($basis, 'Plugin', 'STATUS', $name, $wert,
+                                           $udp_ziel, $udp_port, $mqtt_ein);
+        $versucht += $v;
+        $fehl += $f;
+    }
+    return array($versucht, $fehl);
+}
+
+/* ==================================================================
  * Zugriffstoken
  * ================================================================== */
 
@@ -311,6 +586,118 @@ function gardena_ini_lesen($datei)
                              true, INI_SCANNER_RAW);
 }
 
+/**
+ * Die Vorgabewerte - an genau EINER Stelle.
+ *
+ * Bis 1.1.9 standen sie zweimal da, und die beiden Stellen waren sich uneinig:
+ * gardena_cfg_read() ergaenzte MQTT_ENABLED mit '1', der Dienst las die Datei
+ * ohne Vorgaben und pruefte
+ *
+ *     isset($g['MQTT_ENABLED']) && $g['MQTT_ENABLED'] == '1'
+ *
+ * Ein fehlender Schluessel bedeutete dort also AUS, waehrend die Oberflaeche
+ * "Aktiv (empfohlen)" ausgewaehlt anzeigte; bei UDP war es andersherum gebaut
+ * (fehlend = AN). Betroffen war jede Anlage, deren gardena.cfg aus einer
+ * Fassung ohne diesen Schluessel stammt: MQTT sendete nichts, die Oberflaeche
+ * sagte, es sei eingeschaltet, und im Protokoll stand kein Wort davon.
+ *
+ * Seit 1.2.0 liest auch gardenaMain.php ueber gardena_cfg_read(). Damit gibt
+ * es nur noch diese eine Liste.
+ */
+function gardena_vorgaben()
+{
+    return array(
+        'ENABLED' => '0', 'CLIENT_ID' => '', 'CLIENT_SECRET' => '', 'TOKEN' => '',
+        'MINISERVER' => '1', 'UDP_ENABLED' => '1', 'UDPPORT' => '5005',
+        'MQTT_ENABLED' => '1', 'MQTT_TOPIC' => 'gardena',
+        // Ab 1.2.0. Alle drei so vorbelegt, dass sich fuer eine bestehende
+        // Anlage NICHTS aendert: derselbe Takt wie bisher, kein Geraet
+        // ausgenommen, der Wartungszaehler aus.
+        'INTERVALL' => '5', 'AUSGENOMMEN' => '', 'MESSER_INTERVALL' => '0',
+        'MESSER_BASIS' => '0',
+    );
+}
+
+/**
+ * Der Abrufabstand in Minuten.
+ *
+ * Der Cron laeuft alle fuenf Minuten; ein kuerzerer Abstand ist damit nicht
+ * erreichbar, und ein laengerer wird eingehalten, indem Laeufe uebersprungen
+ * werden. Warum das ueberhaupt einstellbar ist: Husqvarna begrenzt die Zahl
+ * der Abrufe, und ein Durchlauf verbraucht zwei davon. Wie hoch die Grenze
+ * wirklich liegt, ist in diesem Plugin NICHT gemessen - die Anleitung sagt
+ * das inzwischen auch so. Wer sie kennt oder in HTTP 429 laeuft, kann den
+ * Takt hier strecken.
+ */
+function gardena_intervall($cfg)
+{
+    $m = isset($cfg['INTERVALL']) ? (int) $cfg['INTERVALL'] : 5;
+    if ($m < 5) { $m = 5; }
+    if ($m > 1440) { $m = 1440; }
+    return $m;
+}
+
+/** Die Namen der Geraete, die nicht gesendet werden sollen. */
+function gardena_ausgenommen($cfg)
+{
+    $roh = isset($cfg['AUSGENOMMEN']) ? (string) $cfg['AUSGENOMMEN'] : '';
+    if (trim($roh) === '') { return array(); }
+    $aus = array();
+    foreach (explode(',', $roh) as $n) {
+        $n = trim($n);
+        if ($n !== '') { $aus[] = $n; }
+    }
+    return $aus;
+}
+
+/**
+ * Der hoechste Betriebsstundenstand aus dem Geraete-Abbild.
+ *
+ * Grundlage des Wartungszaehlers. Der Dienst MOWER meldet 'operatingHours';
+ * gibt es mehrere Maeher, wird der hoechste Stand genommen - der
+ * Wartungszaehler ist eine Anzeige, keine Buchhaltung je Geraet.
+ *
+ * Rueckgabe: die Stundenzahl oder null, wenn im Abbild keine steht. NICHT 0:
+ * "keine Angabe" und "null Stunden" sind zweierlei, und wer daraus 0 macht,
+ * quittiert einen Wechsel auf einen erfundenen Stand.
+ */
+function gardena_betriebsstunden($cache)
+{
+    if (!is_array($cache) || empty($cache['locations']) || !is_array($cache['locations'])) {
+        return null;
+    }
+    $hoechster = null;
+    foreach ($cache['locations'] as $loc) {
+        if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+        foreach ($loc['devices'] as $dev) {
+            if (!is_array($dev) || empty($dev['services']) || !is_array($dev['services'])) { continue; }
+            foreach ($dev['services'] as $attrs) {
+                if (!is_array($attrs) || !isset($attrs['operatingHours']['value'])) { continue; }
+                $w = $attrs['operatingHours']['value'];
+                if (!is_numeric($w)) { continue; }
+                if ($hoechster === null || $w > $hoechster) { $hoechster = 0 + $w; }
+            }
+        }
+    }
+    return $hoechster;
+}
+
+/**
+ * Die Signatur eines Datenbestandes.
+ *
+ * Aus ihr entscheidet der Dienst, ob sich seit dem letzten Lauf ueberhaupt
+ * etwas geaendert hat. Was gemeldet werden soll, gehoert IN die Signatur -
+ * ein Wert, der in der Meldung steht, aber nicht in der Signatur, wird nie
+ * ausgeloest und liegt bis zum naechsten Zustandswechsel.
+ */
+function gardena_signatur($paare)
+{
+    ksort($paare);
+    $s = '';
+    foreach ($paare as $k => $v) { $s .= $k . '=' . $v . "\n"; }
+    return sha1($s);
+}
+
 function gardena_cfg_read($cfgfile)
 {
     $ini = gardena_ini_lesen($cfgfile);
@@ -325,12 +712,30 @@ function gardena_cfg_read($cfgfile)
             if (!is_array($v)) { $g[$k] = $v; }
         }
     }
-    $g += array(
-        'ENABLED' => '0', 'CLIENT_ID' => '', 'CLIENT_SECRET' => '', 'TOKEN' => '',
-        'MINISERVER' => '1', 'UDP_ENABLED' => '1', 'UDPPORT' => '5005',
-        'MQTT_ENABLED' => '1', 'MQTT_TOPIC' => 'gardena',
-    );
+    $g += gardena_vorgaben();
     return $g;
+}
+
+/**
+ * Steht in der Datei ein eigener Wert, oder greift die Vorgabe?
+ *
+ * Die Selbstpruefung zeigt das an: ein Schluessel, der nur aus der Vorgabe
+ * kommt, verhaelt sich zwar seit 1.2.0 ueberall gleich - der Anwender soll
+ * aber sehen koennen, woher der Wert stammt, den sein Miniserver zu spueren
+ * bekommt.
+ *
+ * Rueckgabe: Feld der Schluessel, die in der Datei WIRKLICH stehen.
+ */
+function gardena_cfg_eigene_schluessel($cfgfile)
+{
+    $ini = gardena_ini_lesen($cfgfile);
+    if (!is_array($ini)) { return array(); }
+    $g = (isset($ini['GARDENA']) && is_array($ini['GARDENA'])) ? $ini['GARDENA'] : $ini;
+    $da = array();
+    foreach ($g as $k => $v) {
+        if (!is_array($v)) { $da[] = (string) $k; }
+    }
+    return $da;
 }
 
 /**

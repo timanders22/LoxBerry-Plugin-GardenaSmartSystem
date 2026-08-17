@@ -35,7 +35,79 @@ header('Content-Type: text/plain; charset=utf-8');
 
 $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
 
-$action = isset($_GET['action']) ? $_GET['action'] : '';
+/*
+ * Die Parameter EINMAL einsammeln - und abweisen, was nicht ins Muster passt.
+ *
+ * PHP macht aus ?device[]=x ein Feld. trim() auf ein Feld ist unter PHP 8 ein
+ * TypeError: die Anfrage endete mit HTTP 500 und LEEREM Rumpf, der Miniserver
+ * bekam also statt "FEHLER: ..." gar nichts zu lesen. Unter 7.4 lief dieselbe
+ * Anfrage mit einer Warnung weiter und schaltete womoeglich etwas. Beides ist
+ * falsch: was nicht ins Muster passt, wird gemeldet, nicht zurechtgebogen.
+ *
+ * Die Laengengrenze ist grosszuegig - Geraetenamen vergibt der Anwender in
+ * der Gardena-App frei, mit Leerzeichen und Umlauten. Ein enges Muster wuerde
+ * gueltige Namen abweisen; eine Grenze weist nur Unsinn ab.
+ */
+$gpar = array();
+foreach (array('action', 'token', 'device', 'type', 'cmd', 'seconds') as $gname) {
+    if (!isset($_GET[$gname])) { $gpar[$gname] = ''; continue; }
+    if (!is_string($_GET[$gname])) {
+        header('HTTP/1.1 400 Bad Request');
+        echo "FEHLER: Der Parameter '" . $gname . "' muss eine Zeichenkette sein, kein Feld.\n";
+        exit;
+    }
+    if (strlen($_GET[$gname]) > 200) {
+        header('HTTP/1.1 400 Bad Request');
+        echo "FEHLER: Der Parameter '" . $gname . "' ist laenger als 200 Zeichen.\n";
+        exit;
+    }
+    $gpar[$gname] = $_GET[$gname];
+}
+
+$action = $gpar['action'];
+
+/* ---------- Selbsttest: antwortet, OHNE etwas auszuloesen ----------
+ *
+ * Hausstandard seit dem 16.08.2026, hier ab 1.2.0. Ohne ihn laesst sich nicht
+ * feststellen, ob das in Loxone eingetragene Token noch stimmt, ohne
+ * WIRKLICH zu schalten - also den Maeher loszuschicken oder ein Ventil
+ * aufzudrehen. Genau davor soll das Token schuetzen.
+ *
+ * Der Zweig steht VOR der gemeinsamen Tokenpruefung, weil er die beiden
+ * Faelle unterscheiden muss: gar kein Token eingerichtet (dann hilft ein
+ * Blick in die Oberflaeche) gegen falsches Token (dann stimmt die Adresse in
+ * Loxone nicht mehr). Er liest ausschliesslich - kein API-Aufruf, kein
+ * Versand, kein Schreiben.
+ */
+if (isset($_GET['selftest'])) {
+    $gsoll = isset($g['TOKEN']) ? (string) $g['TOKEN'] : '';
+    $gist = $gpar['token'];
+    if ($gsoll === '') {
+        header('HTTP/1.1 403 Forbidden');
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
+    if (!gardena_token_ok($gsoll, $gist)) {
+        header('HTTP/1.1 403 Forbidden');
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
+    // Ab hier ist das Token in Ordnung. Die uebrigen Felder sagen, ob der
+    // Endpunkt auch etwas ausrichten koennte - alle drei aus vorhandenen
+    // Dateien gelesen, nichts wird angestossen.
+    $gst = gardena_status_lesen($lbpconfigdir);
+    $gzugang = (!empty($g['CLIENT_ID']) && !empty($g['CLIENT_SECRET'])) ? 1 : 0;
+    $gabbild = is_file($lbpconfigdir . '/devices_cache.json') ? 1 : 0;
+    $galter = !empty($gst['letzter_erfolg']) ? (time() - (int) $gst['letzter_erfolg']) : -1;
+    echo 'SELFTEST;OK=1;TOKEN=OK'
+       . ';ZUGANG=' . $gzugang
+       . ';ABBILD=' . $gabbild
+       . ';LETZTER_ERFOLG=' . $galter
+       . ';WERTE=' . (int) $gst['werte']
+       . ';SOCKETS=' . (gardena_udp_moeglich() ? 1 : 0)
+       . "\n";
+    exit;
+}
 
 // ---------- Zugriffsschutz ----------
 //
@@ -50,7 +122,7 @@ $action = isset($_GET['action']) ? $_GET['action'] : '';
 // Diagnose-Endpunkt rechtfertigt das nicht; das Token steht in der
 // Oberflaeche und in den dort angezeigten Adressen ohnehin schon drin.
 if ($action === 'command' || $action === 'refresh' || $action === 'list') {
-    $given = isset($_GET['token']) ? $_GET['token'] : '';
+    $given = $gpar['token'];
     if (!gardena_token_ok(isset($g['TOKEN']) ? $g['TOKEN'] : '', $given)) {
         header('HTTP/1.1 403 Forbidden');
         if (empty($g['TOKEN'])) {
@@ -100,6 +172,23 @@ if ($action === 'refresh') {
     }
     // gardenaMain nimmt selbst eine Sperre. Laeuft schon ein Abruf, endet
     // der neue von sich aus - hier wird deshalb nichts zusaetzlich geprueft.
+    /*
+     * Bis 1.2.0 antwortete dieser Zweig ausnahmslos "OK: Abruf gestartet" -
+     * auch dann, wenn gardenaMain wegen der Sperre sofort wieder ausstieg.
+     * Die Sperre wird deshalb hier einmal probeweise genommen und gleich
+     * wieder freigegeben: laesst sie sich nicht nehmen, laeuft schon einer.
+     * Zwischen Freigabe und Start bleibt ein Wimpernschlag, in dem sich zwei
+     * Aufrufe treffen koennen - dann greift die Sperre in gardenaMain wie
+     * bisher. Die Antwort ist damit nicht garantiert, aber sie ist nicht
+     * mehr unabhaengig von der Wirklichkeit.
+     */
+    $gprobe = gardena_sperre('main');
+    if ($gprobe === false) {
+        echo "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n";
+        exit;
+    }
+    flock($gprobe, LOCK_UN);
+    fclose($gprobe);
     $php = defined('PHP_BINARY') && PHP_BINARY !== '' ? PHP_BINARY : '/usr/bin/php';
     shell_exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' > /dev/null 2>&1 &');
     echo "OK: Abruf gestartet (Ergebnis im Protokoll und unter ?action=list).\n";
@@ -108,10 +197,31 @@ if ($action === 'refresh') {
 
 // ---------- Kommando ----------
 if ($action === 'command') {
-    $devQuery = isset($_GET['device']) ? trim($_GET['device']) : '';
-    $type = isset($_GET['type']) ? strtoupper(trim($_GET['type'])) : 'MOWER_CONTROL';
-    $cmd = isset($_GET['cmd']) ? strtoupper(trim($_GET['cmd'])) : '';
-    $seconds = (isset($_GET['seconds']) && ctype_digit($_GET['seconds'])) ? (int) $_GET['seconds'] : null;
+    $devQuery = trim($gpar['device']);
+    $type = ($gpar['type'] !== '') ? strtoupper(trim($gpar['type'])) : 'MOWER_CONTROL';
+    $cmd = strtoupper(trim($gpar['cmd']));
+    $seconds = preg_match('/^[0-9]{1,7}$/', $gpar['seconds']) ? (int) $gpar['seconds'] : null;
+
+    /*
+     * Ohne device wurde bis 1.2.0 das ERSTE Geraet mit passendem Dienst
+     * geschaltet - bei mehreren Maehern oder Ventilen also irgendeines. Eine
+     * fehlende Angabe wird abgewiesen, nicht geraten.
+     */
+    if ($devQuery === '') {
+        header('HTTP/1.1 400 Bad Request');
+        echo "FEHLER: Es fehlt die Angabe device=NAME. Die Geraetenamen zeigt ?action=list.\n";
+        exit;
+    }
+    /*
+     * Die Oberflaeche sagt seit jeher, seconds sei ein Vielfaches von 60 -
+     * geprueft wurde es nie. Ein Satz in der Anleitung, den der Code nicht
+     * einhaelt, ist eine der beiden Stellen falsch; hier ist es der Code.
+     */
+    if ($seconds !== null && $seconds % 60 !== 0) {
+        header('HTTP/1.1 400 Bad Request');
+        echo "FEHLER: seconds muss ein Vielfaches von 60 sein (angegeben: " . $seconds . ").\n";
+        exit;
+    }
 
     $allowed_types = array('MOWER_CONTROL', 'VALVE_CONTROL', 'POWER_SOCKET_CONTROL');
     $allowed_cmds = array('START_SECONDS_TO_OVERRIDE', 'START_DONT_OVERRIDE', 'START_OVERRIDE',
@@ -162,6 +272,7 @@ if ($action === 'command') {
 // ---------- Hilfe ----------
 echo "GARDENA smart system Plugin - Endpunkte:\n\n";
 echo "Alle Endpunkte verlangen das Token aus der Plugin-Oberflaeche:\n";
+echo "  ?selftest=1&token=...       prueft nur das Token - loest nichts aus\n";
 echo "  ?action=list&token=...      Geraeteliste als JSON\n";
 echo "  ?action=refresh&token=...   Daten sofort abrufen und an Miniserver/MQTT senden\n";
 echo "  ?action=command&token=...&device=NAME&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK\n";
