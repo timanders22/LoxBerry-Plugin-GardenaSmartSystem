@@ -5,6 +5,9 @@
 
 ARGV3=$3   # Installationsordner des Plugins
 ARGV5=$5   # Wurzelverzeichnis des LoxBerry
+# Rueckfall, falls sudo die Umgebung ausgeraeumt hat (env_reset).
+# Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
+LBHOMEDIR="${LBHOMEDIR:-$5}"
 
 BASE="${ARGV5:-$LBHOMEDIR}"
 PFOLDER="${ARGV3:-gardenasmartsystem}"
@@ -21,8 +24,17 @@ PFOLDER="${ARGV3:-gardenasmartsystem}"
 # postupgrade liegt eine Paketinstallation; braucht die einen Neustart oder
 # bricht das Update dazwischen ab, ist die Ramdisk leer.
 #
-# Deshalb: data/plugins/<Ordner>/upgrade_sicherung - auf der Karte.
-SICHER="$BASE/data/plugins/$PFOLDER/upgrade_sicherung"
+# Deshalb: data/plugins/<Ordner>.upgrade_sicherung - auf der Karte.
+# Die Sicherung liegt NEBEN dem Ordner, nicht darin. Gemessen an
+# sbin/plugininstall.pl (Zweig master, 23.08.2026): der Installer ruft
+# &purge_installation nicht nur beim Deinstallieren, sondern auch im
+# Upgrade-Zweig (:886), und deren Rumpf loescht ohne jede Bedingung
+# (:1629 ff.) config/plugins/<x>/, bin/plugins/<x>/, data/plugins/<x>/,
+# templates/plugins/<x>/ und beide webfrontend/-Ordner. Eine Sicherung IN
+# data/plugins/<x>/ wird also von genau dem Schritt vernichtet, den sie
+# ueberdauern soll. Der Punkt im Namen ist der ganze Unterschied:
+# "rm -rf .../<x>/" trifft den Nachbarn "<x>.upgrade_sicherung" nicht.
+SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 echo "<INFO> Sichere Konfiguration und Protokolle nach $SICHER"
 rm -rf "$SICHER" 2>/dev/null

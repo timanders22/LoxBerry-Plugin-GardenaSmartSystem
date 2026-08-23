@@ -4,10 +4,13 @@
 ARGV1=$1
 ARGV3=$3
 ARGV5=$5
+# Rueckfall, falls sudo die Umgebung ausgeraeumt hat (env_reset).
+# Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
+LBHOMEDIR="${LBHOMEDIR:-$5}"
 
 BASE="${ARGV5:-$LBHOMEDIR}"
 PFOLDER="${ARGV3:-gardenasmartsystem}"
-SICHER="$BASE/data/plugins/$PFOLDER/upgrade_sicherung"
+SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" \
          "$BASE/data/plugins/$PFOLDER" 2>/dev/null
@@ -74,7 +77,7 @@ fi
 # sich die Struktur geaendert haben, und ein neues ist in einer Sekunde da.
 rm -f "$BASE/config/plugins/$PFOLDER/gardena_token.json" 2>/dev/null
 
-rm -rf "$BASE/data/plugins/$PFOLDER/upgrade_sicherung" 2>/dev/null
+rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" 2>/dev/null
 rm -rf "/tmp/uploads/${ARGV1}_upgrade" "/tmp/${ARGV1}_upgrade" 2>/dev/null
 
 echo "<OK> Update abgeschlossen."
