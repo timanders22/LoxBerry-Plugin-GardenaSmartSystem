@@ -618,6 +618,23 @@ function gardena_vorlage_vo($cachefile, $token, $ordner)
     return array('VQ_gardena_steuern.xml', $o);
 }
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 // ---------- Loxone-Vorlage herunterladen (Hausstandard) ----------
 if ($gpost && isset($_POST['vorlage'])) {
     $gc_v = gardena_cfg_read($gconfigfile);
@@ -798,7 +815,6 @@ $ghatcurl = gardena::hasCurl();
 $ghatsockets = function_exists('socket_create');
 $gpl = gardena_e($gordner);
 
-LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', 'help.html');
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -846,6 +862,9 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
         }
     }
 }
+
+
+LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', 'help.html');
 
 ?>
 <style>
