@@ -799,6 +799,54 @@ $ghatsockets = function_exists('socket_create');
 $gpl = gardena_e($gordner);
 
 LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', 'help.html');
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($gpost && isset($_POST['gardena_sichern'])) {
+    $gardena_js = json_encode(gardena_config(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($gardena_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="gardenasmartsystem_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $gardena_js;
+        exit;
+    }
+    $gfehler[] = gardena_t('EINST.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
+ * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
+ * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
+ * nicht erst gelesen. */
+if ($gpost && isset($_POST['gardena_zurueck'])) {
+    if (!isset($_FILES['gardena_sicherung']) || !is_array($_FILES['gardena_sicherung'])
+        || !isset($_FILES['gardena_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['gardena_sicherung']['tmp_name'])) {
+        $gfehler[] = gardena_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['gardena_sicherung']['size'] > 262144) {
+        $gfehler[] = gardena_t('EINST.SICH_ZU_GROSS');
+    } else {
+        list($gardena_neu, $gardena_mangel, $gardena_n) = gardena_sicherung_lesen(
+            (string) @file_get_contents($_FILES['gardena_sicherung']['tmp_name']));
+        if ($gardena_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
+             * wird nichts. */
+            $gfehler[] = gardena_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $gardena_mangel);
+        } elseif (gardena_config_speichern($gardena_neu)) {
+            $gsaved = sprintf(gardena_t('EINST.SICH_UEBERNOMMEN'), $gardena_n);
+        } else {
+            $gfehler[] = gardena_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 940px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -1037,6 +1085,27 @@ if ($gmesser_int > 0) {
             onclick="return confirm(<?= json_encode(html_entity_decode(gardena_t('TOKEN.NEU_FRAGE'), ENT_QUOTES, 'UTF-8')) ?>);"><?= gardena_t('TOKEN.NEU') ?></button>
 </form>
 </div>
+
+<h2><?= gardena_t('EINST.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= gardena_t('EINST.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= gardena_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e(gardena_formtoken($gc)) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="gardena_sichern" value="1"><?= gardena_t('EINST.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e(gardena_formtoken($gc)) ?>">
+    <input data-role="none" type="file" name="gardena_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gardena_zurueck" value="1"><?= gardena_t('EINST.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: Geraete ================= -->
@@ -1070,7 +1139,7 @@ if ($gmesser_int > 0) {
 </form>
 
 <h2><?= gardena_t('MQTT.H_ABO') ?></h2>
-<div class="sm-alert sm-warn"><?= gardena_t('MQTT.ABO_TEXT') ?></div>
+<div class="sm-alert sm-warn"><?= gardena_abo_text() ?></div>
 <div class="sm-mono"><?= gardena_e(gardena_mqtt_thema((string) $gc['MQTT_TOPIC'])) ?>/#</div>
 
 <h2><?= gardena_t('MQTT.H_THEMEN') ?></h2>
