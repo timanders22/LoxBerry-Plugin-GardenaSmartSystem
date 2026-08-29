@@ -68,6 +68,7 @@ function gardena_log($level, $msg)
     $dir = isset($GLOBALS['lbplogdir']) ? (string) $GLOBALS['lbplogdir'] : '';
     if ($dir === '' || !is_dir($dir)) { return; }
     $f = rtrim($dir, '/') . '/gardena_ui.log';
+    clearstatcache(true, $f);
     if (is_file($f) && filesize($f) > 262144) {
         // Gekuerzt wird unter Sperre, sonst schreibt ein zweiter Prozess
         // waehrenddessen ans alte Ende und verliert seine Zeile.
