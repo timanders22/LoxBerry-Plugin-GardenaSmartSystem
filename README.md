@@ -385,7 +385,14 @@ weist dann auf die fehlende Erweiterung hin.
 die Perl-Bestandteile der abgeschalteten sg-1-API sind entfallen. Wer die Meldung
 sieht, installiert noch die ältere Fassung (v0.0.7) des Plugins.
 
-## Änderungen in 1.1.0
+## Änderungen
+
+Die Freigabenotiz zu jeder Fassung steht bei den Releases:
+<https://github.com/timanders22/LoxBerry-Plugin-GardenaSmartSystem/releases>
+
+Der folgende Abschnitt hieß bis 1.2.4 „Änderungen in 1.1.0“ — eine Fassungsnummer
+in einer Überschrift wird mit jedem Release falscher. Der Inhalt bleibt, weil
+er beschreibt, *warum* das Plugin so gebaut ist; er betrifft die Fassung 1.1.0.
 
 **Zwei offene Türen geschlossen.**
 
