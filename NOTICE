@@ -19,7 +19,7 @@ UDP-Port des Miniservers senden.
 Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
 -----------------------------------------------------------------------
 
-Das Original steht bei Fassung 0.0.7. Diese Fassung ist 1.1.0. Geaendert
+Das Original steht bei Fassung 0.0.7. Diese Fassung ist 1.2.6. Geaendert
 wurde im Wesentlichen:
 
 1.0.0  Umstellung auf die Husqvarna/GARDENA API v2 mit OAuth2. Die alte

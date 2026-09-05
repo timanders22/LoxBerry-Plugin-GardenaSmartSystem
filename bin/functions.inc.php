@@ -85,6 +85,74 @@ function gardena_log($level, $msg)
                        FILE_APPEND | LOCK_EX);
 }
 
+/**
+ * Protokollzeile des Loxone-Endpunkts.
+ *
+ * Bewusst OHNE das SDK: der Endpunkt laeuft unter dem Webserver, legt kein
+ * Protokollobjekt an (LBLog::newLog), und gardena_log() nimmt trotzdem den
+ * SDK-Weg, sobald loxberry_log.php eingebunden ist - die Zeile verschwindet
+ * dann spurlos. Genau diese Bauart machte in 1.1.9 den Reiter Logdateien
+ * strukturell leer.
+ *
+ * Warum es die Zeile ueberhaupt braucht: der Miniserver kann sich nicht
+ * beschweren. Ohne Protokoll ist "der Miniserver ruft nicht an" nicht von
+ * "er ruft an und wird abgewiesen" zu unterscheiden.
+ *
+ * Die Zugangsmarke steht NIE darin - ein Protokoll, das Geheimnisse
+ * mitschreibt, verlagert das Problem nur in eine Datei, die laenger lebt.
+ * Von aussen kommende Werte, die gerade abgewiesen wurden, stehen mit ihrer
+ * LAENGE darin, nicht im Wortlaut.
+ */
+function gardena_endpunkt_log($msg, $gebremst = false)
+{
+    $dir = isset($GLOBALS['lbplogdir']) ? (string) $GLOBALS['lbplogdir'] : '';
+    if ($dir === '' || !is_dir($dir)) { return false; }
+    $f = rtrim($dir, '/') . '/gardena_endpunkt.log';
+
+    /*
+     * Lesende Erfolge werden GEBREMST.
+     *
+     * Der Miniserver fragt den Endpunkt im Sechzigsekundentakt ab. Jede
+     * geglueckte Abfrage zu protokollieren ergaebe 1440 gleichlautende Zeilen
+     * am Tag - ein Dauerzustand gehoert in die gebremste Meldung, sonst sieht
+     * beim dritten Mal niemand mehr hin. Abweisungen und schaltende Aufrufe
+     * sind selten und gehen IMMER hinaus; sie sind der Grund, warum es das
+     * Protokoll gibt.
+     *
+     * Der Merker liegt in log/ - auf dem LoxBerry eine Ramdisk, also kein
+     * Schreibvorgang je Minute auf der Speicherkarte.
+     */
+    if ($gebremst) {
+        $stempel = rtrim($dir, '/') . '/gardena_endpunkt.stempel';
+        clearstatcache(true, $stempel);
+        if (is_file($stempel) && (time() - (int) filemtime($stempel)) < 3600) {
+            return true;
+        }
+        @touch($stempel);
+        $msg .= ' (gebremst: die naechste Zeile dieser Art fruehestens in einer Stunde)';
+    }
+
+    // clearstatcache VOR dem aeusseren Tor: PHP haelt die stat()-Antwort im
+    // Zwischenspeicher, und ein anhaengendes file_put_contents macht den
+    // Eintrag nicht ungueltig. Unter 7.4 oeffnete die Kappung sonst nie.
+    clearstatcache(true, $f);
+    if (is_file($f) && filesize($f) > 262144) {
+        $fh = @fopen($f, 'c+');
+        if ($fh && flock($fh, LOCK_EX)) {
+            $rest = array_slice(file($f, FILE_IGNORE_NEW_LINES) ?: array(), -200);
+            ftruncate($fh, 0); rewind($fh);
+            fwrite($fh, implode("\n", $rest) . "\n");
+            flock($fh, LOCK_UN);
+        }
+        if ($fh) { fclose($fh); }
+    }
+    $wer = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '-';
+    $wer = preg_replace('/[^0-9a-fA-F.:]/', '', $wer);
+    if ($wer === '') { $wer = '-'; }
+    return @file_put_contents($f, '[' . date('Y-m-d H:i:s') . '] ' . $wer . ' ' . $msg . "\n",
+                              FILE_APPEND | LOCK_EX) !== false;
+}
+
 /* ==================================================================
  * UDP und MQTT
  * ================================================================== */
@@ -290,6 +358,37 @@ function mqttPublish($topic, $value, $retain = true)
  * Fehlerbehebung.
  * ================================================================== */
 
+/**
+ * Die UDP-Zeile eines einzelnen Wertes - an genau EINER Stelle.
+ *
+ * Bis 1.2.5 baute der Sender sie hier und die Loxone-Vorlage ein zweites Mal
+ * selbst zusammen. Der Sender liess dabei Umbrueche, Tabulatoren und
+ * Mehrfachleerzeichen zusammenfallen, die Vorlage nicht: bei einem
+ * Geraetenamen mit zwei Leerzeichen schrieb die Vorlage einen Suchtext, den
+ * die gesendete Zeile nie enthielt. Der virtuelle Eingang blieb dann auf
+ * DefVal="0" stehen - in Loxone sieht das aus wie ein gemessener Wert.
+ * Das ist derselbe Fehler, der auf dem MQTT-Weg in 1.2.0 behoben wurde.
+ *
+ * $wert === null liefert die Zeile fuer die VORLAGE: dort steht statt des
+ * Wertes der Loxone-Platzhalter.
+ */
+function gardena_udp_zeile($dienst, $geraet, $attribut, $wert = null)
+{
+    $ende = ($wert === null) ? '\\v' : (string) $wert;
+    return gardena_mqtt_nutzlast($dienst . '.' . $geraet . '.' . $attribut . ':' . $ende);
+}
+
+/**
+ * Maskieren fuer die Ausgabe. Gehoert in die Bibliothek, nicht in die
+ * index.php: sonst kann keine Bibliotheksfunktion sie benutzen, und ein
+ * Pruefstand, der nur die Bibliothek laedt, stirbt an "undefined function".
+ * function_exists davor, damit eine aeltere index.php mit eigener Fassung
+ * weiterlaeuft.
+ */
+if (!function_exists('gardena_e')) {
+    function gardena_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+}
+
 /** Das MQTT-Thema eines einzelnen Wertes. */
 function gardena_wert_thema($basis, $geraet, $dienst, $attribut)
 {
@@ -376,7 +475,7 @@ function gardena_wert_flach($wert)
  * Rueckgabe: array(versucht, gescheitert)
  */
 function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
-                             $udp_ziel, $udp_port, $mqtt_ein)
+                             $udp_ziel, $udp_port, $mqtt_ein, $retain = true)
 {
     $wert = gardena_wert_flach($wert);
     $versucht = 0;
@@ -386,13 +485,13 @@ function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
         // Umbrueche raus: Loxone wertet den UDP-Eingang zeilenweise aus. Der
         // Geraetename kommt aus der Gardena-App, der Wert aus einer fremden
         // Wolke - beides ist ungeprueft.
-        $zeile = gardena_mqtt_nutzlast($dienst . '.' . $geraet . '.' . $attribut . ':' . $wert);
+        $zeile = gardena_udp_zeile($dienst, $geraet, $attribut, $wert);
         gardena_log('DEB', 'UDP: ' . $zeile);
         if (!sendUDP($zeile, $udp_ziel, $udp_port)) { $fehl++; }
     }
     if ($mqtt_ein) {
         $versucht++;
-        if (!mqttPublish(gardena_wert_thema($basis, $geraet, $dienst, $attribut), $wert, true)) {
+        if (!mqttPublish(gardena_wert_thema($basis, $geraet, $dienst, $attribut), $wert, $retain)) {
             $fehl++;
         }
     }
@@ -441,7 +540,11 @@ function gardena_status_datei($cfgdir)
 
 function gardena_status_lesen($cfgdir)
 {
-    $d = json_decode((string) @file_get_contents(gardena_status_datei($cfgdir)), true);
+    // is_file() davor: ohne den Test meldet ein gesetzter Fehlerbehandler
+    // (Pruefstand, LoxBerry mit eigenem Handler) eine Warnung fuer einen
+    // Pfad, der beim ersten Lauf zu Recht fehlt. Das '@' haelt ihn nicht auf.
+    $sd = gardena_status_datei($cfgdir);
+    $d = is_file($sd) ? json_decode((string) @file_get_contents($sd), true) : null;
     if (!is_array($d)) { $d = array(); }
     $d += array('ok' => 0, 'letzter_erfolg' => 0, 'letzter_lauf' => 0,
                 'werte' => 0, 'verloren' => 0, 'ohne_inhalt' => 0, 'fehler' => '',
@@ -482,8 +585,12 @@ function gardena_lebenszeichen($basis, $status, $udp_ziel, $udp_port, $mqtt_ein)
     $versucht = 0;
     $fehl = 0;
     foreach ($werte as $name => $wert) {
+        // Das Lebenszeichen geht NICHT retained hinaus (Hausstandard).
+        // Retained zeigte es nach dem Abschalten des LoxBerry weiter "lebt";
+        // ein neu verbindender Abonnent bekam sofort ok=1. Genau der Zustand,
+        // gegen den das Lebenszeichen gebaut wurde.
         list($v, $f) = gardena_wert_senden($basis, 'Plugin', 'STATUS', $name, $wert,
-                                           $udp_ziel, $udp_port, $mqtt_ein);
+                                           $udp_ziel, $udp_port, $mqtt_ein, false);
         $versucht += $v;
         $fehl += $f;
     }
@@ -581,6 +688,8 @@ function gardena_token_ok($expected, $given)
  */
 function gardena_ini_lesen($datei)
 {
+    // is_file() davor - siehe gardena_status_lesen().
+    if (!is_file($datei)) { return false; }
     $roh = @file_get_contents($datei);
     if ($roh === false) { return false; }
     return @parse_ini_string(preg_replace('/^[ \t]*#.*$/m', '', $roh),
@@ -766,6 +875,26 @@ function gardena_cfg_eigene_schluessel($cfgfile)
  *
  * Kommentare und Leerzeilen bleiben stehen.
  */
+/**
+ * Einen Wert so zurichten, dass er EINE Zeile dieser Datei bleibt.
+ *
+ * Bis 1.2.5 ging der Wert roh in "SCHLUESSEL=<wert>". Ein Zeilenumbruch darin
+ * erzeugte damit eine zweite Zeile - und eine zurueckgespielte Sicherung mit
+ * "MQTT_TOPIC": "garten\nTOKEN=0000..." setzte auf diesem Weg das
+ * AKTIONSTOKEN auf einen Wert, den der Absender der Datei kennt. Genau das
+ * Geheimnis, das den Endpunkt schuetzt. Gemessen am 05.09.2026 unter 7.4.33
+ * und 8.4.24.
+ *
+ * Ein '[' am Zeilenanfang wuerde ausserdem einen Abschnitt eroeffnen und alle
+ * folgenden Schluessel aus [GARDENA] hinaustragen.
+ */
+function gardena_ini_wert($v)
+{
+    $s = str_replace(array("\r\n", "\r", "\n", "\t"), ' ', (string) $v);
+    $s = preg_replace('/[\x00-\x1F\x7F]/', '', $s);
+    return ltrim($s, "[ ");
+}
+
 function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
 {
     if (!is_array($werte) || !$werte) { return true; }
@@ -816,7 +945,7 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
         foreach ($werte as $k => $v) {
             if (isset($erledigt[$k])) { continue; }
             if (preg_match('/^\s*' . preg_quote($k, '/') . '\s*=/', $zeile)) {
-                $zeilen[$i] = $k . '=' . $v;
+                $zeilen[$i] = $k . '=' . gardena_ini_wert($v);
                 $erledigt[$k] = true;
                 $letzte_im_abschnitt = $i;
             }
@@ -825,7 +954,7 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
 
     $neu = array();
     foreach ($werte as $k => $v) {
-        if (!isset($erledigt[$k])) { $neu[] = $k . '=' . $v; }
+        if (!isset($erledigt[$k])) { $neu[] = $k . '=' . gardena_ini_wert($v); }
     }
     if ($neu) {
         if (!$abschnitt_da) {
@@ -1070,6 +1199,46 @@ function gardena_abo_text()
 
 
 /**
+ * Welche Befehle gibt es zu welchem Dienst?
+ *
+ * An EINER Stelle, weil es drei Verbraucher gibt: der Endpunkt prueft damit,
+ * die Vorlage der Virtuellen Ausgaenge erzeugt daraus, und die Befehlstabelle
+ * im Reiter "Einbindung in Loxone" zeigt es an. Bis 1.2.5 pruefte der
+ * Endpunkt type und cmd gegen zwei getrennte flache Listen und nie
+ * gegeneinander: 'type=MOWER_CONTROL&cmd=PAUSE' kam durch, kostete einen
+ * Abruf des Husqvarna-Kontingents und scheiterte erst in der Wolke.
+ *
+ * HERKUNFT: die Vereinigung der beiden Listen, die dieses Plugin selbst
+ * fuehrt - der Kopfkommentar von webfrontend/html/index.php und die
+ * Befehlstabelle im Reiter "Einbindung in Loxone". An einer GARDENA-Anlage
+ * ist NICHTS davon gemessen; es steht hier keine zur Verfuegung. Die Liste
+ * ist deshalb bewusst die weitere der beiden: enger zu fassen hiesse, einer
+ * bestehenden Anlage einen Befehl wegzunehmen, den sie vielleicht benutzt.
+ */
+function gardena_befehle()
+{
+    return array(
+        'MOWER_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE',
+            'START_DONT_OVERRIDE',
+            'PARK_UNTIL_NEXT_TASK',
+            'PARK_UNTIL_FURTHER_NOTICE',
+        ),
+        'VALVE_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE',
+            'STOP_UNTIL_NEXT_TASK',
+            'PAUSE',
+            'UNPAUSE',
+        ),
+        'POWER_SOCKET_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE',
+            'START_OVERRIDE',
+            'STOP_UNTIL_NEXT_TASK',
+        ),
+    );
+}
+
+/**
  * Der Ort der gardena.cfg - an EINER Stelle.
  *
  * Bisher reichte jeder Aufrufer den Pfad selbst durch; das ging gut,
@@ -1087,6 +1256,78 @@ function gardena_konfigdatei()
 function gardena_config()
 {
     return gardena_cfg_read(gardena_konfigdatei());
+}
+
+/**
+ * Der Stand, wie er in die Sicherungsdatei gehoert.
+ *
+ * Genau die Schluessel, die gardena_sicherung_lesen() auch wieder annimmt -
+ * nicht mehr. Bis 1.2.5 ging alles hinaus, was in der gardena.cfg stand; eine
+ * gewachsene Datei mit einem Rest aus einer alten Fassung (postupgrade.sh
+ * nennt LOCALTIME) erzeugte damit eine Sicherung, die das Plugin beim
+ * Zurueckspielen als "Unbekannte Einstellung" ABLEHNTE. Die eigene Sicherung
+ * war unbrauchbar - und genau fuer den Umzug auf einen zweiten LoxBerry ist
+ * sie gedacht.
+ */
+function gardena_sicherung_stand()
+{
+    return array_intersect_key(gardena_config(), gardena_vorgaben());
+}
+
+/**
+ * In welchem Zustand ist die Konfigurationsdatei?
+ *
+ * Drei Ausgaenge, und der mittlere ist der, auf den es ankommt:
+ *   'neu'      - die Datei gibt es nicht. Neuinstallation; ein Token darf
+ *                entstehen, und die Vorgaben duerfen geschrieben werden.
+ *   'heil'     - lesbar und mit mindestens einem Schluessel.
+ *   'unlesbar' - die Datei IST DA, laesst sich aber nicht lesen (leer, halb
+ *                geschrieben, Muell). Dann wird NICHTS geschrieben.
+ *
+ * Bis 1.2.5 gab es diese Unterscheidung nicht: gardena_cfg_read() lieferte
+ * in beiden Faellen nur die Vorgaben, das Token war damit leer, und die
+ * Oberflaeche wuerfelte beim naechsten Oeffnen ein neues und schrieb es weg.
+ * Jede im Miniserver eingetragene Adresse war danach ungueltig - stumm, denn
+ * ein Virtueller Ausgang wertet die 403-Antwort nicht aus.
+ */
+function gardena_cfg_zustand($cfgfile)
+{
+    if (!is_file($cfgfile)) { return 'neu'; }
+    $ini = gardena_ini_lesen($cfgfile);
+    if (!is_array($ini)) { return 'unlesbar'; }
+    $g = (isset($ini['GARDENA']) && is_array($ini['GARDENA'])) ? $ini['GARDENA'] : $ini;
+    foreach ($g as $v) {
+        if (!is_array($v)) { return 'heil'; }
+    }
+    return 'unlesbar';
+}
+
+/**
+ * Fehlende Schluessel EINMAL mit ihrer Vorgabe in die Datei schreiben.
+ *
+ * Hausstandard: die Konfiguration wird vervollstaendigt, nicht nur beim Lesen
+ * ergaenzt - sonst steht in der Datei etwas anderes als das, womit gearbeitet
+ * wird, und der Anwender kann seinen eigenen Stand nicht nachlesen. Bis 1.2.5
+ * ergaenzte nur der Speichern-Handler, und auch der nur die Schluessel, die
+ * sein Formular gerade mitschickte (gemessen: 2 von 4 fehlenden).
+ *
+ * Rueckgabe: die Namen der nachgetragenen Schluessel (leer = nichts zu tun).
+ */
+function gardena_cfg_vervollstaendigen($cfgfile)
+{
+    // Eine unlesbare Datei wird nicht angefasst - auch nicht "ergaenzt".
+    if (gardena_cfg_zustand($cfgfile) === 'unlesbar') { return array(); }
+    $da = gardena_cfg_eigene_schluessel($cfgfile);
+    if (!$da) { return array(); }          // Datei fehlt - der Dienst legt sie an
+    $fehlt = array();
+    foreach (gardena_vorgaben() as $k => $v) {
+        if (!in_array($k, $da, true)) { $fehlt[$k] = $v; }
+    }
+    if (!$fehlt) { return array(); }
+    if (!gardena_cfg_write($cfgfile, $fehlt)) { return array(); }
+    gardena_log('INF', 'Konfiguration vervollstaendigt, nachgetragen: '
+        . implode(', ', array_keys($fehlt)));
+    return array_keys($fehlt);
 }
 
 /** Den ganzen Stand ablegen und sagen, ob es geklappt hat. */
@@ -1109,6 +1350,70 @@ function gardena_config_speichern($cfg)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
+/**
+ * Taugt der Wert ueberhaupt fuer eine Zeile dieser Datei?
+ *
+ * Skalar, nicht zu lang, keine Steuerzeichen. Ein Feld oder Objekt wuerde beim
+ * Zusammensetzen zu "Array" (gemessen: UDPPORT=Array), ein Zeilenumbruch
+ * erzeugt eine zweite Zeile.
+ */
+function gardena_wert_taugt($v)
+{
+    if (is_array($v) || is_object($v) || is_bool($v) || is_null($v)) { return false; }
+    $s = (string) $v;
+    if (strlen($s) > 4096) { return false; }
+    return preg_match('/[\x00-\x1F\x7F]/', $s) !== 1;
+}
+
+/**
+ * Ist der Wert fuer DIESE Einstellung zulaessig?
+ *
+ * Dieselbe Positivliste, die auch das Formular anlegt - der Endpunkt und die
+ * Sicherung duerfen nicht nachsichtiger sein als die Oberflaeche.
+ * Rueckgabe: '' = in Ordnung, sonst der Grund als Klartext.
+ *
+ * Das Muster fuer TOKEN bleibt bewusst WEIT ({0,64}, kein Mindestmass): ein
+ * leeres Token in einer Sicherungsdatei heisst "kein Token gesichert" und ist
+ * kein unzulaessiger Wert. Wie stark das Token ist, meldet der Reiter Test -
+ * melden ist richtig, blockieren nicht.
+ */
+function gardena_wert_pruefen($k, $v)
+{
+    $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED');
+    if (in_array($k, $ja_nein, true)) {
+        return ($v === '0' || $v === '1') ? '' : gardena_t('EINST.PRUEF_NUR01');
+    }
+    if ($k === 'UDPPORT') {
+        return (preg_match('/^[0-9]{1,5}$/', $v) === 1 && (int) $v >= 1 && (int) $v <= 65535)
+            ? '' : gardena_t('EINST.PRUEF_PORT');
+    }
+    if ($k === 'INTERVALL') {
+        return (preg_match('/^[0-9]{1,4}$/', $v) === 1 && (int) $v >= 5 && (int) $v <= 1440)
+            ? '' : gardena_t('EINST.PRUEF_TAKT');
+    }
+    if ($k === 'MINISERVER') {
+        return (preg_match('/^[0-9]{1,3}$/', $v) === 1 && (int) $v >= 1)
+            ? '' : gardena_t('EINST.PRUEF_MS');
+    }
+    if ($k === 'MESSER_INTERVALL' || $k === 'MESSER_BASIS') {
+        return preg_match('/^[0-9]{1,9}$/', $v) === 1 ? '' : gardena_t('EINST.PRUEF_ZAHL');
+    }
+    if ($k === 'TOKEN') {
+        return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', $v) === 1
+            ? '' : gardena_t('EINST.PRUEF_TOKEN');
+    }
+    if ($k === 'MQTT_TOPIC') {
+        return preg_match('#^[A-Za-z0-9_/\-]{1,120}$#', $v) === 1
+            ? '' : gardena_t('EINST.PRUEF_THEMA');
+    }
+    if ($k === 'AUSGENOMMEN') {
+        return (strlen($v) <= 2048) ? '' : gardena_t('EINST.PRUEF_LANG');
+    }
+    // CLIENT_ID, CLIENT_SECRET: Form gibt Husqvarna vor, wir pruefen nur die
+    // Laenge und - ueber gardena_wert_taugt() - die Steuerzeichen.
+    return (strlen($v) <= 512) ? '' : gardena_t('EINST.PRUEF_LANG');
+}
+
 function gardena_sicherung_lesen($roh)
 {
     $mangel = array();
@@ -1121,11 +1426,28 @@ function gardena_sicherung_lesen($roh)
     $anzahl = 0;
     foreach ($daten as $k => $w) {
         if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            // NICHT maskieren: die Bibliothek liefert Daten, die Oberflaeche
+            // maskiert. Bis 1.2.5 lief der Name durch beide Stellen und der
+            // Anwender las "A&amp;B" statt "A&B" - ausgerechnet dort, wo er
+            // erkennen soll, WELCHER Schluessel stoert.
+            $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), (string) $k);
             continue;
         }
-        $neu[$k] = $w;
+        // Der Schluessel allein sagt nichts ueber den Wert. Bis 1.2.5 wurde
+        // jeder Wert ungeprueft uebernommen und roh in die INI-Zeile
+        // geschrieben - damit liess sich ueber einen Zeilenumbruch das
+        // Aktionstoken setzen. Jetzt zwei Tore: taugt der Wert ueberhaupt fuer
+        // eine Zeile dieser Datei, und ist er fuer DIESE Einstellung zulaessig.
+        if (!gardena_wert_taugt($w)) {
+            $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_FORM'), (string) $k);
+            continue;
+        }
+        $grund = gardena_wert_pruefen($k, (string) $w);
+        if ($grund !== '') {
+            $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_UNZULAESSIG'), (string) $k, $grund);
+            continue;
+        }
+        $neu[$k] = (string) $w;
         $anzahl++;
     }
     if ($anzahl === 0) {

@@ -40,8 +40,15 @@ if ($sperre === false) {
 // '#', das kennt PHPs INI-Zerleger nicht mehr - er gaebe false zurueck, und
 // dieser Dienst braeche gleich darunter mit exit(1) ab. Begruendung samt
 // Messung steht bei der Funktion in functions.inc.php.
+// Geprueft wird, ob die Datei ueberhaupt lesbar ist - NICHT, ob sie einen
+// Abschnitt [GARDENA] hat. gardena_cfg_read() liest eine Datei ohne
+// Abschnittskopf ausdruecklich von der obersten Ebene (der Fall entsteht,
+// wenn postupgrade.sh bis 1.0.2 im Fehlerfall eine Datei mit nur LOCALTIME=0
+// anlegte). Bis 1.2.5 brach der Dienst bei genau der Datei ab, die die
+// Oberflaeche anstandslos las und anzeigte - zwei Wahrheiten ueber dieselbe
+// Datei, und im Protokoll stand "nicht lesbar".
 $gcfg = gardena_ini_lesen($lbpconfigdir . '/gardena.cfg');
-if (!is_array($gcfg) || empty($gcfg['GARDENA'])) {
+if (!is_array($gcfg)) {
     LOGCRIT('Konfigurationsdatei nicht lesbar: ' . $lbpconfigdir . '/gardena.cfg');
     // Kein Lebenszeichen: wohin es gehen soll, steht in genau der Datei, die
     // sich nicht lesen laesst. Der Zustand wird trotzdem festgehalten, damit
@@ -62,6 +69,11 @@ if (!is_array($gcfg) || empty($gcfg['GARDENA'])) {
  * bekam nichts. Die Vorgaben stehen jetzt an einer Stelle; hier wird nur noch
  * gelesen, nicht mehr entschieden.
  */
+// Fehlende Schluessel EINMAL nachtragen (Hausstandard: vervollstaendigen,
+// nicht nur beim Lesen ergaenzen). Beim Dienststart, nicht bei jedem Lauf -
+// die Funktion schreibt nur, wenn wirklich etwas fehlt.
+gardena_cfg_vervollstaendigen($lbpconfigdir . '/gardena.cfg');
+
 $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
 
 if (empty($g['ENABLED']) || $g['ENABLED'] == '0') {
@@ -97,7 +109,13 @@ $udpport = !empty($g['UDPPORT']) ? (int) $g['UDPPORT'] : 5005;
 if ($udp_enabled) {
     $msArray = LBSystem::get_miniservers();
     $msID = !empty($g['MINISERVER']) ? (int) $g['MINISERVER'] : 1;
-    if (is_array($msArray) && isset($msArray[$msID])) {
+    // Auch der Unterschluessel wird geprueft: ein unvollstaendig
+    // eingerichteter Miniserver hat den Eintrag, aber keine Adresse. Bis
+    // 1.2.5 blieb $udp_enabled dann wahr, das UDP-Ziel leer, und
+    // gardena_wert_senden() uebersprang den UDP-Zweig wortlos - der Lauf
+    // meldete "N Werte zugestellt (0 Zustellungen, keine gescheitert)".
+    if (is_array($msArray) && isset($msArray[$msID])
+        && !empty($msArray[$msID]['IPAddress'])) {
         $miniserverIP = $msArray[$msID]['IPAddress'];
         LOGINF('UDP-Ziel: Miniserver ' . $msID . ' (' . $miniserverIP . ':' . $udpport . ')');
     } else {
@@ -202,6 +220,11 @@ if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
 // API v2
 $gardena = new gardena($g['CLIENT_ID'], $g['CLIENT_SECRET'], $lbpconfigdir);
 if (!$gardena->authenticate()) {
+    // Auch die Anmeldung laeuft in HTTP 429. Bis 1.2.5 wurde der Fall nur an
+    // den beiden Abrufstellen behandelt; hier klopfte der Cron danach alle
+    // fuenf Minuten weiter an - und verlaengerte die Sperre, die er abwarten
+    // sollte.
+    if ($gardena->last_http === 429) { gardena_kontingent($gardena); }
     LOGCRIT('Anmeldung an der Husqvarna/GARDENA-API fehlgeschlagen: ' . $gardena->last_error);
     gardena_abbruch('Anmeldung fehlgeschlagen: ' . $gardena->last_error);
 }
@@ -241,6 +264,7 @@ $versucht = 0;      // versucht
 $verloren = 0;      // gescheitert
 $ohne_inhalt = 0;   // von der Wolke ohne Wert geliefert, deshalb nicht gesendet
 $ausgelassen = 0;   // Geraete, die der Anwender ausgenommen hat
+$standort_fehl = 0; // Standorte, deren Abruf gescheitert ist
 
 /*
  * Erst SAMMELN, dann entscheiden, dann senden.
@@ -252,6 +276,7 @@ $ausgelassen = 0;   // Geraete, die der Anwender ausgenommen hat
  */
 $gausgenommen = gardena_ausgenommen($g);
 $gwerte = array();   // "Geraet|DIENST|attribut" => Wert
+$gteil = array();    // derselbe Schluessel => array(Geraet, Dienst, Attribut)
 
 foreach ($locations as $location) {
     if (!is_array($location) || empty($location['id'])) {
@@ -269,6 +294,11 @@ foreach ($locations as $location) {
             gardena_abbruch('Abrufkontingent erschoepft (HTTP 429).');
         }
         LOGERR('Keine Geraete in Location ' . $locName . ': ' . $gardena->last_error);
+        // Der Ausfall MUSS gezaehlt werden. Bis 1.2.5 hob ihn nur diese
+        // Protokollzeile hervor; $vollstaendig blieb wahr, sobald ein
+        // zweiter Standort Werte lieferte - das Lebenszeichen meldete
+        // Normalbetrieb, waehrend ein ganzer Garten seit Stunden schwieg.
+        $standort_fehl++;
         continue;
     }
     $statuscache['locations'][] = array('id' => $locId, 'name' => $locName, 'devices' => $devices);
@@ -303,7 +333,17 @@ foreach ($locations as $location) {
                     continue;
                 }
 
-                $gwerte[$devName . '|' . $type . '|' . $attrName] = gardena_wert_flach($attr['value']);
+                /*
+                 * Der Schluessel bleibt "Geraet|DIENST|attribut" - daran haengt
+                 * die Signatur, und die soll ueber das Update hinweg stabil
+                 * bleiben. Die BESTANDTEILE werden aber nicht mehr aus ihm
+                 * zurueckgerechnet: ein '|' im Geraetenamen (die App laesst es
+                 * zu) zerlegte den Schluessel falsch, und der Wert ging auf ein
+                 * Thema hinaus, das es nicht gibt. Sie werden hier gemerkt.
+                 */
+                $gschl = $devName . '|' . $type . '|' . $attrName;
+                $gwerte[$gschl] = gardena_wert_flach($attr['value']);
+                $gteil[$gschl] = array($devName, $type, $attrName);
             }
         }
     }
@@ -330,7 +370,7 @@ $gvoll = (!$gunveraendert || $galter_meldung >= 1800);
 
 if ($gvoll) {
     foreach ($gwerte as $gschluessel => $gwert) {
-        list($gdev, $gtyp, $gattr) = explode('|', $gschluessel, 3);
+        list($gdev, $gtyp, $gattr) = $gteil[$gschluessel];
         list($v, $f) = gardena_wert_senden($mqtt_topic, $gdev, $gtyp, $gattr, $gwert,
                                            $gudp_ziel, $udpport, $mqtt_enabled);
         $versucht += $v;
@@ -355,16 +395,46 @@ if ($gvoll) {
  * leerer retained-Wert loescht den Eintrag. Ueber UDP gibt es nichts
  * aufzuraeumen: dort merkt sich niemand etwas.
  */
-$gthemen = array_keys($gwerte);
-$galt = (isset($gstand['themen']) && is_array($gstand['themen'])) ? $gstand['themen'] : array();
+/*
+ * Gemerkt werden seit 1.2.6 die FERTIGEN THEMEN, nicht mehr die Schluessel.
+ * Damit braucht das Aufraeumen kein explode('|') mehr (siehe oben), und ein
+ * geaendertes Basisthema laesst die alten Themen nicht als Waisen zurueck.
+ * Ein Stand aus 1.2.5 wird einmalig umgerechnet.
+ */
+$gthemen = array();
+foreach ($gteil as $gschl => $gt) {
+    $gthemen[] = gardena_wert_thema($mqtt_topic, $gt[0], $gt[1], $gt[2]);
+}
+$galt = array();
+if (isset($gstand['themen']) && is_array($gstand['themen'])) {
+    foreach ($gstand['themen'] as $ga) {
+        $ga = (string) $ga;
+        if (strpos($ga, '|') !== false) {          // Stand aus 1.2.5
+            $gp = explode('|', $ga, 3);
+            if (count($gp) !== 3) { continue; }
+            $ga = gardena_wert_thema($mqtt_topic, $gp[0], $gp[1], $gp[2]);
+        }
+        $galt[] = $ga;
+    }
+}
 $gweg = array_diff($galt, $gthemen);
-if ($gweg && $mqtt_enabled) {
-    foreach ($gweg as $gschluessel) {
-        $gteile = explode('|', (string) $gschluessel, 3);
-        if (count($gteile) !== 3) { continue; }
-        mqttPublish(gardena_wert_thema($mqtt_topic, $gteile[0], $gteile[1], $gteile[2]), '', true);
+/*
+ * Aufgeraeumt wird NUR nach einem vollstaendigen Abruf.
+ *
+ * "Weggefallen" wurde bis 1.2.5 allein daraus geschlossen, dass ein Thema in
+ * diesem Lauf nicht vorkam. Ein Standort, dessen Abruf scheiterte, liefert
+ * genau das - und dann wurden die retained-Werte aller seiner Geraete
+ * geleert, obwohl nur das Netz kurz weg war. Wer in diesem Zeitfenster den
+ * Broker oder den Miniserver neu startet, steht danach ohne Werte da.
+ */
+if ($gweg && $mqtt_enabled && $standort_fehl === 0) {
+    foreach ($gweg as $gthema) {
+        mqttPublish($gthema, '', true);
     }
     LOGINF(count($gweg) . ' weggefallene MQTT-Themen geleert (Geraet umbenannt oder entfernt).');
+} elseif ($gweg && $mqtt_enabled) {
+    LOGINF(count($gweg) . ' Themen fehlen in diesem Lauf - NICHT geleert, weil '
+        . $standort_fehl . ' Standort(e) nicht geantwortet haben.');
 }
 
 // Geraete-Zwischenspeicher fuer die Admin-Oberflaeche.
@@ -373,7 +443,21 @@ if ($gweg && $mqtt_enabled) {
 // Geraete, die Service-Kennungen und die Ladezustaende. Bis 1.0.2 wurde er
 // mit den Vorgaberechten angelegt und die Oberflaeche konnte ihn halb
 // geschrieben lesen, waehrend der Cron ihn ersetzte.
-if (!gardena_json_write($lbpconfigdir . '/devices_cache.json', $statuscache, 0640)) {
+/*
+ * Nur schreiben, wenn KEIN Standort ausgefallen ist.
+ *
+ * Bis 1.2.5 stand dieser Aufruf ausserhalb jeder Bedingung. Bei einem
+ * Standort und einem Netzfehler ersetzte er das bis dahin gueltige Abbild
+ * durch eine leere Liste - danach fand ?action=command keine Dienstkennung
+ * mehr ("Kein passendes Geraet/Service gefunden"), der Reiter Geraete war
+ * leer und die Vorlagenknoepfe verschwanden, bis der naechste Lauf glueckte.
+ * Dieselbe Datei traegt in functions.inc.php den Grundsatz, dass eine halb
+ * gueltige Datei GAR NICHTS ueberschreibt.
+ */
+if ($standort_fehl > 0) {
+    LOGERR($standort_fehl . ' Standort(e) ohne Antwort - der Geraete-Zwischenspeicher '
+        . 'bleibt unveraendert, damit die bisherigen Dienstkennungen erhalten bleiben.');
+} elseif (!gardena_json_write($lbpconfigdir . '/devices_cache.json', $statuscache, 0640)) {
     LOGERR('Geraete-Zwischenspeicher konnte nicht geschrieben werden.');
 }
 
@@ -384,20 +468,28 @@ if (!gardena_json_write($lbpconfigdir . '/devices_cache.json', $statuscache, 064
  * ueberlebt damit jeden gescheiterten und beantwortet in der Oberflaeche und
  * in Loxone die Frage, wie lange schon nichts mehr angekommen ist.
  */
-$vollstaendig = ($verloren === 0 && count($gwerte) > 0);
+$vollstaendig = ($verloren === 0 && $standort_fehl === 0 && count($gwerte) > 0);
 $gneuer_stand = array(
     'ok' => $vollstaendig ? 1 : 0,
     'letzter_lauf' => time(),
     'werte' => $gvoll ? $sent : (int) $gstand['werte'],
     'verloren' => $verloren,
     'ohne_inhalt' => $ohne_inhalt,
-    'signatur' => $gsignatur,
+    // Die Signatur nur nach einem vollstaendigen Lauf fortschreiben.
+    // Bis 1.2.5 stand sie hier unbedingt: gingen Zustellungen verloren, galt
+    // der Bestand beim naechsten Lauf trotzdem als "unveraendert", es wurde
+    // nichts nachgesendet - und weil dann nichts mehr scheiterte, meldete
+    // derselbe Lauf ok=1. Bis zu 30 Minuten alte Werte im Miniserver bei
+    // voller Erfolgsmeldung.
+    'signatur' => $vollstaendig ? $gsignatur : (string) $gstand['signatur'],
     'themen' => $gthemen,
     // Nach einem geglueckten Lauf ist die Ruecknahme aufgehoben.
     'sperre_bis' => 0,
     'fehler' => $vollstaendig ? '' :
-        (count($gwerte) === 0 ? 'Kein einziger Wert zu senden - Antwort der Wolke leer?'
-                              : ($verloren . ' von ' . $versucht . ' Zustellungen gescheitert.')),
+        ($standort_fehl > 0
+            ? ($standort_fehl . ' Standort(e) haben nicht geantwortet.')
+            : (count($gwerte) === 0 ? 'Kein einziger Wert zu senden - Antwort der Wolke leer?'
+                              : ($verloren . ' von ' . $versucht . ' Zustellungen gescheitert.'))),
 );
 if ($vollstaendig) { $gneuer_stand['letzter_erfolg'] = time(); }
 if ($gvoll && $vollstaendig) { $gneuer_stand['letzte_volle_meldung'] = time(); }
@@ -411,8 +503,23 @@ if ($gloc_frisch && $vollstaendig) {
     }
     $gneuer_stand['locations'] = $gliste;
     $gneuer_stand['locations_stand'] = time();
+} elseif (!$gloc_frisch && $standort_fehl > 0) {
+    // Die Liste kam aus dem Zwischenspeicher und hat nicht getragen. Der
+    // Kommentar bei ihrer Ablage sagt zu, sie werde dann neu geholt - bis
+    // 1.2.5 wurde 'locations_stand' dabei gar nicht angefasst, und eine
+    // veraltete Standortkennung wurde bis zu 24 Stunden lang weiter
+    // abgefragt. Jetzt wird sie ausdruecklich als alt markiert.
+    $gneuer_stand['locations_stand'] = 0;
+    LOGINF('Die Standortliste kam aus dem Zwischenspeicher und hat nicht getragen - '
+        . 'sie wird beim naechsten Lauf neu geholt.');
 }
-gardena_status_schreiben($lbpconfigdir, $gneuer_stand);
+if (!gardena_status_schreiben($lbpconfigdir, $gneuer_stand)) {
+    // Ohne diesen Zustand gibt es keine Ausfallerkennung, keine Signatur und
+    // keine 429-Ruecknahme. Der Grund steht durch gardena_json_write() schon
+    // im Protokoll; hier steht die Folge.
+    LOGERR('Der Zustand liess sich nicht fortschreiben - Ausfallerkennung, '
+        . 'Aenderungsvergleich und Abrufsperre greifen bis auf Weiteres nicht.');
+}
 
 list($glz_v, $glz_f) = gardena_lebenszeichen($mqtt_topic, gardena_status_lesen($lbpconfigdir),
                                              $gudp_ziel, $udpport, $mqtt_enabled);
@@ -434,12 +541,15 @@ $gaus = $ausgelassen > 0 ? ' ' . $ausgelassen . ' Geraete sind ausgenommen.' : '
 if ($vollstaendig && !$gvoll) {
     LOGOK(count($gwerte) . ' Werte gelesen, keiner geaendert - nichts gesendet.' . $gohne . $gaus);
 } elseif ($vollstaendig) {
-    LOGOK($sent . ' Werte zugestellt (' . $versucht . ' Zustellungen, keine gescheitert).' . $gohne . $gaus);
+    // "abgeschickt", nicht "zugestellt": gemessen wird, dass das Datagramm
+    // den Rechner verlassen hat. Ob das MQTT-Gateway laeuft und der
+    // Miniserver es annimmt, sagt die UDP-Schnittstelle nicht zurueck.
+    LOGOK($sent . ' Werte abgeschickt (' . $versucht . ' Sendeversuche, keiner gescheitert).' . $gohne . $gaus);
 } elseif (count($gwerte) === 0) {
     LOGERR('Kein einziger Wert zu senden - die Antwort der Wolke enthielt nichts Verwertbares.' . $gaus);
 } else {
-    LOGERR($verloren . ' von ' . $versucht . ' Zustellungen gescheitert; '
-        . $sent . ' Werte vollstaendig zugestellt. Ursache steht in den Zeilen darueber.');
+    LOGERR($verloren . ' von ' . $versucht . ' Sendeversuchen gescheitert; '
+        . $sent . ' Werte vollstaendig abgeschickt. Ursache steht in den Zeilen darueber.');
 }
 LOGEND('GardenaMain fertig');
 flock($sperre, LOCK_UN);

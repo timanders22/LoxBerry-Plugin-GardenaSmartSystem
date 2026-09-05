@@ -1,5 +1,81 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.6
+
+Diese Fassung behebt Befunde einer vollständigen Durchsicht vom 05.09.2026.
+Gemessen wurde gegen PHP **7.4.33 und 8.4.24**; an einer GARDENA-Anlage ist
+nach wie vor **nichts** gemessen — es steht keine zur Verfügung.
+
+**Was Sie merken werden**
+
+- **Die Sicherungsdatei prüft jetzt auch die Werte, nicht nur die Namen.**
+  Bis 1.2.5 wurde jeder Wert zu einem bekannten Schlüssel ungeprüft
+  übernommen und roh in die `gardena.cfg` geschrieben. Ein Zeilenumbruch
+  darin erzeugte eine zweite Zeile — eine untergeschobene Sicherung konnte
+  auf diesem Weg **das Aktionstoken setzen**, also genau das Geheimnis, das
+  Mäher und Ventile vor fremdem Zugriff schützt.
+- **Ihre eigene Sicherung lässt sich wieder zurückspielen.** Trug Ihre
+  `gardena.cfg` einen Rest aus einer alten Fassung (`LOCALTIME`), erzeugte
+  das Plugin eine Sicherungsdatei, die es beim Zurückspielen selbst als
+  „Unbekannte Einstellung" ablehnte.
+- **Unsinnige Angaben am Endpunkt werden abgewiesen statt geraten.**
+  `&seconds=abc`, `&seconds=-60` und `&seconds=1800.0` ließen den Mäher bis
+  1.2.5 wortlos eine Stunde laufen; ein fehlendes `&type=` startete den
+  **Mäher**, auch wenn ein Ventil gemeint war. Beides wird jetzt gemeldet.
+- **Ein Netzfehler löscht nicht mehr die Geräteliste.** Scheiterte der Abruf,
+  überschrieb 1.2.5 den Geräte-Zwischenspeicher mit einer leeren Liste —
+  danach fand `?action=command` keine Dienstkennung mehr, der Reiter *Geräte*
+  war leer und die Vorlagenknöpfe verschwanden.
+- **Der Endpunkt schreibt ein Protokoll.** `log/plugins/<Ordner>/gardena_endpunkt.log`
+  hält jede Abweisung und jeden Schaltbefehl fest, mit der Adresse des
+  Anrufers. Geglückte Abfragen werden gebremst (höchstens eine Zeile je
+  Stunde), sonst wären es 1440 am Tag. Ohne diese Zeile ließ sich „der
+  Miniserver ruft nicht an" nicht von „er ruft an und wird abgewiesen"
+  unterscheiden.
+- **Die Warnung an der Sicherungsdatei hat wieder einen Rahmen.** Sie stand
+  seit jeher als nackter Fließtext da — die CSS-Klasse `sm-warnung` ist in
+  diesem Plugin nirgends definiert.
+- **Das Application Secret steht nicht mehr im Seitenquelltext.** Ein leeres
+  Feld heißt jetzt „unverändert lassen"; gelöscht wird über den Haken darunter.
+- **Das Lebenszeichen geht nicht mehr `retained` hinaus** und die drei
+  Zahlenwerte stehen jetzt **in der Importvorlage** — bisher mussten Sie
+  ausgerechnet die Eingänge der Ausfallerkennung von Hand anlegen.
+- **Ausgenommene Geräte stehen nicht mehr in den Eingangsvorlagen.** Sie
+  erzeugten virtuelle Eingänge, die nie einen Wert bekamen und in Loxone auf
+  `0` stehenblieben.
+- **Eine beschädigte Konfiguration wird nicht mehr stillschweigend ersetzt.**
+  War die `gardena.cfg` leer oder unlesbar, erzeugte das Plugin beim Öffnen
+  der Oberfläche ein **neues Zugriffstoken** und schrieb es weg — jede im
+  Miniserver eingetragene Adresse war danach ungültig, ohne ein Wort. Jetzt
+  wird nichts geschrieben, der Zustand steht im Reiter *Test* und die
+  Meldung nennt die Datei und die Zweitschrift daneben. (Gemessen am
+  05.09.2026 an 1.2.5 und 1.2.6 nebeneinander.)
+- **Beim Deinstallieren werden auch die Zweitschriften entfernt.** Bis 1.2.5
+  blieben `…​.backup.gardena.cfg`, `….backup.gardena_token.json` und
+  `….backup.devices_cache.json` liegen — mit Application Secret,
+  Endpunkt-Token und einem gültigen OAuth2-Token der Husqvarna-Wolke. Die
+  Deinstallation meldete trotzdem, die Zugangsdaten seien gelöscht.
+
+**Kleiner, aber gemeldet statt still**
+
+Ein ungültiges MQTT-Basisthema und ein Gerätename mit Komma in der
+Ausnahmeliste werden jetzt beanstandet statt wortlos zurechtgebogen; eine
+Miniserver-Nummer wird gegen die wirklich eingerichteten gehalten; der
+Cron-Lauf sucht seinen PHP-Interpreter und meldet einen Fehlschlag, statt
+lautlos nichts zu tun; `type` und `cmd` werden gegeneinander geprüft, statt
+einen Abruf des Husqvarna-Kontingents an einen Befehl zu verschwenden, den es
+für dieses Gerät nicht gibt; die Konfiguration wird beim Öffnen und beim
+Dienststart **vervollständigt**; und `SELFTEST` liefert `TOKEN=1` statt
+`TOKEN=OK`, damit die Zeile durchgehend aus Zahlen besteht.
+
+**Umstiegshinweis.** Es ändert sich kein MQTT-Thema und keine Adresse. Zwei
+Dinge sind neu: `&type=` ist am Endpunkt jetzt **Pflicht** (bisher galt
+stillschweigend `MOWER_CONTROL`) — steht es in einem Ihrer Virtuellen
+Ausgänge nicht, tragen Sie es nach. Und der Suchtext `;TOKEN=` am
+`?selftest=1` liest jetzt eine 1 statt des Textes `OK`.
+
+## Neu in 1.2.0
+
 Holt zyklisch (alle 5 Minuten) die Daten aller GARDENA-smart-system-Geräte
 (Mähroboter, Bewässerungscomputer/Ventile, Sensoren, Steckdosen, Gateway) und
 sendet sie an den Loxone Miniserver – per **UDP** und/oder **MQTT**
@@ -311,7 +387,8 @@ dem Zerlegen nur ganze Zeilen, deren erstes sichtbares Zeichen `#` ist; ein
   - `/plugins/gardenasmartsystem/index.php?action=command&token=TOKEN&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600`
   - `...&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK`
   - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
-- Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list` (ohne Token, rein lesend)
+- Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list&token=…`
+  (rein lesend, aber **mit** Token — seit 1.1.0 verlangen es alle Endpunkte)
 
 ### Zugriffstoken
 
@@ -340,7 +417,8 @@ Copyright-Hinweise bleiben unverändert erhalten; die Plugin-Kennung
 
 Gemäß Apache-2.0 (Abschnitt 4b) hier die Liste der geänderten Bestandteile:
 
-- `webfrontend/html/gardena.class.inc.php` — vollständig neu: GARDENA smart
+- `bin/gardena.class.inc.php` (bis 1.0.2 unter `webfrontend/html/`, seit
+  1.1.0 ausserhalb des Apache-Wurzelverzeichnisses) — vollständig neu: GARDENA smart
   system **API v2** (OAuth2, Application Key/Secret) statt der abgeschalteten
   sg-1-API; ab v1.0.1 HTTP wahlweise über cURL oder PHP-Streams
 - `webfrontend/htmlauth/index.php`, `webfrontend/html/*` — neue Oberfläche für
@@ -348,7 +426,8 @@ Gemäß Apache-2.0 (Abschnitt 4b) hier die Liste der geänderten Bestandteile:
 - `cron/cron.05min` — neuer Abrufzyklus, UDP- und MQTT-Ausgabe
 - `dpkg/apt` — `libstring-escape-perl` entfernt (Perl-Teile entfallen),
   `php-curl` nur noch als Empfehlung
-- `plugin.cfg` — Versionsstand 1.0.1
+- `plugin.cfg` — Fassungsstand, Abhängigkeiten und Selbstaktualisierung
+  (die Nummer steht dort, nicht hier: eine zweite Stelle läuft weg)
 
 Forum-Thread des ursprünglichen Plugins:
 https://www.loxforum.com/forum/projektforen/loxberry/plugins/160685-plugin-gardena-smart-system
@@ -411,8 +490,10 @@ er beschreibt, *warum* das Plugin so gebaut ist; er betrifft die Fassung 1.1.0.
   Pfad `/tmp/uploads/…`. Den gibt es nur beim Hochladen über die Oberfläche;
   beim Auto-Update lief das Sichern ins Leere, und `gardena.cfg` mit Application
   Key, Secret und Zugriffstoken war nach dem Update weg. Gesichert wird jetzt
-  nach `data/plugins/<Ordner>/upgrade_sicherung` — auf der Karte, nicht in der
-  Ramdisk. Der alte Ort wird beim Update von 1.0.2 noch mitgelesen.
+  nach `data/plugins/<Ordner>.upgrade_sicherung` — mit **Punkt**, also als
+  Nachbar des Plugin-Ordners und nicht darin: `rm -rf …/<Ordner>/` trifft den
+  Nachbarn nicht, und genau deshalb übersteht die Sicherung das Update. Sie
+  liegt auf der Karte, nicht in der Ramdisk. Der alte Ort wird beim Update von 1.0.2 noch mitgelesen.
 - Das `cp` in `postupgrade.sh` lief ohne Existenzprüfung. Schlug es fehl, legte
   die Zeile darunter per `>>` eine `gardena.cfg` an, in der **nur**
   `LOCALTIME=0` stand — eine Datei ohne Abschnitt `[GARDENA]`, mit der danach

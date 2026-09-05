@@ -10,6 +10,17 @@ LBHOMEDIR="${LBHOMEDIR:-$5}"
 
 BASE="${ARGV5:-$LBHOMEDIR}"
 PFOLDER="${ARGV3:-gardenasmartsystem}"
+# Ohne eine brauchbare Wurzel wird NICHTS angefasst.
+# Sind $5 und LBHOMEDIR beide leer, entstuenden sonst absolute Pfade ab der
+# Wurzel: mkdir -p /config/plugins/... und rm -rf /data/plugins/... . Der
+# feste Namensteil verhindert den grossen Schaden, und als loxberry scheitert
+# es voraussichtlich an den Rechten - sauber ist es nicht. uninstall/uninstall
+# macht diese Pruefung im selben Paket seit jeher richtig.
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    echo "<WARNING> LoxBerry-Wurzel nicht bestimmbar (weder Argument 5 noch LBHOMEDIR)."
+    echo "<WARNING> Es wurde nichts geaendert."
+    exit 0
+fi
 SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 
 mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" \
@@ -46,13 +57,18 @@ if [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; th
     chmod 0600 "$BASE/config/plugins/$PFOLDER/gardena_token.json" 2>/dev/null
     echo "<OK> Konfiguration zurueckgestellt."
 else
-    # Kein blinder Alarm: der Installer loescht beim Update AUCH
-    # data/plugins/<ordner> und damit die Sicherung, die preupgrade.sh
-    # dorthin geschrieben hat - diese Kette kann hier gar nichts finden.
-    # Gerettet wird aus der Zweitschrift neben dem Ordner, und das tut
-    # postinstall.sh, das VOR postupgrade laeuft. Also erst nachsehen,
-    # wie es wirklich steht; eine Warnung bei heiler Konfiguration
-    # erschreckt ohne Grund und entwertet die echte.
+    # Kein blinder Alarm. BERICHTIGT in 1.2.6: der Kommentar behauptete
+    # hier, der Installer loesche data/plugins/<ordner> und damit die
+    # Sicherung aus preupgrade.sh - "diese Kette kann hier gar nichts
+    # finden". Das ist falsch und widersprach preupgrade.sh, das im selben
+    # Paket richtig erklaert, warum die Sicherung ueberlebt: sie liegt als
+    # NACHBAR (<ordner>.upgrade_sicherung, mit Punkt), nicht IM Ordner.
+    # rm -rf .../<ordner>/ trifft den Nachbarn nicht. Wer den alten
+    # Kommentar las, hielt den Hauptrettungsweg fuer tot.
+    # Gerettet wird ausserdem aus der Zweitschrift neben dem Konfigordner,
+    # und das tut postinstall.sh, das VOR postupgrade laeuft. Also erst
+    # nachsehen, wie es wirklich steht; eine Warnung bei heiler
+    # Konfiguration erschreckt ohne Grund und entwertet die echte.
     NETZ_PRUEF="${5:-$LBHOMEDIR}/config/plugins/${3:-gardenasmartsystem}/gardena.cfg"
     if [ -s "$NETZ_PRUEF" ]; then
         echo "<OK> Die Einstellungen sind vorhanden (aus der Zweitschrift)."
@@ -75,7 +91,13 @@ fi
 
 # Das zwischengespeicherte OAuth2-Token verwerfen: nach einem Update kann
 # sich die Struktur geaendert haben, und ein neues ist in einer Sekunde da.
+# ... UND die Zweitschrift dazu. Bis 1.2.5 wurde nur das Original
+# geloescht; die Kopie .backup.gardena_token.json blieb liegen - also genau
+# das Geheimnis, das hier bewusst verworfen werden soll, ueberlebte
+# unbegrenzt. postinstall.sh haette es beim naechsten Update sogar wieder
+# zurueckgespielt.
 rm -f "$BASE/config/plugins/$PFOLDER/gardena_token.json" 2>/dev/null
+rm -f "${5:-$LBHOMEDIR}/config/plugins/${3:-gardenasmartsystem}.backup.gardena_token.json" 2>/dev/null
 
 rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" 2>/dev/null
 rm -rf "/tmp/uploads/${ARGV1}_upgrade" "/tmp/${ARGV1}_upgrade" 2>/dev/null

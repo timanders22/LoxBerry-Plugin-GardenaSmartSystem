@@ -11,7 +11,41 @@
 # Skript in bin/ und ist von aussen nicht erreichbar.
 #
 # Laeuft als Benutzer loxberry.
-if [ -f REPLACELBPBINDIR/gardenaMain.php ]; then
-    /usr/bin/php REPLACELBPBINDIR/gardenaMain.php >/dev/null 2>&1
+# Den Interpreter suchen statt ihn zu verdrahten. webfrontend/html/index.php
+# bestimmt ihn im selben Paket ueber PHP_BINARY mit /usr/bin/php als
+# Rueckfall; ein LoxBerry mit Sury-PHP kann abweichen. Dann lief bis 1.2.5
+# der Sofort-Abruf, der Cron-Abruf aber nicht - ein Fehlerbild, bei dem "von
+# Hand geht es doch" in die Irre fuehrt.
+PHPBIN="$(command -v php 2>/dev/null)"
+[ -n "$PHPBIN" ] || PHPBIN=/usr/bin/php
+
+LOGDIR="REPLACELBPLOGDIR"
+melde() {
+    # Nur melden, wenn wirklich etwas schiefging - im Normalfall schweigt
+    # der Cron. Ohne diese Zeilen passierte bis 1.2.5 GAR NICHTS und niemand
+    # erfuhr es: Rueckgabewert und Fehlerausgabe gingen nach /dev/null, ein
+    # else-Zweig fehlte, und der Lauf endete mit 0. Die Ausfallerkennung
+    # hilft hier nicht - sie wird von dem Skript geschrieben, das gar nicht
+    # erst startet.
+    if [ -d "$LOGDIR" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERR $1" >> "$LOGDIR/gardena_cron.log"
+    else
+        logger -t gardenasmartsystem "$1" 2>/dev/null
+    fi
+}
+
+if [ ! -f REPLACELBPBINDIR/gardenaMain.php ]; then
+    melde "gardenaMain.php nicht gefunden - Plugin neu installieren."
+    exit 0
+fi
+if [ ! -x "$PHPBIN" ]; then
+    melde "Kein PHP gefunden ($PHPBIN) - der Abruf kann nicht laufen."
+    exit 0
+fi
+
+FEHLER="$("$PHPBIN" REPLACELBPBINDIR/gardenaMain.php 2>&1 >/dev/null)"
+RC=$?
+if [ "$RC" -ne 0 ]; then
+    melde "gardenaMain.php endete mit Rueckgabewert $RC. ${FEHLER:-Keine Fehlerausgabe.}"
 fi
 exit 0

@@ -67,8 +67,11 @@ $glogfile = $lbplogdir . '/gardena_ui.log';
 
 /* Die Kurzformen gt()/ge() sind seit 1.1.6 aufgeloest (Sprachmechanik-
  * Vereinheitlichung 13.08.2026): ueberall stehen die vollen Namen
- * gardena_t() (aus bin/functions.inc.php) und gardena_e(). */
-function gardena_e($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
+ * gardena_t() und gardena_e() - BEIDE seit 1.2.6 aus bin/functions.inc.php.
+ * Der Escape-Helfer stand bis dahin hier, und damit konnte keine
+ * Bibliotheksfunktion ihn benutzen: gardena_sicherung_lesen() maskierte
+ * deshalb selbst, die Oberflaeche ein zweites Mal, und der Anwender las
+ * "A&amp;B" statt "A&B". Die Hausform sieht ihn in der Bibliothek vor. */
 
 /* ==================================================================
  * Selbstpruefung (Reiter Test)
@@ -307,18 +310,158 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
         // und sucht den Fehler dann bei sich.
         $kaputt = array();
         $vorher = libxml_use_internal_errors(true);
-        list(, $xa) = gardena_vorlage($cachedatei, $cfg['MQTT_TOPIC'] !== '' ? $cfg['MQTT_TOPIC'] : 'gardena');
+        $ausg = gardena_ausgenommen($cfg);
+        list(, $xa) = gardena_vorlage($cachedatei,
+            $cfg['MQTT_TOPIC'] !== '' ? $cfg['MQTT_TOPIC'] : 'gardena', $ausg);
         if (simplexml_load_string($xa) === false) { $kaputt[] = 'VI_gardena.xml'; }
         list(, $xb) = gardena_vorlage_vo($cachedatei, $cfg['TOKEN'], $ordner);
         if (simplexml_load_string($xb) === false) { $kaputt[] = 'VQ_gardena_steuern.xml'; }
         list(, $xc) = gardena_vorlage_udp($cachedatei,
-            !empty($cfg['UDPPORT']) ? (int) $cfg['UDPPORT'] : 5005, '');
+            !empty($cfg['UDPPORT']) ? (int) $cfg['UDPPORT'] : 5005, '', $ausg);
         if (simplexml_load_string($xc) === false) { $kaputt[] = 'VI_gardena_udp.xml'; }
         libxml_clear_errors();
         libxml_use_internal_errors($vorher);
         $z[] = gardena_pruefzeile($kaputt ? -1 : 1, gardena_t('TEST.F_VORLAGE'),
             $kaputt ? sprintf(gardena_t('TEST.A_VORLAGE_FEHL'), implode(', ', $kaputt))
                     : gardena_t('TEST.A_VORLAGE_OK'));
+    }
+
+    /* ---- Bauen Vorlage und Sender die UDP-Zeile GLEICH? ----
+     *
+     * Gemessen am Erzeugnis, nicht am Quelltext: fuer jedes Geraet des
+     * Abbilds wird die Zeile gebildet, die der Dienst schicken WUERDE, und
+     * geprueft, ob der Suchtext der Vorlage darin vorkommt. Bis 1.2.5 bauten
+     * beide Seiten sie getrennt zusammen, und bei einem Geraetenamen mit zwei
+     * Leerzeichen traf der Suchtext nie - der Eingang blieb auf DefVal="0".
+     */
+    $u_ges = 0;
+    $u_fehl = array();
+    if (is_array($cache) && !empty($cache['locations'])) {
+        foreach ($cache['locations'] as $u_loc) {
+            if (empty($u_loc['devices']) || !is_array($u_loc['devices'])) { continue; }
+            foreach ($u_loc['devices'] as $u_id => $u_dev) {
+                $u_name = isset($u_dev['name']) && $u_dev['name'] !== '' ? $u_dev['name'] : $u_id;
+                if (empty($u_dev['services']) || !is_array($u_dev['services'])) { continue; }
+                foreach ($u_dev['services'] as $u_typ => $u_attrs) {
+                    if (!is_array($u_attrs)) { continue; }
+                    foreach ($u_attrs as $u_a => $u_v) {
+                        if ($u_a === '_service_id' || !is_array($u_v)
+                            || !array_key_exists('value', $u_v)) { continue; }
+                        if (!is_numeric($u_v['value'])) { continue; }
+                        $u_ges++;
+                        $u_gesendet = gardena_udp_zeile($u_typ, $u_name, $u_a, $u_v['value']);
+                        $u_muster = gardena_udp_zeile($u_typ, $u_name, $u_a);
+                        $u_suchteil = substr($u_muster, 0, strrpos($u_muster, ':') + 1);
+                        if (strpos($u_gesendet, $u_suchteil) !== 0) {
+                            $u_fehl[] = $u_name . '.' . $u_a;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if ($u_ges === 0) {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_UDPNAME'), gardena_t('TEST.A_UDPNAME_LEER'));
+    } else {
+        $z[] = gardena_pruefzeile($u_fehl ? -1 : 1, gardena_t('TEST.F_UDPNAME'),
+            $u_fehl ? sprintf(gardena_t('TEST.A_UDPNAME_FEHL'), count($u_fehl), $u_ges,
+                              implode(', ', array_slice($u_fehl, 0, 5)))
+                    : sprintf(gardena_t('TEST.A_UDPNAME_OK'), $u_ges));
+    }
+
+    /* ---- Kennt der Endpunkt jeden Befehl, den die Vorlage erzeugt? ----
+     * Gemessen an der ERZEUGTEN Vorlage der Virtuellen Ausgaenge, nicht an
+     * der Tabelle daneben. Bis 1.2.5 pruefte der Endpunkt type und cmd gegen
+     * zwei getrennte flache Listen und nie gegeneinander.
+     */
+    if (!is_file($cachedatei)) {
+        // Die Zeile darf nicht VERSCHWINDEN, nur weil ihre Menge leer ist -
+        // eine fehlende Zeile sieht aus wie eine bestandene.
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_BEFEHLE'),
+                                  gardena_t('TEST.A_BEFEHLE_KEIN_ABBILD'));
+    } else {
+        list(, $b_xml) = gardena_vorlage_vo($cachedatei, $cfg['TOKEN'], $ordner);
+        $b_erlaubt = gardena_befehle();
+        $b_treffer = array();
+        /* Im XML steht '&amp;', nicht '&' - die Adresse laeuft durch
+         * htmlspecialchars(). Beim ersten Lauf dieser Zeile traf das Muster
+         * deshalb NICHTS und meldete "kein Geraet zum Schalten erkannt": eine
+         * gruene Zeile, die nichts gemessen hatte. Deshalb steht unten auch
+         * die Zahl der gefundenen Stellen im Text - eine Null faellt dann auf. */
+        preg_match_all('/type=([A-Z_]+)(?:&amp;|&)cmd=([A-Z_]+)/', $b_xml, $b_m, PREG_SET_ORDER);
+        foreach ($b_m as $b_t) {
+            if (!isset($b_erlaubt[$b_t[1]]) || !in_array($b_t[2], $b_erlaubt[$b_t[1]], true)) {
+                $b_treffer[] = $b_t[1] . '/' . $b_t[2];
+            }
+        }
+        if (!$b_m) {
+            $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_BEFEHLE'), gardena_t('TEST.A_BEFEHLE_LEER'));
+        } else {
+            $z[] = gardena_pruefzeile($b_treffer ? -1 : 1, gardena_t('TEST.F_BEFEHLE'),
+                $b_treffer ? sprintf(gardena_t('TEST.A_BEFEHLE_FEHL'),
+                                     implode(', ', array_unique($b_treffer)))
+                           : sprintf(gardena_t('TEST.A_BEFEHLE_OK'), count($b_m)));
+        }
+    }
+
+    /* ---- Ist jede benutzte CSS-Klasse auch definiert? ----
+     * Die Klasse sm-warnung stand seit jeher im HTML und in keiner Regel des
+     * Stilblocks - der Warnhinweis an der Sicherungsdatei war dadurch
+     * gewoehnlicher Fliesstext. Kein Werkzeug der Pruefkette sah es, weil
+     * ein Tippfehler in einem Selektor keine Fehlermeldung erzeugt, sondern
+     * gar nichts. Diese Zeile liest ALLE Dateien der Oberflaeche.
+     */
+    $c_quelle = '';
+    // array_unique: __FILE__ und __DIR__/index.php sind heute dieselbe
+    // Datei. Sobald die Oberflaeche auf mehrere Dateien waechst (der
+    // Normalfall, sobald die Selbstpruefung eine eigene bekommt), zaehlt
+    // diese Zeile ohne Aenderung mit - eine Zahl, die nur die halbe
+    // Grundmenge kennt, ist ein Nachweis, der nicht gilt.
+    foreach (array_unique(array(__FILE__, __DIR__ . '/index.php')) as $c_datei) {
+        if (is_file($c_datei)) { $c_quelle .= (string) @file_get_contents($c_datei); }
+    }
+    $c_def = array();
+    if (preg_match_all('#<style[^>]*>(.*?)</style>#s', $c_quelle, $c_s)) {
+        preg_match_all('/\.(sm-[A-Za-z0-9_-]+)/', implode('', $c_s[1]), $c_d);
+        $c_def = array_unique($c_d[1]);
+    }
+    $c_benutzt = array();
+    if (preg_match_all('/class\s*=\s*"([^"]*)"/', $c_quelle, $c_b)) {
+        foreach ($c_b[1] as $c_wert) {
+            // PHP-Bloecke im Attributwert ausblenden: was dort steht, ist
+            // zusammengesetzt und von hier aus nicht messbar.
+            foreach (explode(' ', preg_replace('/<\?.*?\?>/s', ' ', $c_wert)) as $c_k) {
+                if (strpos($c_k, 'sm-') === 0) { $c_benutzt[$c_k] = true; }
+            }
+        }
+    }
+    $c_fehlt = array_diff(array_keys($c_benutzt), $c_def);
+    if (!$c_def || !$c_benutzt) {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_CSS'), gardena_t('TEST.A_CSS_LEER'));
+    } else {
+        $z[] = gardena_pruefzeile($c_fehlt ? -1 : 1, gardena_t('TEST.F_CSS'),
+            $c_fehlt ? sprintf(gardena_t('TEST.A_CSS_FEHL'), implode(', ', $c_fehlt))
+                     : sprintf(gardena_t('TEST.A_CSS_OK'), count($c_benutzt), count($c_def)));
+    }
+
+    /* ---- Ist die Konfiguration heil? Jeder Zustand bekommt seinen Satz. ---- */
+    $h_z = gardena_cfg_zustand($cfgdatei);
+    $z[] = gardena_pruefzeile($h_z === 'unlesbar' ? -1 : ($h_z === 'neu' ? 0 : 1),
+        gardena_t('TEST.F_CFG_HEIL'),
+        gardena_t('TEST.A_CFG_' . strtoupper($h_z)));
+
+    /* ---- Konfiguration vollstaendig? Zwei Zahlen, im Fehlerfall die Namen. ---- */
+    $k_soll = array_keys(gardena_vorgaben());
+    $k_da = gardena_cfg_eigene_schluessel($cfgdatei);
+    $k_fehlt = array_diff($k_soll, $k_da);
+    if (!$k_da) {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_VOLLST'), gardena_t('TEST.A_VOLLST_LEER'));
+    } else {
+        $z[] = gardena_pruefzeile($k_fehlt ? -1 : 1, gardena_t('TEST.F_VOLLST'),
+            $k_fehlt ? sprintf(gardena_t('TEST.A_VOLLST_FEHL'),
+                               count($k_soll) - count($k_fehlt), count($k_soll),
+                               implode(', ', $k_fehlt))
+                     : sprintf(gardena_t('TEST.A_VOLLST_OK'), count($k_soll), count($k_soll)));
     }
 
     $gut = 0;
@@ -357,12 +500,12 @@ function gaktiv($id) { global $g_tab; return $g_tab === $id ? ' sm-active' : '';
  *  (devices_cache.json), also aus der letzten echten Gardena-Antwort -
  *  nichts ist geraten. Nur Zahlenwerte; Textwerte legt das Gateway beim
  *  ersten Empfang selbst an. */
-function gardena_vorlage($cachefile, $topic)
+function gardena_vorlage($cachefile, $topic, $ausgenommen = array())
 {
     $cache = json_decode((string) @file_get_contents($cachefile), true);
     $crlf = "\r\n";
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp HintText="" Title="Gardena smart system" Comment="Erzeugt vom LoxBerry-Plugin GardenaSmartSystem (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . htmlspecialchars($topic, ENT_QUOTES | ENT_XML1, 'UTF-8') . '/# noetig." Address="http://localhost" PollingTime="604800">' . $crlf;
+    $o .= '<VirtualInHttp HintText="" Title="Gardena smart system" Comment="Erzeugt vom LoxBerry-Plugin GardenaSmartSystem (' . date('d.m.Y') . '). Werte kommen vom MQTT-Gateway - Abo ' . htmlspecialchars($topic, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '/# noetig." Address="http://localhost" PollingTime="604800">' . $crlf;
     $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     // Bekannte Wertebereiche; alles andere bekommt weite, aber endliche Grenzen.
     $grenzen = array(
@@ -374,6 +517,14 @@ function gardena_vorlage($cachefile, $topic)
             if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
             foreach ($loc['devices'] as $devId => $dev) {
                 $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
+                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
+                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
+                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
+                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
+                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
+                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
+                if (in_array((string) $devName, $ausgenommen, true)
+                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
                 if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
                 foreach ($dev['services'] as $type => $attrs) {
                     if (!is_array($attrs)) { continue; }
@@ -399,13 +550,32 @@ function gardena_vorlage($cachefile, $topic)
                          * gardena_wert_eingang() ist jetzt die gemeinsame
                          * Quelle mit dem Sender in gardenaMain.php. */
                         $titel = gardena_wert_eingang($topic, $devName, $type, $attrName);
-                        $o .= "\t" . '<VirtualInHttpCmd Title="' . htmlspecialchars($titel, ENT_QUOTES | ENT_XML1, 'UTF-8') . '" ';
-                        $o .= 'Comment="' . htmlspecialchars($attrName . ' ' . $devName . ' (' . $type . ')', ENT_QUOTES | ENT_XML1, 'UTF-8') . '" Check=" " ';
-                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . htmlspecialchars($g[2], ENT_QUOTES | ENT_XML1, 'UTF-8') . '" HintText=""/>' . $crlf;
+                        $o .= "\t" . '<VirtualInHttpCmd Title="' . htmlspecialchars($titel, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
+                        $o .= 'Comment="' . htmlspecialchars($attrName . ' ' . $devName . ' (' . $type . ')', ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Check=" " ';
+                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . htmlspecialchars($g[2], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" HintText=""/>' . $crlf;
                     }
                 }
             }
         }
+    }
+    /* Die Werte des Lebenszeichens gehen bei JEDEM Lauf hinaus und tragen
+     * die Ausfallerkennung aus der Baustein-Liste. Bis 1.2.5 kamen sie in
+     * keiner Vorlage vor - ausgerechnet die Eingaenge, ohne die ein toter
+     * Dienst unbemerkt bleibt, musste der Anwender von Hand anlegen und ihre
+     * Namen abtippen. 'fehler' bleibt draussen: ein Textwert bekommt keinen
+     * virtuellen Eingang, den legt das Gateway beim ersten Empfang selbst an. */
+    foreach (array('ok'          => array('0', '1', '<v.0>'),
+                   'zeitstempel' => array('0', '2000000000', '<v.0>'),
+                   'werte'       => array('0', '100000', '<v.0>')) as $gl_name => $gl_g) {
+        $gl_titel = gardena_wert_eingang($topic, 'Plugin', 'STATUS', $gl_name);
+        $gl_x = function ($t) {
+            return htmlspecialchars((string) $t, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
+        };
+        $o .= "\t" . '<VirtualInHttpCmd Title="' . $gl_x($gl_titel) . '" ';
+        $o .= 'Comment="' . $gl_x(gardena_t('LOX.LZ_' . strtoupper($gl_name))) . '" Check=" " ';
+        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" '
+            . 'SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $gl_g[0]
+            . '" MaxVal="' . $gl_g[1] . '" Unit="' . $gl_x($gl_g[2]) . '" HintText=""/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
     return array('VI_gardena.xml', $o);
@@ -426,14 +596,37 @@ $gpost = ($_SERVER['REQUEST_METHOD'] === 'POST');
  * es wird nichts geschrieben und nichts erzeugt. Gemeldet wird es
  * trotzdem - ein Formular, das wortlos nichts tut, schickt den Anwender
  * auf die Suche nach einem Fehler, den es nicht gibt. */
-if ($gpost && !gardena_formtoken_ok(gardena_cfg_read($gconfigfile))) {
+/*
+ * Der eine Fall, der KEIN fremder Absender ist.
+ *
+ * Ueberschreitet eine hochgeladene Datei post_max_size, liefert PHP ein
+ * LEERES $_POST - auch ohne formtoken. Bis 1.2.5 bekam der Anwender dann die
+ * Warnung "Kommt die Meldung wiederholt, wurde die Seite von ausserhalb
+ * aufgerufen", also einen Angriffsverdacht, wo nur die Datei zu gross war.
+ * Die eigens dafuer vorhandene Meldung stand hinter dem Wachposten und war
+ * unerreichbar.
+ */
+$gzuviel = (isset($_SERVER['CONTENT_LENGTH']) && (int) $_SERVER['CONTENT_LENGTH'] > 0
+            && !$_POST && !$_FILES);
+if ($gzuviel) {
+    $gfehler[] = gardena_t('EINST.SICH_ZU_GROSS');
+    $gpost = false;
+} elseif ($gpost && !gardena_formtoken_ok(gardena_cfg_read($gconfigfile))) {
     $gfehler[] = gardena_t('ALLG.FORMTOKEN');
     $gpost = false;
 }
 
 // Protokoll leeren
 if ($gpost && isset($_POST['clearlog'])) {
-    @file_put_contents($glogfile, '[' . date('Y-m-d H:i:s') . "] INF Protokoll geleert (Oberflaeche)\n");
+    // Rueckgabe pruefen: scheitert das Schreiben (Rechte, Platz), tat der
+    // Knopf bis 1.2.5 wortlos nichts, und der Reiter zeigte dieselben Zeilen
+    // weiter. Genau das Muster, das der Wachposten daneben vermeiden will.
+    if (@file_put_contents($glogfile,
+            '[' . date('Y-m-d H:i:s') . "] INF Protokoll geleert (Oberflaeche)\n") === false) {
+        $gfehler[] = gardena_t('LOG.LEEREN_FEHLER') . ' ' . gardena_e($glogfile);
+    } else {
+        $gsaved = true;
+    }
     $g_tab = 'tab-log';
 }
 
@@ -503,11 +696,11 @@ if ($gpost && isset($_POST['newtoken'])) {
  * Geraetenamen, denn anders als beim MQTT-Thema wird er fuer UDP nicht
  * umgeschrieben.
  */
-function gardena_vorlage_udp($cachefile, $port, $eigene_ip)
+function gardena_vorlage_udp($cachefile, $port, $eigene_ip, $ausgenommen = array())
 {
     $cache = json_decode((string) @file_get_contents($cachefile), true);
     $crlf = "\r\n";
-    $x = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8'); };
+    $x = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8'); };
     $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualInUdp HintText="" Title="Gardena smart system (UDP)" Comment="Erzeugt vom LoxBerry-Plugin GardenaSmartSystem ('
         . date('d.m.Y') . '). Der LoxBerry sendet die Werte an diesen Port." Address="'
@@ -522,6 +715,14 @@ function gardena_vorlage_udp($cachefile, $port, $eigene_ip)
             if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
             foreach ($loc['devices'] as $devId => $dev) {
                 $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
+                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
+                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
+                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
+                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
+                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
+                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
+                if (in_array((string) $devName, $ausgenommen, true)
+                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
                 if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
                 foreach ($dev['services'] as $type => $attrs) {
                     if (!is_array($attrs)) { continue; }
@@ -533,7 +734,14 @@ function gardena_vorlage_udp($cachefile, $port, $eigene_ip)
                         $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
                         $o .= "\t" . '<VirtualInUdpCmd Title="' . $x($devName . ' ' . $attrName) . '" ';
                         $o .= 'Comment="' . $x($attrName . ' ' . $devName . ' (' . $type . ')') . '" Address="" ';
-                        $o .= 'Check="' . $x($type . '.' . $devName . '.' . $attrName . ':\v') . '" ';
+                        /* Der Suchtext kommt aus DERSELBEN Funktion wie die
+                         * gesendete Zeile (bin/functions.inc.php). Bis 1.2.5
+                         * baute die Vorlage ihn selbst zusammen und liess dabei
+                         * Mehrfachleerzeichen und Tabulatoren stehen, die der
+                         * Sender zusammenfallen laesst - bei einem
+                         * Geraetenamen mit zwei Leerzeichen traf der Suchtext
+                         * nie, und der Eingang blieb auf DefVal="0" stehen. */
+                        $o .= 'Check="' . $x(gardena_udp_zeile($type, $devName, $attrName)) . '" ';
                         $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="'
                             . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . $x($g[2]) . '" HintText=""/>' . $crlf;
                     }
@@ -575,7 +783,7 @@ function gardena_vorlage_vo($cachefile, $token, $ordner)
     $cache = json_decode((string) @file_get_contents($cachefile), true);
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut HintText="" Title="Gardena steuern (LoxBerry-Plugin)" Comment="Steuerbefehle ueber das Plugin ' . htmlspecialchars($ordner, ENT_QUOTES | ENT_XML1, 'UTF-8') . ' - enthaelt das Token." Address="http://' . htmlspecialchars($host, ENT_QUOTES | ENT_XML1, 'UTF-8') . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="Gardena steuern (LoxBerry-Plugin)" Comment="Steuerbefehle ueber das Plugin ' . htmlspecialchars($ordner, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . ' - enthaelt das Token." Address="http://' . htmlspecialchars($host, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     $befehle = array(
         'MOWER' => array(
@@ -605,8 +813,8 @@ function gardena_vorlage_vo($cachefile, $token, $ordner)
                     if (!in_array($dienst, $dienste, true)) { continue; }
                     foreach ($liste as $b) {
                         $adr = $basis . '&device=' . rawurlencode($devName) . '&type=' . $b[1] . '&cmd=' . $b[2];
-                        $o .= "\t" . '<VirtualOutCmd Title="' . htmlspecialchars($devName . ' ' . $b[0], ENT_QUOTES | ENT_XML1, 'UTF-8') . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
-                        $o .= 'CmdOn="' . htmlspecialchars($adr, ENT_QUOTES | ENT_XML1, 'UTF-8') . '" ';
+                        $o .= "\t" . '<VirtualOutCmd Title="' . htmlspecialchars($devName . ' ' . $b[0], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
+                        $o .= 'CmdOn="' . htmlspecialchars($adr, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
                         $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
                         $o .= 'Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
                     }
@@ -648,10 +856,12 @@ if ($gpost && isset($_POST['vorlage'])) {
             isset($gc_v['TOKEN']) ? $gc_v['TOKEN'] : '', $gordner);
     } elseif ($_POST['vorlage'] === 'udp') {
         list($g_vname, $g_vinhalt) = gardena_vorlage_udp($gcachefile,
-            !empty($gc_v['UDPPORT']) ? (int) $gc_v['UDPPORT'] : 5005, $g_ip);
+            !empty($gc_v['UDPPORT']) ? (int) $gc_v['UDPPORT'] : 5005, $g_ip,
+            gardena_ausgenommen($gc_v));
     } else {
         list($g_vname, $g_vinhalt) = gardena_vorlage($gcachefile,
-            !empty($gc_v['MQTT_TOPIC']) ? $gc_v['MQTT_TOPIC'] : 'gardena');
+            !empty($gc_v['MQTT_TOPIC']) ? $gc_v['MQTT_TOPIC'] : 'gardena',
+            gardena_ausgenommen($gc_v));
     }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $g_vname . '"');
@@ -661,8 +871,25 @@ if ($gpost && isset($_POST['vorlage'])) {
 
 // ---------- MQTT speichern (eigener Reiter seit 1.1.6, Hausstandard) ----------
 if ($gpost && isset($_POST['mqtt_save'])) {
-    $gtopic_mq = preg_replace('#[^A-Za-z0-9_/\-]#', '', trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : 'gardena')));
-    if ($gtopic_mq === '') { $gtopic_mq = 'gardena'; }
+    /*
+     * Abweisen und melden, nicht still zurechtbiegen.
+     *
+     * Bis 1.2.5 schnitt preg_replace unerlaubte Zeichen wortlos heraus und
+     * ein leeres Ergebnis wurde ebenso wortlos zu 'gardena'. Der Anwender
+     * tippte "garten/nord #1", bekam "Konfiguration gespeichert." - und trug
+     * danach im MQTT-Gateway das Abo ein, das er getippt hatte, nicht das,
+     * das gespeichert wurde. Am Miniserver kam nichts an.
+     */
+    $gtopic_roh = trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
+    $gtopic_mq = $gtopic_roh;
+    if ($gtopic_roh === '') {
+        $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.MQTT_LEER');
+    } elseif (preg_match('#^[A-Za-z0-9_/\-]{1,120}$#', $gtopic_roh) !== 1) {
+        // MQTT_ZEICHEN_FEHL, nicht MQTT_ZEICHEN: dieser Text geht durch
+        // gardena_e() in die Beanstandungsliste, und ein Text mit
+        // <span class='sm-mono'> stuende dort im Wortlaut auf dem Bildschirm.
+        $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.MQTT_ZEICHEN_FEHL');
+    }
     $gneu_mq = array(
         'MQTT_ENABLED' => (isset($_POST['mqtt_enabled']) && $_POST['mqtt_enabled'] === '1') ? '1' : '0',
         'MQTT_TOPIC' => $gtopic_mq,
@@ -680,7 +907,24 @@ if ($gpost && isset($_POST['save'])) {
     // Fehler werden GESAMMELT und am Stueck gemeldet, nicht beim ersten
     // Stolpern abgebrochen - sonst arbeitet man sich Feld fuer Feld durch.
     $gcid = trim((string) (isset($_POST['client_id']) ? $_POST['client_id'] : ''));
-    $gsec = trim((string) (isset($_POST['client_secret']) ? $_POST['client_secret'] : ''));
+    /*
+     * Ein leeres Kennwortfeld loescht NICHTS.
+     *
+     * Das Secret steht seit 1.2.6 nicht mehr im Seitenquelltext, das Feld
+     * kommt also bei jedem Speichern leer zurueck. Leer heisst deshalb
+     * "unveraendert lassen"; geloescht wird ueber den Haken daneben. Der
+     * Browser fuellt ein type=password ohnehin nicht vor - wer nur den
+     * Benutzernamen aendert, verloere sonst die Anmeldung.
+     */
+    $gsec_roh = trim((string) (isset($_POST['client_secret']) ? $_POST['client_secret'] : ''));
+    $gsec_alt = (string) gardena_cfg_read($gconfigfile)['CLIENT_SECRET'];
+    if (isset($_POST['secret_loeschen']) && $_POST['secret_loeschen'] === '1') {
+        $gsec = '';
+    } elseif ($gsec_roh === '') {
+        $gsec = $gsec_alt;
+    } else {
+        $gsec = $gsec_roh;
+    }
     $gport = (int) (isset($_POST['udpport']) ? $_POST['udpport'] : 5005);
     $genabled = (isset($_POST['enabled']) && $_POST['enabled'] === '1') ? '1' : '0';
     $gtakt_neu = (int) (isset($_POST['intervall']) ? $_POST['intervall'] : 5);
@@ -702,6 +946,24 @@ if ($gpost && isset($_POST['save'])) {
     if ($gmesser < 0 || $gmesser > 100000) {
         $gfehler[] = gardena_t('EINST.MESSER_INTERVALL') . ': 0 - 100000';
         $gmesser = 0;
+    }
+    /*
+     * Die Miniserver-Nummer gegen die WIRKLICH vorhandenen halten.
+     *
+     * Bis 1.2.5 wurde sie nur mit max(1, (int) ...) nach unten gekappt:
+     * "99" wurde als 99 gespeichert, "abc" wurde zu 1. Steht dort eine
+     * Nummer, die es nicht gibt, sendet der Dienst ins Leere - und weder
+     * die Oberflaeche noch der Reiter Test sagten ein Wort dazu.
+     */
+    $gmsliste = LBSystem::get_miniservers();
+    if (!is_array($gmsliste)) { $gmsliste = array(); }
+    $gmsnr = (int) (isset($_POST['miniserver']) ? $_POST['miniserver'] : 1);
+    if ($gmsnr < 1) {
+        $gfehler[] = gardena_t('EINST.MINISERVER') . ': ' . gardena_t('EINST.MS_UNGUELTIG');
+        $gmsnr = 1;
+    } elseif ($gmsliste && !isset($gmsliste[$gmsnr])) {
+        $gfehler[] = sprintf(gardena_t('EINST.MS_UNBEKANNT'), $gmsnr,
+                             implode(', ', array_keys($gmsliste)));
     }
 
     // Das bestehende Token weiterverwenden - es darf beim Speichern der
@@ -728,7 +990,7 @@ if ($gpost && isset($_POST['save'])) {
             'ENABLED' => $genabled,
             'CLIENT_ID' => $gcid,
             'CLIENT_SECRET' => $gsec,
-            'MINISERVER' => max(1, (int) (isset($_POST['miniserver']) ? $_POST['miniserver'] : 1)),
+            'MINISERVER' => $gmsnr,
             'UDP_ENABLED' => (isset($_POST['udp_enabled']) && $_POST['udp_enabled'] === '1') ? '1' : '0',
             'UDPPORT' => $gport,
             'INTERVALL' => $gtakt_neu,
@@ -744,9 +1006,20 @@ if ($gpost && isset($_POST['save'])) {
                 foreach ($_POST['ausgenommen'] as $gn) {
                     if (!is_string($gn)) { continue; }
                     $gn = trim($gn);
-                    // Ein Komma trennt die Liste in der Konfiguration - ein
-                    // Geraetename mit Komma wuerde sie zerlegen.
-                    if ($gn !== '' && strpos($gn, ',') === false) { $gliste[] = $gn; }
+                    if ($gn === '') { continue; }
+                    /*
+                     * Ein Komma trennt die Liste in der Konfiguration - ein
+                     * Geraetename mit Komma wuerde sie zerlegen. Bis 1.2.5
+                     * fiel ein solcher Name WORTLOS heraus: der Anwender hakte
+                     * an, bekam "Konfiguration gespeichert.", das Geraet sendete
+                     * weiter, und beim naechsten Aufruf war das Haekchen wieder
+                     * weg. Er versucht es dann zwei- oder dreimal.
+                     */
+                    if (strpos($gn, ',') !== false) {
+                        $gfehler[] = sprintf(gardena_t('EINST.AUSG_KOMMA'), gardena_e($gn));
+                        continue;
+                    }
+                    $gliste[] = $gn;
                 }
             }
             $gneu['AUSGENOMMEN'] = implode(',', $gliste);
@@ -789,11 +1062,37 @@ if ($gpost && isset($_POST['save'])) {
 /* ==================================================================
  * Laden
  * ================================================================== */
+// Fehlende Schluessel EINMAL nachtragen. Hausstandard: die Konfiguration
+// wird vervollstaendigt, nicht nur beim Lesen ergaenzt - sonst steht in der
+// Datei etwas anderes als das, womit gearbeitet wird. Bis 1.2.5 ergaenzte nur
+// der Speichern-Handler, und auch der nur die Schluessel, die sein Formular
+// gerade mitschickte (gemessen: 2 von 4 fehlenden).
+/*
+ * Zustand ZUERST feststellen und merken.
+ *
+ * Der zuerst festgestellte Zustand gilt fuer die Dauer dieses Aufrufs: eine
+ * spaetere Lesefunktion sieht die Datei womoeglich schon wieder heil, und
+ * dann haette der Bediener nie erfahren, dass etwas war.
+ */
+$gcfg_zustand = gardena_cfg_zustand($gconfigfile);
+if ($gcfg_zustand === 'unlesbar') {
+    $gfehler[] = sprintf(gardena_t('EINST.CFG_UNLESBAR'), gardena_e($gconfigfile));
+    gardena_log('ERR', 'Die Konfigurationsdatei ist vorhanden, aber nicht lesbar: '
+        . $gconfigfile . ' - es wird NICHTS geschrieben und kein Token erzeugt.');
+} else {
+    gardena_cfg_vervollstaendigen($gconfigfile);
+}
+
 $gc = gardena_cfg_read($gconfigfile);
 
 // Beim ersten Oeffnen der Oberflaeche ein Token erzeugen. Ohne Token weist
 // der Endpunkt jeden Aufruf ab - das Plugin waere unbenutzbar.
-if ((string) $gc['TOKEN'] === '' && !$gpost) {
+//
+// NUR bei einer Datei, die es noch nicht gibt oder die heil ist. Ist sie da
+// und unlesbar, wuerde ein neues Token jede im Miniserver eingetragene
+// Adresse ungueltig machen - und der alte Wert steht vielleicht noch in der
+// Datei, die man gerade nicht lesen kann.
+if ((string) $gc['TOKEN'] === '' && !$gpost && $gcfg_zustand !== 'unlesbar') {
     $gneu = gtoken_erzeugen($gconfigfile, $gtokenmsg);
     if ($gneu !== '') { $gc['TOKEN'] = $gneu; }
 }
@@ -802,7 +1101,8 @@ $gtokenurl = ((string) $gc['TOKEN'] !== '') ? '&amp;token=' . rawurlencode($gc['
 $gms = LBSystem::get_miniservers();
 if (!is_array($gms)) { $gms = array(); }
 
-$gcache = json_decode((string) @file_get_contents($gcachefile), true);
+$gcache = is_file($gcachefile)
+    ? json_decode((string) @file_get_contents($gcachefile), true) : null;
 if (!is_array($gcache)) { $gcache = array(); }
 
 $gloglines = array();
@@ -812,7 +1112,11 @@ if (is_file($glogfile)) {
 }
 
 $ghatcurl = gardena::hasCurl();
-$ghatsockets = function_exists('socket_create');
+// Dieselbe Frage, dieselbe Antwort: gardena_udp_moeglich() prueft drei
+// Funktionen, function_exists('socket_create') nur eine. Bis 1.2.5 blieb bei
+// einer verstuemmelten Installation die rote Kopfmeldung aus, waehrend der
+// Reiter Test ein Kreuz setzte - zwei Antworten auf derselben Seite.
+$ghatsockets = gardena_udp_moeglich();
 $gpl = gardena_e($gordner);
 
 
@@ -823,8 +1127,37 @@ $gpl = gardena_e($gordner);
  * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($gpost && isset($_POST['gardena_sichern'])) {
-    $gardena_js = json_encode(gardena_config(),
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /*
+      * Ausgegeben werden GENAU die Schluessel, die das Zurueckspielen auch
+      * wieder annimmt. Bis 1.2.5 ging alles hinaus, was in der gardena.cfg
+      * stand; eine gewachsene Datei mit einem Rest aus einer alten Fassung
+      * (postupgrade.sh nennt LOCALTIME) erzeugte damit eine Sicherung, die
+      * das Plugin beim Zurueckspielen als "Unbekannte Einstellung" ABLEHNTE.
+      * Die eigene Sicherung war unbrauchbar - und genau fuer den Umzug auf
+      * einen zweiten LoxBerry ist sie gedacht. Gemessen am 05.09.2026.
+      */
+    $gardena_stand = gardena_sicherung_stand();
+    /*
+     * Vor dem Ausliefern die eigene Leseseite fragen. Sonst entsteht eine
+     * Datei, die das Plugin beim Zurueckspielen ablehnt - und das merkt man
+     * genau dann, wenn man sie braucht.
+     */
+    $gardena_unrueck = array();
+    foreach ($gardena_stand as $gk => $gv) {
+        if (!gardena_wert_taugt($gv) || gardena_wert_pruefen($gk, (string) $gv) !== '') {
+            $gardena_unrueck[] = $gk;
+        }
+    }
+    if ($gardena_unrueck) {
+        $gfehler[] = sprintf(gardena_t('EINST.SICH_NICHT_RUECK'),
+                             implode(', ', $gardena_unrueck));
+        gardena_log('ERR', 'Sicherung nicht erzeugt: diese Werte liessen sich nicht '
+            . 'zurueckspielen - ' . implode(', ', $gardena_unrueck));
+        $gardena_js = false;
+    } else {
+        $gardena_js = json_encode($gardena_stand,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
     if ($gardena_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="gardenasmartsystem_einstellungen_'
@@ -856,7 +1189,28 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
              * wird nichts. */
             $gfehler[] = gardena_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $gardena_mangel);
         } elseif (gardena_config_speichern($gardena_neu)) {
+            /*
+             * $gsaved traegt hier einen TEXT. Bis 1.2.5 wurde er nur als
+             * Wahrheitswert ausgewertet und die Zahl der uebernommenen Werte
+             * nie angezeigt - EINST.SICH_UEBERNOMMEN war toter Text in beiden
+             * Sprachdateien. Die Ausgabe unten kennt jetzt beide Faelle.
+             */
             $gsaved = sprintf(gardena_t('EINST.SICH_UEBERNOMMEN'), $gardena_n);
+            gardena_log('INF', 'Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
+                . $gardena_n . ' Werte).');
+            /*
+             * Den Stand NEU lesen.
+             *
+             * Der Ladeblock steht weiter oben; nach dem Zurueckspielen zeigte
+             * die Seite bis 1.2.5 weiter den alten Stand - altes Token, alte
+             * Adressen, und vor allem gardena_formtoken($gc) aus dem ALTEN
+             * Token in allen zehn Formularen. Der naechste Klick lief damit in
+             * "Das Formular kam ohne gueltiges Merkmal an": eine
+             * Fremdabsender-Warnung nach einer GEGLUECKTEN Wiederherstellung.
+             */
+            $gc = gardena_cfg_read($gconfigfile);
+            $gtokenurl = ((string) $gc['TOKEN'] !== '')
+                ? '&amp;token=' . rawurlencode($gc['TOKEN']) : '&amp;token=TOKEN';
         } else {
             $gfehler[] = gardena_t('EINST.SICH_SCHREIBFEHLER');
         }
@@ -930,7 +1284,8 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <?php if (!$ghatcurl) { ?>
 <div class="sm-alert sm-warn"><b><?= gardena_t('EINST.CURL_TITEL') ?></b><br><?= gardena_t('EINST.CURL_TEXT') ?></div>
 <?php } ?>
-<?php if ($gsaved) { ?><div class="sm-alert sm-ok"><b><?= gardena_t('ALLG.GESPEICHERT') ?></b></div><?php } ?>
+<?php if ($gsaved) { ?><div class="sm-alert sm-ok"><b><?=
+    is_string($gsaved) ? gardena_e($gsaved) : gardena_t('ALLG.GESPEICHERT') ?></b></div><?php } ?>
 <?php if ($gfehler) { ?>
 <div class="sm-alert sm-err"><b><?= gardena_t('ALLG.FEHLER') ?></b><br><?= gardena_e(implode(' | ', $gfehler)) ?></div>
 <?php } ?>
@@ -975,7 +1330,17 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
     </div>
     <div>
         <label><?= gardena_t('EINST.CLIENT_SECRET') ?></label>
-        <input data-role="none" type="password" name="client_secret" value="<?= gardena_e($gc['CLIENT_SECRET']) ?>">
+        <?php /* Das Secret steht NICHT mehr im Seitenquelltext. type="password"
+                  verdeckt nur die Anzeige; der Wert selbst stand bis 1.2.5 im
+                  Klartext im HTML, das der Browser puffert. Ein leeres Feld
+                  heisst jetzt "unveraendert lassen", geloescht wird ueber den
+                  Haken daneben - ein leeres Kennwortfeld darf nichts loeschen,
+                  weil der Browser es nicht vorfuellt. */ ?>
+        <input data-role="none" type="password" name="client_secret" value=""
+               placeholder="<?= gardena_e((string) $gc['CLIENT_SECRET'] !== ''
+                   ? gardena_t('EINST.SECRET_GESETZT') : gardena_t('EINST.SECRET_LEER')) ?>">
+        <label class="sm-small"><input data-role="none" type="checkbox" name="secret_loeschen" value="1">
+            <?= gardena_t('EINST.SECRET_LOESCHEN') ?></label>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('EINST.SECRET_HINWEIS') ?></div>
@@ -1107,7 +1472,7 @@ if ($gmesser_int > 0) {
 
 <h2><?= gardena_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= gardena_t('EINST.SICH_ERKLAERUNG') ?></div>
-<div class="sm-warnung"><?= gardena_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-alert sm-warn"><?= gardena_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -1127,7 +1492,6 @@ if ($gmesser_int > 0) {
 </div>
 </div>
 
-<!-- ================= Reiter: Geraete ================= -->
 <!-- ================= Reiter: MQTT (eigener Reiter seit 1.1.6, Hausstandard) ================= -->
 <div class="sm-seite<?= gaktiv('tab-mqtt') ?>" id="tab-mqtt">
 <form action="index.php" method="post">
@@ -1177,6 +1541,12 @@ if (!empty($gcache['locations']) && is_array($gcache['locations'])) {
                 if (!is_array($gattrs)) { continue; }
                 foreach ($gattrs as $ga => $gv) {
                     if ($ga === '_service_id' || !is_array($gv) || !array_key_exists('value', $gv)) { continue; }
+                    /* Was der Dienst nicht sendet, wird hier auch nicht
+                     * versprochen: gardena_wert_fehlt() ueberspringt Werte,
+                     * die die Wolke ohne Inhalt liefert. Bis 1.2.5 standen sie
+                     * in der Tabelle, und der Anwender suchte im Broker nach
+                     * einem Thema, das es nie gab. */
+                    if (gardena_wert_fehlt($gv['value'])) { continue; }
                     $gthemen_liste[] = array(
                         gardena_wert_thema((string) $gc['MQTT_TOPIC'], $gn, $gt, $ga),
                         $gn, $gt, $ga,
@@ -1203,6 +1573,7 @@ if (!$gthemen_liste) { ?>
 <?php } ?>
 </div>
 
+<!-- ================= Reiter: Geraete ================= -->
 <div class="sm-seite<?= gaktiv('tab-devices') ?>" id="tab-devices">
 <h2><?= gardena_t('GERAETE.H') ?><?= !empty($gcache['updated']) ? ' (' . gardena_t('GERAETE.LETZTER_ABRUF') . ' ' . gardena_e($gcache['updated']) . ')' : '' ?></h2>
 <?php if (empty($gcache['locations']) || !is_array($gcache['locations'])) { ?>

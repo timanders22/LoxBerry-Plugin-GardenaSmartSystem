@@ -11,6 +11,17 @@ LBHOMEDIR="${LBHOMEDIR:-$5}"
 
 BASE="${ARGV5:-$LBHOMEDIR}"
 PFOLDER="${ARGV3:-gardenasmartsystem}"
+# Ohne eine brauchbare Wurzel wird NICHTS angefasst.
+# Sind $5 und LBHOMEDIR beide leer, entstuenden sonst absolute Pfade ab der
+# Wurzel: mkdir -p /config/plugins/... und rm -rf /data/plugins/... . Der
+# feste Namensteil verhindert den grossen Schaden, und als loxberry scheitert
+# es voraussichtlich an den Rechten - sauber ist es nicht. uninstall/uninstall
+# macht diese Pruefung im selben Paket seit jeher richtig.
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    echo "<WARNING> LoxBerry-Wurzel nicht bestimmbar (weder Argument 5 noch LBHOMEDIR)."
+    echo "<WARNING> Es wurde nichts geaendert."
+    exit 0
+fi
 
 # Die Sicherung liegt BEWUSST NICHT unter /tmp/uploads/.
 #
@@ -69,11 +80,20 @@ fi
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-gardenasmartsystem}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+# Rueckgabe pruefen und nur melden, was wirklich geschah. Bis 1.2.5 stand
+# die Erfolgsmeldung UNBEDINGT hinter dem cp - sie erschien auch dann, wenn
+# das if daneben gar nicht zugetroffen hatte oder das cp an Platz oder
+# Rechten scheiterte. Der Verlust faellt dann erst auf, wenn Key, Secret und
+# Token weg sind.
 if [ -s "$NETZ_CFG/gardena.cfg" ]; then
-    cp -p "$NETZ_CFG/gardena.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null
+    if cp -p "$NETZ_CFG/gardena.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null; then
+        chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null
+        echo "<INFO> Zweitschrift der Einstellungen angelegt."
+    else
+        echo "<WARNING> Die Zweitschrift der Einstellungen liess sich NICHT anlegen."
+        echo "<WARNING> Platz und Rechte in $NETZ_BASE/config/plugins pruefen."
+    fi
 fi
-echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
 
 # NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.
@@ -85,7 +105,17 @@ if [ -s "$NETZ_CFG/gardena_token.json" ]; then
 fi
 if [ -s "$NETZ_CFG/devices_cache.json" ]; then
     cp -p "$NETZ_CFG/devices_cache.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.devices_cache.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.devices_cache.json" 2>/dev/null
+        && chmod 0640 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.devices_cache.json" 2>/dev/null
+fi
+# gardena_status.json gehoert MIT in die Zweitschrift.
+# Bis 1.2.5 fehlte sie: der Sammelweg (cp -a nach $SICHER) deckt sie ab, die
+# Zweitschrift kannte nur drei Dateien. Faellt der Sammelweg aus - genau der
+# Fall, fuer den es die Zweitschrift gibt -, gehen 'letzter_erfolg' und
+# 'sperre_bis' (die HTTP-429-Wartezeit) verloren; das Lebenszeichen meldet
+# danach zeitstempel=0, in Loxone also "noch nie erfolgreich".
+if [ -s "$NETZ_CFG/gardena_status.json" ]; then
+    cp -p "$NETZ_CFG/gardena_status.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena_status.json" 2>/dev/null \
+        && chmod 0640 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena_status.json" 2>/dev/null
 fi
 
 exit 0

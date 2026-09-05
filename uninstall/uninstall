@@ -37,6 +37,22 @@ for verzeichnis in "$BASE/config/plugins/$PDIR" "$BASE/data/plugins/$PDIR" \
     fi
 done
 
+# ---------- Die Zweitschriften NEBEN dem Ordner ----------
+# preupgrade.sh legt drei Kopien als GESCHWISTER des Konfigordners an
+# (<ordner>.backup.gardena.cfg, .backup.gardena_token.json,
+# .backup.devices_cache.json). Genau deshalb ueberstehen sie ein Update -
+# und genau deshalb ueberstanden sie bis 1.2.5 auch die Deinstallation.
+# Liegen geblieben waren damit das Application Secret, das Endpunkt-Token
+# und ein gueltiges OAuth2-Token der Husqvarna-Wolke: Zugangsdaten zu einem
+# Konto, mit dem sich Maeher und Bewaesserung schalten lassen. Die Zeile
+# darunter behauptete trotzdem, sie seien geloescht.
+for zweitschrift in "$BASE/config/plugins/$PDIR".backup.*; do
+    if [ -f "$zweitschrift" ]; then
+        rm -f "$zweitschrift"
+        echo "<OK> Zweitschrift $zweitschrift entfernt."
+    fi
+done
+
 echo "<INFO> Zugangsdaten und Zugriffstoken des Plugins sind geloescht."
 echo "<INFO> Die Anwendung im Husqvarna Developer Portal bleibt bestehen -"
 echo "<INFO> wer sie nicht mehr braucht, entfernt sie dort von Hand:"
@@ -46,7 +62,11 @@ echo "<INFO>   https://developer.husqvarnagroup.cloud/"
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
 # LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
 # Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
-UN_FOLDER="${3:-}"
+# Derselbe Rueckfall wie oben bei PDIR. Bis 1.2.5 standen hier zwei
+# verschiedene: fehlte $3, raeumte die Schleife oben dank Vorgabe noch auf,
+# dieser Block aber nicht - und die .upgrade_sicherung blieb samt
+# Konfiguration liegen.
+UN_FOLDER="$PDIR"
 UN_BASE="${5:-$LBHOMEDIR}"
 if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
