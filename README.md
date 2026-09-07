@@ -1,5 +1,15 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.7
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.2.6 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`). Sonst ist an dieser
+  Fassung nichts geändert.
+
 ## Neu in 1.2.6
 
 Diese Fassung behebt Befunde einer vollständigen Durchsicht vom 05.09.2026.
