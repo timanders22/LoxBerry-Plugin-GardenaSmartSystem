@@ -23,9 +23,16 @@ BASE="${ARGV5:-$LBHOMEDIR}"
 # Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
 # Systempfad - LoxBerry laesst sich anderswohin installieren, und der
 # Plugin-Pruefer sucht die Zeichenkette, ohne den Zusammenhang zu sehen.
-# Dieses Skript liegt unter <home>/data/plugins/<ordner>/uninstall/
+# Installiert liegt dieses Skript unter <home>/data/system/uninstall/<ordner>
+# (plugininstall.pl) - also DREI Ebenen hinauf, nicht vier. Bis 1.2.7 stand
+# hier ein falscher Ablageort und /../../../.., das ueber die LoxBerry-Wurzel
+# hinausfuehrte (Regeln/06). Gueltig nur, wenn dort wirklich ein LoxBerry liegt.
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../../.." 2>/dev/null && pwd)
+    BASE=$(cd "$(dirname "$(readlink -f "$0")")/../../.." 2>/dev/null && pwd)
+    if [ ! -f "$BASE/config/system/general.json" ]; then
+        echo "<WARNING> LoxBerry-Wurzel nicht bestimmbar - es wurde nichts entfernt."
+        exit 0
+    fi
 fi
 PDIR="${ARGV3:-gardenasmartsystem}"
 
@@ -53,7 +60,12 @@ for zweitschrift in "$BASE/config/plugins/$PDIR".backup.*; do
     fi
 done
 
-echo "<INFO> Zugangsdaten und Zugriffstoken des Plugins sind geloescht."
+# Nur sagen, was nachgesehen ist (Regeln/06): bis 1.2.7 stand der Satz unbedingt.
+if [ -d "$BASE/config/plugins/$PDIR" ] || ls "$BASE/config/plugins/$PDIR".backup.* >/dev/null 2>&1; then
+    echo "<WARNING> Es liegen noch Dateien mit Zugangsdaten unter $BASE/config/plugins - bitte von Hand entfernen."
+else
+    echo "<INFO> Zugangsdaten und Zugriffstoken des Plugins sind geloescht."
+fi
 echo "<INFO> Die Anwendung im Husqvarna Developer Portal bleibt bestehen -"
 echo "<INFO> wer sie nicht mehr braucht, entfernt sie dort von Hand:"
 echo "<INFO>   https://developer.husqvarnagroup.cloud/"

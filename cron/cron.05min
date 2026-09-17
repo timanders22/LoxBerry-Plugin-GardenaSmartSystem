@@ -1,9 +1,9 @@
 #!/bin/sh
 # Gardena Smart System - Abruf alle fuenf Minuten.
 #
-# Aufgerufen wird bin/gardenaMain.php ueber REPLACELBPBINDIR.
+# Aufgerufen wird bin/gardenaMain.php im bin-Ordner des Plugins.
 #
-# Bis 1.0.2 stand hier REPLACELBPHTMLDIR - das Skript lag also im
+# Bis 1.0.2 lag es im html-Ordner des Plugins - also im
 # Apache-Wurzelverzeichnis und war von jedem Geraet im Netz ohne Anmeldung
 # aufrufbar. Jeder solche Aufruf stiess einen vollstaendigen API-Durchlauf
 # an (Husqvarna zaehlt Abrufe) und schickte anschliessend den gesamten

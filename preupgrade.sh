@@ -87,7 +87,9 @@ NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # Token weg sind.
 if [ -s "$NETZ_CFG/gardena.cfg" ]; then
     if cp -p "$NETZ_CFG/gardena.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null; then
-        chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null
+        # 0640 wie das Original (gardena_cfg_write, postinstall.sh) - bis 1.2.7
+        # 0600, und Regeln/05 verlangt dieselben Rechte an der Zweitschrift.
+        chmod 0640 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.gardena.cfg" 2>/dev/null
         echo "<INFO> Zweitschrift der Einstellungen angelegt."
     else
         echo "<WARNING> Die Zweitschrift der Einstellungen liess sich NICHT anlegen."

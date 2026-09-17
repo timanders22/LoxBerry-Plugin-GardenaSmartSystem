@@ -120,7 +120,17 @@ class gardena
             'timeout' => $timeout,
             'ignore_errors' => true,   // damit auch 4xx/5xx den Inhalt liefern
             'user_agent' => 'LoxBerry Gardena-Plugin',
+            // Wie im cURL-Weg (CURLOPT_FOLLOWLOCATION false): keiner
+            // Umleitung folgen. Der Datenstrom folgt ab Werk und schickte
+            // dabei die Kopfzeile "Authorization: Bearer ..." an das neue
+            // Ziel mit (Regeln/03). Bis 1.2.7 fehlte die Angabe.
+            'follow_location' => 0,
+            'max_redirects' => 1,
         );
+        // 'timeout' begrenzt nur das Lesen; das Verbinden haengt an
+        // default_socket_timeout (60 s ab Werk). Fuer diesen Aufruf enger.
+        $alt_timeout = ini_get('default_socket_timeout');
+        ini_set('default_socket_timeout', (string) min(10, $timeout));
         if ($headers) { $opt['header'] = implode("\r\n", $headers); }
         if ($body !== null) {
             $opt['content'] = $body;
@@ -138,6 +148,7 @@ class gardena
         }
         $ctx = stream_context_create(array('http' => $opt, 'ssl' => array('verify_peer' => true, 'verify_peer_name' => true)));
         $result = @file_get_contents($url, false, $ctx);
+        if ($alt_timeout !== false) { ini_set('default_socket_timeout', (string) $alt_timeout); }
         $http = 0;
         if (isset($http_response_header) && is_array($http_response_header)) {
             foreach ($http_response_header as $h) {

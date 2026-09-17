@@ -15,8 +15,8 @@
 
 require_once __DIR__ . '/header.inc.php';
 
-$log = LBLog::newLog(array('name' => 'GardenaLog', 'package' => $lbpplugindir, 'logdir' => $lbplogdir));
-LOGSTART('GardenaMain gestartet');
+// Protokoll seit 1.2.8 ueber gardena_log() in EINE Datei (gardena.log) - Begruendung
+// bei der Funktion in functions.inc.php.
 
 /*
  * Nur ein Durchlauf gleichzeitig.
@@ -31,8 +31,7 @@ LOGSTART('GardenaMain gestartet');
  */
 $sperre = gardena_sperre('main');
 if ($sperre === false) {
-    LOGINF('Ein Abruf laeuft bereits - dieser Durchlauf entfaellt.');
-    LOGEND('Ende');
+    gardena_log('INF', 'Ein Abruf laeuft bereits - dieser Durchlauf entfaellt.');
     exit(0);
 }
 
@@ -49,14 +48,14 @@ if ($sperre === false) {
 // Datei, und im Protokoll stand "nicht lesbar".
 $gcfg = gardena_ini_lesen($lbpconfigdir . '/gardena.cfg');
 if (!is_array($gcfg)) {
-    LOGCRIT('Konfigurationsdatei nicht lesbar: ' . $lbpconfigdir . '/gardena.cfg');
+    gardena_log('CRIT', 'Konfigurationsdatei nicht lesbar: ' . $lbpconfigdir . '/gardena.cfg');
     // Kein Lebenszeichen: wohin es gehen soll, steht in genau der Datei, die
     // sich nicht lesen laesst. Der Zustand wird trotzdem festgehalten, damit
     // die Selbstpruefung in der Oberflaeche den Grund nennen kann.
     gardena_status_schreiben($lbpconfigdir, array(
         'ok' => 0, 'letzter_lauf' => time(), 'werte' => 0, 'verloren' => 0,
         'fehler' => 'Konfigurationsdatei nicht lesbar.'));
-    LOGEND('Abbruch'); exit(1);
+    exit(1);
 }
 
 /*
@@ -77,8 +76,9 @@ gardena_cfg_vervollstaendigen($lbpconfigdir . '/gardena.cfg');
 $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
 
 if (empty($g['ENABLED']) || $g['ENABLED'] == '0') {
-    LOGINF('Plugin ist deaktiviert (ENABLED=0).');
-    LOGEND('Ende'); exit(0);
+    // Gebremst: bei ausgeschaltetem Plugin stuende die Zeile sonst 288-mal am Tag da.
+    gardena_log_gebremst('aus', 'INF', 'Plugin ist ausgeschaltet (ENABLED=0) - es wird nichts abgerufen und nichts gesendet.');
+    exit(0);
 }
 
 $mqtt_topic = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
@@ -94,12 +94,12 @@ $mqtt_enabled = $g['MQTT_ENABLED'] == '1';
  * Jetzt wird es vorher festgestellt und gesagt.
  */
 if (!gardena_udp_moeglich()) {
-    LOGCRIT('Die PHP-Erweiterung sockets fehlt - es laesst sich weder ueber UDP noch '
+    gardena_log('CRIT', 'Die PHP-Erweiterung sockets fehlt - es laesst sich weder ueber UDP noch '
         . 'ueber MQTT senden. Nachinstallieren: sudo apt-get install -y php-sockets');
     gardena_status_schreiben($lbpconfigdir, array(
         'ok' => 0, 'letzter_lauf' => time(), 'werte' => 0, 'verloren' => 0,
         'fehler' => 'PHP-Erweiterung sockets fehlt - es kann nichts gesendet werden.'));
-    LOGEND('Abbruch'); exit(1);
+    exit(1);
 }
 
 
@@ -117,16 +117,16 @@ if ($udp_enabled) {
     if (is_array($msArray) && isset($msArray[$msID])
         && !empty($msArray[$msID]['IPAddress'])) {
         $miniserverIP = $msArray[$msID]['IPAddress'];
-        LOGINF('UDP-Ziel: Miniserver ' . $msID . ' (' . $miniserverIP . ':' . $udpport . ')');
+        gardena_log('INF', 'UDP-Ziel: Miniserver ' . $msID . ' (' . $miniserverIP . ':' . $udpport . ')');
     } else {
-        LOGERR('Konfigurierter Miniserver ' . $msID . ' nicht gefunden - UDP-Versand deaktiviert.');
+        gardena_log('ERR', 'Konfigurierter Miniserver ' . $msID . ' nicht gefunden - UDP-Versand deaktiviert.');
         $udp_enabled = false;
     }
 }
-if ($mqtt_enabled) { LOGINF('MQTT aktiv, Basis-Topic: ' . $mqtt_topic); }
+if ($mqtt_enabled) { gardena_log('INF', 'MQTT aktiv, Basis-Topic: ' . $mqtt_topic); }
 if (!$udp_enabled && !$mqtt_enabled) {
-    LOGERR('Weder UDP noch MQTT aktiv - nichts zu tun.');
-    LOGEND('Ende'); exit(0);
+    gardena_log('ERR', 'Weder UDP noch MQTT aktiv - nichts zu tun.');
+    exit(0);
 }
 
 /*
@@ -147,11 +147,10 @@ function gardena_abbruch($grund)
     $st = gardena_status_lesen($lbpconfigdir);
     list($v, $f) = gardena_lebenszeichen($mqtt_topic, $st, $gudp_ziel, $udpport, $mqtt_enabled);
     if ($f > 0) {
-        LOGERR('Auch das Lebenszeichen kam nicht durch (' . $f . ' von ' . $v . ' Zustellungen).');
+        gardena_log('ERR', 'Auch das Lebenszeichen kam nicht durch (' . $f . ' von ' . $v . ' Zustellungen).');
     } else {
-        LOGINF('Lebenszeichen mit ok=0 gesendet: ' . $grund);
+        gardena_log('INF', 'Lebenszeichen mit ok=0 gesendet: ' . $grund);
     }
-    LOGEND('Abbruch');
     if (is_resource($sperre)) { flock($sperre, LOCK_UN); fclose($sperre); }
     exit(1);
 }
@@ -168,13 +167,21 @@ function gardena_abbruch($grund)
  * Ein uebersprungener Lauf ist kein Fehler. Er ruehrt den Zustand nicht an
  * und sendet kein Lebenszeichen mit ok=0 - sonst saehe ein gestreckter Takt
  * in Loxone aus wie ein Ausfall.
+ *
+ * Er sendet aber das Lebenszeichen MIT DEM GESPEICHERTEN STAND. Bis 1.2.7
+ * ging in diesen beiden Faellen gar nichts hinaus - waehrend einer
+ * Abrufsperre bis zu 24 Stunden lang. Oberflaeche und Anleitung versprachen
+ * dagegen "bei jedem Lauf ein Lebenszeichen", und Regeln/07 verlangt es:
+ * ohne 'ts' ist ein Dienst, der laeuft, aber nicht abrufen darf, von einem
+ * toten nicht zu unterscheiden. 'ok' und 'zeitstempel' bleiben, was der
+ * letzte echte Lauf ergeben hat.
  */
 $gstand = gardena_status_lesen($lbpconfigdir);
 $gjetzt = time();
 if (!empty($gstand['sperre_bis']) && $gjetzt < (int) $gstand['sperre_bis']) {
-    LOGINF('Das Abrufkontingent war erschoepft (HTTP 429). Naechster Versuch fruehestens '
-        . date('H:i', (int) $gstand['sperre_bis']) . ' - dieser Durchlauf entfaellt.');
-    LOGEND('Ende');
+    gardena_log_gebremst('sperre', 'INF', 'Das Abrufkontingent war erschoepft (HTTP 429). Naechster Versuch fruehestens '
+        . date('H:i', (int) $gstand['sperre_bis']) . ' - bis dahin entfallen die Abrufe, das Lebenszeichen geht weiter hinaus.');
+    gardena_lebenszeichen($mqtt_topic, $gstand, $gudp_ziel, $udpport, $mqtt_enabled);
     flock($sperre, LOCK_UN); fclose($sperre);
     exit(0);
 }
@@ -185,9 +192,9 @@ if ($gtakt > 5 && !empty($gstand['letzter_lauf'])) {
     // zweite Lauf knapp verfehlt und erst nach 15 Minuten ausgefuehrt.
     $gfaellig = (int) $gstand['letzter_lauf'] + $gtakt * 60 - 30;
     if ($gjetzt < $gfaellig) {
-        LOGINF('Eingestellter Abstand ' . $gtakt . ' Minuten - der naechste Abruf ist um '
-            . date('H:i', $gfaellig) . ' faellig, dieser Durchlauf entfaellt.');
-        LOGEND('Ende');
+        gardena_log_gebremst('takt', 'INF', 'Eingestellter Abstand ' . $gtakt . ' Minuten - '
+            . 'Laeufe dazwischen rufen nicht ab und senden nur das Lebenszeichen.');
+        gardena_lebenszeichen($mqtt_topic, $gstand, $gudp_ziel, $udpport, $mqtt_enabled);
         flock($sperre, LOCK_UN); fclose($sperre);
         exit(0);
     }
@@ -203,17 +210,13 @@ if ($gtakt > 5 && !empty($gstand['letzter_lauf'])) {
  */
 function gardena_kontingent($api)
 {
+    // Seit 1.2.8 in der Bibliothek: auch der Endpunkt vermerkt ein 429.
     global $lbpconfigdir;
-    $warte = ($api->retry_after > 0) ? (int) $api->retry_after : 3600;
-    if ($warte > 86400) { $warte = 86400; }
-    gardena_status_schreiben($lbpconfigdir, array('sperre_bis' => time() + $warte));
-    LOGCRIT('Das Abrufkontingent der Husqvarna-API ist erschoepft (HTTP 429). '
-        . 'Bis ' . date('H:i', time() + $warte) . ' wird nicht mehr abgerufen. '
-        . 'Der Abstand laesst sich in der Plugin-Oberflaeche strecken.');
+    gardena_kontingent_vermerken($lbpconfigdir, $api->retry_after);
 }
 
 if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
-    LOGCRIT('Application Key / Secret fehlt - bitte in der Plugin-Oberflaeche eintragen (developer.husqvarnagroup.cloud).');
+    gardena_log('CRIT', 'Application Key / Secret fehlt - bitte in der Plugin-Oberflaeche eintragen (developer.husqvarnagroup.cloud).');
     gardena_abbruch('Application Key / Secret fehlt - in der Plugin-Oberflaeche eintragen.');
 }
 
@@ -225,7 +228,7 @@ if (!$gardena->authenticate()) {
     // fuenf Minuten weiter an - und verlaengerte die Sperre, die er abwarten
     // sollte.
     if ($gardena->last_http === 429) { gardena_kontingent($gardena); }
-    LOGCRIT('Anmeldung an der Husqvarna/GARDENA-API fehlgeschlagen: ' . $gardena->last_error);
+    gardena_log('CRIT', 'Anmeldung an der Husqvarna/GARDENA-API fehlgeschlagen: ' . $gardena->last_error);
     gardena_abbruch('Anmeldung fehlgeschlagen: ' . $gardena->last_error);
 }
 
@@ -245,7 +248,7 @@ if (!empty($gstand['locations']) && is_array($gstand['locations']) && $gloc_alte
                 'attributes' => array('name' => isset($gl['name']) ? $gl['name'] : $gl['id']));
         }
     }
-    LOGDEB(count($locations) . ' Standorte aus dem Zwischenspeicher (' . (int) ($gloc_alter / 60) . ' Minuten alt).');
+    gardena_log('DEB', count($locations) . ' Standorte aus dem Zwischenspeicher (' . (int) ($gloc_alter / 60) . ' Minuten alt).');
 }
 $gloc_frisch = false;
 if (!$locations) {
@@ -253,7 +256,7 @@ if (!$locations) {
     $gloc_frisch = true;
     if (empty($locations)) {
         if ($gardena->last_http === 429) { gardena_kontingent($gardena); }
-        LOGCRIT('Keine Locations gefunden: ' . $gardena->last_error);
+        gardena_log('CRIT', 'Keine Locations gefunden: ' . $gardena->last_error);
         gardena_abbruch('Keine Location gefunden: ' . $gardena->last_error);
     }
 }
@@ -280,12 +283,12 @@ $gteil = array();    // derselbe Schluessel => array(Geraet, Dienst, Attribut)
 
 foreach ($locations as $location) {
     if (!is_array($location) || empty($location['id'])) {
-        LOGERR('Location ohne id in der Antwort - uebersprungen.');
+        gardena_log('ERR', 'Location ohne id in der Antwort - uebersprungen.');
         continue;
     }
     $locId = $location['id'];
     $locName = isset($location['attributes']['name']) ? $location['attributes']['name'] : $locId;
-    LOGINF('Location: ' . $locName);
+    gardena_log('INF', 'Location: ' . $locName);
 
     $devices = $gardena->getDevices($locId);
     if (empty($devices)) {
@@ -293,7 +296,7 @@ foreach ($locations as $location) {
             gardena_kontingent($gardena);
             gardena_abbruch('Abrufkontingent erschoepft (HTTP 429).');
         }
-        LOGERR('Keine Geraete in Location ' . $locName . ': ' . $gardena->last_error);
+        gardena_log('ERR', 'Keine Geraete in Location ' . $locName . ': ' . $gardena->last_error);
         // Der Ausfall MUSS gezaehlt werden. Bis 1.2.5 hob ihn nur diese
         // Protokollzeile hervor; $vollstaendig blieb wahr, sobald ein
         // zweiter Standort Werte lieferte - das Lebenszeichen meldete
@@ -310,7 +313,7 @@ foreach ($locations as $location) {
          * soll sie zeigen koennen -, aber es geht nichts von ihnen hinaus. */
         if (in_array($devName, $gausgenommen, true) || in_array((string) $deviceId, $gausgenommen, true)) {
             $ausgelassen++;
-            LOGDEB('Ausgenommen, nichts gesendet: ' . $devName);
+            gardena_log('DEB', 'Ausgenommen, nichts gesendet: ' . $devName);
             continue;
         }
         foreach ($device['services'] as $type => $attrs) {
@@ -329,7 +332,7 @@ foreach ($locations as $location) {
                  */
                 if (gardena_wert_fehlt($attr['value'])) {
                     $ohne_inhalt++;
-                    LOGDEB('Ohne Inhalt, nicht gesendet: ' . $type . '.' . $devName . '.' . $attrName);
+                    gardena_log('DEB', 'Ohne Inhalt, nicht gesendet: ' . $type . '.' . $devName . '.' . $attrName);
                     continue;
                 }
 
@@ -368,6 +371,40 @@ $galter_meldung = $gjetzt - (int) $gstand['letzte_volle_meldung'];
 $gunveraendert = ($gsignatur === (string) $gstand['signatur'] && $gstand['letzte_volle_meldung'] > 0);
 $gvoll = (!$gunveraendert || $galter_meldung >= 1800);
 
+/*
+ * Einmal nach dem Update auf 1.2.8: die ALTEN zurueckbehaltenen Werte
+ * abraeumen, die jetzt fluechtig hinausgehen.
+ *
+ * Bis 1.2.7 ging jeder Geraetewert retained hinaus, bis 1.2.5 auch das
+ * Lebenszeichen. Ein fluechtiges publish loescht keinen zurueckbehaltenen
+ * Wert - er laege weiter im Broker und kaeme nach einem Neustart des
+ * Miniservers oder des Gateways als frisch heraus. Genau das soll der
+ * Hausstandard verhindern (Regeln/07: "Wer von 'alles retained' auf den
+ * Hausstandard umstellt, raeumt die alten Werte ab.").
+ *
+ * Reihenfolge: ERST loeschen, DANN den gueltigen Wert senden. Das Gateway
+ * reicht die leere Nutzlast als leeren Wert an den Miniserver weiter
+ * (gemessen 06.09.2026); der Wert unmittelbar dahinter ersetzt ihn. Vermerkt
+ * wird die Aufraeumrunde nur nach einem vollstaendigen Lauf - scheitert
+ * einer, wird sie beim naechsten wiederholt.
+ */
+$gaufraeumen = ($gvoll && $mqtt_enabled && (int) $gstand['retain_stand'] < 2);
+if ($gaufraeumen) {
+    $gn_aufr = 0;
+    foreach ($gteil as $gt) {
+        if (!gardena_retain($gt[0], $gt[1], $gt[2])) {
+            gardena_mqtt_loeschen(gardena_wert_thema($mqtt_topic, $gt[0], $gt[1], $gt[2]));
+            $gn_aufr++;
+        }
+    }
+    foreach (array('ok', 'zeitstempel', 'werte', 'fehler') as $gname) {
+        gardena_mqtt_loeschen(gardena_wert_thema($mqtt_topic, 'Plugin', 'STATUS', $gname));
+        $gn_aufr++;
+    }
+    gardena_log('INF', 'Umstellung auf Retain je Thema: ' . $gn_aufr
+        . ' frueher zurueckbehaltene Themen im Broker geloescht; die aktuellen Werte folgen.');
+}
+
 if ($gvoll) {
     foreach ($gwerte as $gschluessel => $gwert) {
         list($gdev, $gtyp, $gattr) = $gteil[$gschluessel];
@@ -378,13 +415,12 @@ if ($gvoll) {
         if ($f === 0) { $sent++; }
         if ($udp_enabled) { usleep(100000); } // Miniserver nicht fluten
     }
-    LOGINF($gunveraendert
+    gardena_log('INF', $gunveraendert
         ? 'Unveraendert, aber seit ' . (int) ($galter_meldung / 60) . ' Minuten nichts gesendet - Lebenszeichen mit allen Werten.'
         : count($gwerte) . ' Werte, davon mindestens einer geaendert - es wird gesendet.');
 } else {
-    LOGINF('Nichts geaendert seit dem letzten Lauf - es wird nichts gesendet '
-        . '(naechste vollstaendige Meldung spaetestens in '
-        . (int) ((1800 - $galter_meldung) / 60) . ' Minuten).');
+    gardena_log_gebremst('unveraendert', 'INF', 'Nichts geaendert seit dem letzten Lauf - es wird nichts gesendet '
+        . '(die vollstaendige Meldung geht spaetestens alle 30 Minuten hinaus).');
 }
 
 /*
@@ -429,11 +465,13 @@ $gweg = array_diff($galt, $gthemen);
  */
 if ($gweg && $mqtt_enabled && $standort_fehl === 0) {
     foreach ($gweg as $gthema) {
-        mqttPublish($gthema, '', true);
+        // Seit 1.2.8 ueber die eigene Loeschfunktion: mqttPublish() schickt
+        // einen leeren Wert absichtlich NIE retained hinaus.
+        gardena_mqtt_loeschen($gthema);
     }
-    LOGINF(count($gweg) . ' weggefallene MQTT-Themen geleert (Geraet umbenannt oder entfernt).');
+    gardena_log('INF', count($gweg) . ' weggefallene MQTT-Themen geleert (Geraet umbenannt oder entfernt).');
 } elseif ($gweg && $mqtt_enabled) {
-    LOGINF(count($gweg) . ' Themen fehlen in diesem Lauf - NICHT geleert, weil '
+    gardena_log('INF', count($gweg) . ' Themen fehlen in diesem Lauf - NICHT geleert, weil '
         . $standort_fehl . ' Standort(e) nicht geantwortet haben.');
 }
 
@@ -455,10 +493,10 @@ if ($gweg && $mqtt_enabled && $standort_fehl === 0) {
  * gueltige Datei GAR NICHTS ueberschreibt.
  */
 if ($standort_fehl > 0) {
-    LOGERR($standort_fehl . ' Standort(e) ohne Antwort - der Geraete-Zwischenspeicher '
+    gardena_log('ERR', $standort_fehl . ' Standort(e) ohne Antwort - der Geraete-Zwischenspeicher '
         . 'bleibt unveraendert, damit die bisherigen Dienstkennungen erhalten bleiben.');
 } elseif (!gardena_json_write($lbpconfigdir . '/devices_cache.json', $statuscache, 0640)) {
-    LOGERR('Geraete-Zwischenspeicher konnte nicht geschrieben werden.');
+    gardena_log('ERR', 'Geraete-Zwischenspeicher konnte nicht geschrieben werden.');
 }
 
 /*
@@ -492,6 +530,8 @@ $gneuer_stand = array(
                               : ($verloren . ' von ' . $versucht . ' Zustellungen gescheitert.'))),
 );
 if ($vollstaendig) { $gneuer_stand['letzter_erfolg'] = time(); }
+// Die Aufraeumrunde der Retain-Umstellung gilt erst nach einem vollstaendigen Lauf.
+if ($vollstaendig && $gaufraeumen) { $gneuer_stand['retain_stand'] = 2; }
 if ($gvoll && $vollstaendig) { $gneuer_stand['letzte_volle_meldung'] = time(); }
 // Die Standortliste nur dann als frisch vermerken, wenn sie in DIESEM Lauf
 // geholt wurde UND Geraete dabei herauskamen. Sonst wird sie beim naechsten
@@ -510,21 +550,21 @@ if ($gloc_frisch && $vollstaendig) {
     // veraltete Standortkennung wurde bis zu 24 Stunden lang weiter
     // abgefragt. Jetzt wird sie ausdruecklich als alt markiert.
     $gneuer_stand['locations_stand'] = 0;
-    LOGINF('Die Standortliste kam aus dem Zwischenspeicher und hat nicht getragen - '
+    gardena_log('INF', 'Die Standortliste kam aus dem Zwischenspeicher und hat nicht getragen - '
         . 'sie wird beim naechsten Lauf neu geholt.');
 }
 if (!gardena_status_schreiben($lbpconfigdir, $gneuer_stand)) {
     // Ohne diesen Zustand gibt es keine Ausfallerkennung, keine Signatur und
     // keine 429-Ruecknahme. Der Grund steht durch gardena_json_write() schon
     // im Protokoll; hier steht die Folge.
-    LOGERR('Der Zustand liess sich nicht fortschreiben - Ausfallerkennung, '
+    gardena_log('ERR', 'Der Zustand liess sich nicht fortschreiben - Ausfallerkennung, '
         . 'Aenderungsvergleich und Abrufsperre greifen bis auf Weiteres nicht.');
 }
 
 list($glz_v, $glz_f) = gardena_lebenszeichen($mqtt_topic, gardena_status_lesen($lbpconfigdir),
                                              $gudp_ziel, $udpport, $mqtt_enabled);
 if ($glz_f > 0) {
-    LOGERR('Lebenszeichen: ' . $glz_f . ' von ' . $glz_v . ' Zustellungen gescheitert.');
+    gardena_log('ERR', 'Lebenszeichen: ' . $glz_f . ' von ' . $glz_v . ' Zustellungen gescheitert.');
 }
 
 /*
@@ -539,18 +579,17 @@ $gohne = $ohne_inhalt > 0
     ? ' ' . $ohne_inhalt . ' Attribute kamen ohne Wert und wurden nicht gesendet.' : '';
 $gaus = $ausgelassen > 0 ? ' ' . $ausgelassen . ' Geraete sind ausgenommen.' : '';
 if ($vollstaendig && !$gvoll) {
-    LOGOK(count($gwerte) . ' Werte gelesen, keiner geaendert - nichts gesendet.' . $gohne . $gaus);
+    gardena_log('OK', count($gwerte) . ' Werte gelesen, keiner geaendert - nichts gesendet.' . $gohne . $gaus);
 } elseif ($vollstaendig) {
     // "abgeschickt", nicht "zugestellt": gemessen wird, dass das Datagramm
     // den Rechner verlassen hat. Ob das MQTT-Gateway laeuft und der
     // Miniserver es annimmt, sagt die UDP-Schnittstelle nicht zurueck.
-    LOGOK($sent . ' Werte abgeschickt (' . $versucht . ' Sendeversuche, keiner gescheitert).' . $gohne . $gaus);
+    gardena_log('OK', $sent . ' Werte abgeschickt (' . $versucht . ' Sendeversuche, keiner gescheitert).' . $gohne . $gaus);
 } elseif (count($gwerte) === 0) {
-    LOGERR('Kein einziger Wert zu senden - die Antwort der Wolke enthielt nichts Verwertbares.' . $gaus);
+    gardena_log('ERR', 'Kein einziger Wert zu senden - die Antwort der Wolke enthielt nichts Verwertbares.' . $gaus);
 } else {
-    LOGERR($verloren . ' von ' . $versucht . ' Sendeversuchen gescheitert; '
+    gardena_log('ERR', $verloren . ' von ' . $versucht . ' Sendeversuchen gescheitert; '
         . $sent . ' Werte vollstaendig abgeschickt. Ursache steht in den Zeilen darueber.');
 }
-LOGEND('GardenaMain fertig');
 flock($sperre, LOCK_UN);
 fclose($sperre);

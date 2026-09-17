@@ -1,5 +1,83 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.8
+
+Diese Fassung behebt Befunde einer Messung am installierten Plugin auf einem
+LoxBerry 4.0.0.15 (17.09.2026) und einer Durchsicht gegen die Hausregeln. An
+einer GARDENA-Anlage ist weiterhin **nichts** gemessen.
+
+**Umstieg — was Sie bemerken können:**
+
+- **Messwerte gehen nicht mehr retained hinaus.** Zustände (`activity`,
+  `state`, `lastErrorCode`, `batteryState`, `rfLinkState`, `operatingHours`,
+  `name`, `serial`, `modelType`) bleiben retained; Messwerte (`batteryLevel`,
+  `rfLinkLevel`, Bodenfeuchte, Boden- und Lufttemperatur, Helligkeit) nicht,
+  damit nach einem Ausfall kein alter Wert als frisch erscheint. Der volle
+  Satz geht wie bisher spätestens alle 30 Minuten hinaus. Beim ersten
+  vollständigen Lauf nach dem Update räumt das Plugin die früher
+  zurückbehaltenen Werte einmal im Broker ab und schickt die aktuellen
+  unmittelbar hinterher. Die Spalte *retained* im Reiter MQTT zeigt, was was ist.
+- **Zwei neue Themen im Lebenszeichen**, neben den vier bisherigen:
+  `…/Plugin/STATUS/ts` (Unix-Zeit des Durchgangs) und `…/Plugin/STATUS/zaehler`
+  (0 bis 999). Beide wandern bei **jedem** Cron-Lauf — auch während einer
+  Abrufsperre nach HTTP 429 und bei gestrecktem Abstand, wo bis 1.2.7 gar
+  nichts hinausging. Kein bestehendes Thema ändert Namen oder Bedeutung.
+- **Bremsen am Endpunkt:** `?action=refresh` frühestens 60 Sekunden nach dem
+  letzten Lauf, `?action=command` höchstens 30-mal je Stunde (sonst HTTP 429);
+  während einer Abrufsperre weisen beide mit HTTP 503 ab. `?action=list` ohne
+  Daten antwortet mit 503 statt 200.
+- **Das Protokoll ist eine Datei:** `log/plugins/<Ordner>/gardena.log`.
+
+**Behoben:**
+
+- **Jeder Cron-Lauf legte eine neue Protokolldatei an** — zwölf je Stunde, auch
+  bei ausgeschaltetem Plugin. `log/plugins` liegt auf der RAM-Scheibe, und die
+  Logwartung von LoxBerry kürzt dort stündlich über **alle** Plugins hinweg auf
+  die 24 jüngsten Dateien; Gardena half damit, die Protokolle anderer Plugins
+  wegzuräumen. Zugleich stand in keiner dieser Dateien eine Meldung: die
+  Plugin-Datenbank führt für dieses Plugin die Protokollstufe −1, und das SDK
+  schrieb nur Kopf- und Schlusszeile. Ein Fehler des Dienstes war nirgends zu
+  lesen. Gemessen am Gerät. Dienst, Endpunkt und Oberfläche schreiben jetzt in
+  `gardena.log` (gekappt auf 256 kB); Zeilen, die sich bei jedem Lauf
+  wiederholen, höchstens einmal je Stunde.
+- **Der MQTT-Speicherknopf speicherte trotz Beanstandung.** Ein leeres oder
+  ungültiges Thema wurde mit „Der Eintrag wurde nicht gespeichert.“ beanstandet
+  — und im selben Aufruf gespeichert. Dasselbe beim Formular der Einstellungen:
+  ein Gerätename mit Komma in der Ausnahmeliste wurde beanstandet, der Rest
+  trotzdem geschrieben, und ein abgewiesenes Speichern legte schon ein Token an.
+  Jetzt wird bei einer Beanstandung nichts geschrieben.
+- **Nach dem Zurückspielen einer Sicherung** blieb die zwischengespeicherte
+  Anmeldung bei Husqvarna liegen, auch wenn die Datei andere Zugangsdaten trug.
+  Sie wird jetzt verworfen, und die Meldung sagt, was mit dem Dienst geschieht.
+- **„Alle retained“ stand über der Thementabelle**, obwohl das Lebenszeichen
+  seit 1.2.6 ohne Retain hinausgeht. Die Tabelle zeigte außerdem Themen
+  ausgenommener Geräte, die nie gesendet werden.
+- **Die Baustein-Liste im Reiter „Einbindung in Loxone“** schlug Namen wie
+  `Gardena_Akku` für die virtuellen Eingänge vor. Das Gateway legt Eingänge aber
+  unter dem Thema an; wer dem Vorschlag folgte, bekam Eingänge, die nie einen
+  Wert erhielten. Die Liste nennt jetzt die Gateway-Namen. Die
+  Ausfallerkennung darin (ein Treppenlichtschalter am Zeitstempel) konnte nicht
+  ansprechen: ein Analogwert, der von einer großen Zahl zur nächsten wechselt,
+  erzeugt an einem Digitaleingang keine Flanke, und der Ausgang war im
+  Normalbetrieb EIN. Ersetzt durch eine Altersformel auf `ts`.
+- **Zwei Prüfzeilen im Reiter Test** setzten ein Häkchen über eine leere Menge
+  („jedes Attribut der letzten Antwort trug einen Wert“ — ohne je eine Antwort).
+  Sie sagen jetzt „nicht feststellbar“.
+- **Die UDP-Vorlage** enthielt die Eingänge des Lebenszeichens nicht.
+- **Eine Zweitschrift der Konfiguration** entstand nur in `preupgrade.sh`. Sie
+  wird jetzt bei jedem Speichern mitgezogen, mit denselben Rechten wie das
+  Original.
+- Kleineres: doppelt maskierte Beanstandungen; „Protokoll leeren“ meldete
+  „Konfiguration gespeichert.“; der MQTT-Knopf hieß „Speichern & Verbindung
+  testen“ und testete nichts; Speicherknöpfe standen grün unter der Legende
+  „Ansehen“; `postinstall.sh` riet auch nach einem Update zur Ersteinrichtung
+  und meldete Rechte, ohne nachzusehen; `uninstall` rechnete eine Ebene zu weit
+  hinauf; ein fester Systempfad als Rückfall; der Ersatzweg ohne cURL folgte
+  Umleitungen; „zugestellt“ statt „abgeschickt“ — UDP meldet keine Zustellung.
+
+**Nicht gemessen:** nichts davon an einer GARDENA-Anlage; ob der Miniserver aus
+einer leeren Nutzlast 0 macht; die Altersformel an einem Miniserver.
+
 ## Neu in 1.2.7
 
 - **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.2.6 kam er von der
@@ -84,12 +162,12 @@ stillschweigend `MOWER_CONTROL`) — steht es in einem Ihrer Virtuellen
 Ausgänge nicht, tragen Sie es nach. Und der Suchtext `;TOKEN=` am
 `?selftest=1` liest jetzt eine 1 statt des Textes `OK`.
 
-## Neu in 1.2.0
+## Was das Plugin tut
 
 Holt zyklisch (alle 5 Minuten) die Daten aller GARDENA-smart-system-Geräte
 (Mähroboter, Bewässerungscomputer/Ventile, Sensoren, Steckdosen, Gateway) und
 sendet sie an den Loxone Miniserver – per **UDP** und/oder **MQTT**
-(LoxBerry MQTT Gateway, retained). Kommandos (Mähen starten, Parken,
+(LoxBerry MQTT Gateway; Zustände retained, Messwerte und Lebenszeichen nicht). Kommandos (Mähen starten, Parken,
 Bewässerung starten/stoppen …) können über einen Virtuellen Ausgang gesendet werden.
 
 ## Neu in 1.2.0
@@ -413,9 +491,11 @@ jederzeit wechseln – die Virtuellen Ausgänge in Loxone müssen dann angepasst
 
 ## Hinweise
 
-- Husqvarna begrenzt die API-Nutzung (Rate Limit); der 5-Minuten-Zyklus liegt
-  weit darunter.
-- Logs: LoxBerry Log Manager → Paket `gardenasmartsystem`.
+- Husqvarna begrenzt die API-Nutzung (Rate Limit); wie hoch die Grenze liegt,
+  ist in diesem Plugin nicht gemessen. Nach HTTP 429 wartet das Plugin die
+  Sperre ab.
+- Protokoll: Reiter *Logdateien*, Datei `log/plugins/gardenasmartsystem/gardena.log`
+  (RAM-Scheibe — ein Neustart löscht sie).
 
 ## Herkunft, Lizenz und Änderungen
 

@@ -28,7 +28,13 @@ mkdir -p "$BASE/config/plugins/$PFOLDER" "$BASE/log/plugins/$PFOLDER" \
 # Datei mit den Vorgaberechten da.
 if [ -f "$CFG" ]; then
     chmod 0640 "$CFG" 2>/dev/null
-    echo "<OK> Rechte der Konfiguration gesetzt (0640)."
+    # Nur melden, was nachgelesen ist (Regeln/06): bis 1.2.7 stand die
+    # Erfolgsmeldung unbedingt hinter dem chmod.
+    if [ "$(stat -c %a "$CFG" 2>/dev/null)" = "640" ]; then
+        echo "<OK> Rechte der Konfiguration gesetzt (0640)."
+    else
+        echo "<WARNING> Die Rechte der Konfiguration liessen sich nicht auf 0640 setzen ($(stat -c %a "$CFG" 2>/dev/null))."
+    fi
 fi
 
 # bin/ ausfuehrbar machen. BERICHTIGT in 1.2.6: die Begruendung stimmte
@@ -52,9 +58,6 @@ else
     echo "<WARNING> PHP-Erweiterung sockets fehlt - ohne sie ist WEDER UDP NOCH MQTT moeglich."
     echo "<WARNING> Nachinstallieren: sudo apt-get install -y php-sockets"
 fi
-
-echo "<INFO> Naechster Schritt: Plugin-Oberflaeche oeffnen, Application Key und"
-echo "<INFO> Secret von developer.husqvarnagroup.cloud eintragen und speichern."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zurueckspielen aus der Zweitschrift - aber NUR, wenn die Datei des Nutzers
@@ -132,4 +135,15 @@ netz_ohne_vorgabe "gardena_token.json" 0600
 netz_ohne_vorgabe "devices_cache.json" 0640
 netz_ohne_vorgabe "gardena_status.json" 0640
 
+# Der Hinweis auf die Ersteinrichtung NACH der Rueckspielung und nur, wenn
+# danach wirklich noch keine Zugangsdaten eingetragen sind. Bis 1.2.7 stand er
+# unbedingt und VOR der Rueckspielung - auch nach jedem Update einer fertig
+# eingerichteten Anlage (Regeln/06: der Schlusstext raet nach einem Update
+# nicht zur Erstinstallation).
+if [ -f "$CFG" ] && grep -q "^CLIENT_ID=..*" "$CFG" 2>/dev/null; then
+    echo "<OK> Zugangsdaten sind eingetragen - es ist nichts weiter zu tun."
+else
+    echo "<INFO> Naechster Schritt: Plugin-Oberflaeche oeffnen, Application Key und"
+    echo "<INFO> Secret von developer.husqvarnagroup.cloud eintragen und speichern."
+fi
 exit 0

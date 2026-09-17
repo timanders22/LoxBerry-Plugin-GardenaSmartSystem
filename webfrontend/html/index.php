@@ -198,7 +198,10 @@ if ($action === 'list') {
     $roh = is_file($gcache) ? @file_get_contents($gcache) : false;
     $daten = ($roh !== false) ? json_decode($roh, true) : null;
     if (!is_array($daten)) {
-        gardena_ende(200,
+        // 503, nicht 200: es gibt noch keine Daten (Regeln/07 - "auch vor dem
+        // ersten Abruf ... weder mit 200 noch mit 404"). Bis 1.2.7 kam die
+        // Fehlermeldung mit 200 und sah aus wie eine gueltige Antwort.
+        gardena_ende(503,
             json_encode(array('error' => 'Noch keine Daten - bitte einmal ?action=refresh aufrufen.')),
             'list: noch kein Geraete-Abbild vorhanden', true);
     }
@@ -228,6 +231,24 @@ if ($action === 'refresh') {
      * bisher. Die Antwort ist damit nicht garantiert, aber sie ist nicht
      * mehr unabhaengig von der Wirklichkeit.
      */
+    /*
+     * Bremsen (seit 1.2.8, Regeln/03). Bis 1.2.7 loeste ein flatternder
+     * Virtueller Ausgang mit jeder Flanke einen vollstaendigen Abruf aus.
+     * Abgewiesen wird ausdruecklich und mit Grund.
+     */
+    $gsperre_bis = gardena_sperre_bis($lbpconfigdir);
+    if ($gsperre_bis > 0) {
+        gardena_ende(503, "FEHLER: Abrufsperre nach HTTP 429 bis " . date('H:i', $gsperre_bis)
+            . " - vorher wird nicht abgerufen.\n",
+            'refresh abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis));
+    }
+    $gst = gardena_status_lesen($lbpconfigdir);
+    $gseit = time() - (int) $gst['letzter_lauf'];
+    if ((int) $gst['letzter_lauf'] > 0 && $gseit >= 0 && $gseit < gardena_bremse_abruf_s()) {
+        gardena_ende(429, "FEHLER: Der letzte Abruf liegt erst " . $gseit . " Sekunden zurueck. "
+            . "Ein Sofortabruf ist fruehestens " . gardena_bremse_abruf_s() . " Sekunden nach dem letzten Lauf moeglich.\n",
+            'refresh abgewiesen: zu frueh (' . $gseit . ' s nach dem letzten Lauf)');
+    }
     $gprobe = gardena_sperre('main');
     if ($gprobe === false) {
         gardena_ende(200, "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n",
@@ -353,14 +374,43 @@ if ($action === 'command') {
             }
         }
     }
+    if (!is_array($cache)) {
+        // Noch kein Abbild: das ist fehlende Datenlage, kein unbekanntes
+        // Geraet (Regeln/07). Bis 1.2.7 kam hier 404 "Kein passendes Geraet".
+        gardena_ende(503,
+            "FEHLER: Es gibt noch kein Geraete-Abbild - erst muss ein Abruf gelingen (?action=refresh).\n",
+            'command abgewiesen: noch kein Geraete-Abbild');
+    }
     if ($serviceId === '') {
         gardena_ende(404,
             "FEHLER: Kein passendes Geraet/Service gefunden (device='" . $devQuery . "', type=" . $type . "). Erst ?action=refresh ausfuehren; Geraetenamen zeigt ?action=list.\n",
             'command: kein passendes Geraet (device ' . strlen($devQuery) . ' Zeichen, type ' . $type . ')');
     }
 
+    /*
+     * Bremsen VOR dem Netzzugriff (seit 1.2.8, Regeln/03).
+     *
+     * Bis 1.2.7 las dieser Zweig die Abrufsperre nach HTTP 429 nicht: der
+     * Dienst wartete sie ab, ein Virtueller Ausgang klopfte trotzdem an und
+     * verlaengerte sie. Und es gab keine Obergrenze - ein flatternder
+     * Baustein schickte jede Sekunde einen Befehl.
+     */
+    $gsperre_bis = gardena_sperre_bis($lbpconfigdir);
+    if ($gsperre_bis > 0) {
+        gardena_ende(503, "FEHLER: Abrufsperre nach HTTP 429 bis " . date('H:i', $gsperre_bis)
+            . " - der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis));
+    }
+    $gzuviel = gardena_bremse_befehl();
+    if ($gzuviel > 0) {
+        gardena_ende(429, "FEHLER: Mehr als " . gardena_bremse_befehle_h() . " Befehle in der letzten Stunde"
+            . " - der Befehl wurde NICHT gesendet. Flattert ein Baustein am Virtuellen Ausgang?\n",
+            'command abgewiesen: Obergrenze ' . gardena_bremse_befehle_h() . ' je Stunde erreicht');
+    }
+
     $gardena = new gardena($g['CLIENT_ID'], $g['CLIENT_SECRET'], $lbpconfigdir);
     if (!$gardena->authenticate()) {
+        if ($gardena->last_http === 429) { gardena_kontingent_vermerken($lbpconfigdir, $gardena->retry_after); }
         gardena_ende(502, 'FEHLER: Anmeldung fehlgeschlagen: ' . $gardena->last_error . "\n",
             'command: Anmeldung an der Wolke fehlgeschlagen (HTTP ' . (int) $gardena->last_http . ')');
     }
@@ -368,6 +418,7 @@ if ($action === 'command') {
         gardena_ende(200, 'OK: ' . $cmd . ' an ' . $serviceId . " gesendet.\n",
             'command ' . $type . '/' . $cmd . ' abgesetzt');
     }
+    if ($gardena->last_http === 429) { gardena_kontingent_vermerken($lbpconfigdir, $gardena->retry_after); }
     gardena_ende(502, 'FEHLER: ' . $gardena->last_error . "\n",
         'command ' . $type . '/' . $cmd . ' gescheitert (HTTP ' . (int) $gardena->last_http . ')');
 }
