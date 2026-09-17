@@ -828,8 +828,26 @@ function gardena_ini_lesen($datei)
     if (!is_file($datei)) { return false; }
     $roh = @file_get_contents($datei);
     if ($roh === false) { return false; }
-    return @parse_ini_string(preg_replace('/^[ \t]*#.*$/m', '', $roh),
+    return gardena_ini_text($roh);
+}
+
+/**
+ * Denselben Text lesen, ohne Datei - fuer einen Stand, der gerade erst
+ * geschrieben wird (gardena_cfg_write, Zweitschrift). Eine Stelle fuer das
+ * Entfernen der '#'-Zeilen, damit Datei und Text gleich gelesen werden.
+ */
+function gardena_ini_text($roh)
+{
+    return @parse_ini_string(preg_replace('/^[ \t]*#.*$/m', '', (string) $roh),
                              true, INI_SCANNER_RAW);
+}
+
+/** Ein Wert aus dem Abschnitt [GARDENA] eines gelesenen Stands, getrimmt; fehlt er: ''. */
+function gardena_ini_feld($ini, $k)
+{
+    return (is_array($ini) && isset($ini['GARDENA']) && is_array($ini['GARDENA'])
+            && isset($ini['GARDENA'][$k]) && !is_array($ini['GARDENA'][$k]))
+        ? trim((string) $ini['GARDENA'][$k]) : '';
 }
 
 /**
@@ -1130,13 +1148,43 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
      * Datei, die nie angelegt worden war.
      *
      * Nur wenn der geschriebene Stand das Merkwort traegt (ein nicht leeres
-     * TOKEN im Abschnitt): eine Datei ohne Token ist kein Stand, den man
-     * zurueckholen will, und sie darf eine gute Zweitschrift nicht
+     * TOKEN im Abschnitt [GARDENA]): eine Datei ohne Token ist kein Stand, den
+     * man zurueckholen will, und sie darf eine gute Zweitschrift nicht
      * ueberschreiben. Gleiche Rechte wie das Original, unteilbar geschrieben.
+     *
+     * Gelesen wird das Merkwort mit demselben Zerleger wie gardena_cfg_read(),
+     * nicht mehr mit einem Suchmuster ueber den ganzen Text. Dessen
+     * Leerraum-Klasse nahm den Zeilenumbruch mit: "TOKEN=" gefolgt von
+     * "MINISERVER=1" galt als gesetztes Token, und ein Token in einem anderen
+     * Abschnitt zaehlte mit. Gemessen am 17.09.2026 in WSL
+     * (Pruefung-Upgradeluecke-2026-09-17, B3): der Cron-Lauf zwischen neuer
+     * Cron-Datei und postinstall.sh vervollstaendigt die mitgelieferte
+     * Vorgabe und ersetzte dabei die Zweitschrift durch einen Stand ohne
+     * CLIENT_ID, Secret und Token.
+     *
+     * Und nie ein Stand OHNE Zugangsdaten mit einem ANDEREN Token ueber eine
+     * Zweitschrift MIT Zugangsdaten. So sieht es aus, wenn die Oberflaeche in
+     * derselben Luecke geoeffnet wird: die Vorgabe bekommt ein frisches Token,
+     * die Einstellungen des Anwenders liegen nur noch in der Sicherung
+     * (gemessen am 17.09.2026, Pruefung-GardenaSmartSystem-1.2.9). Wer die
+     * Zugangsdaten bewusst loescht, behaelt sein Token - dann zieht die
+     * Zweitschrift mit.
      */
-    if ($ok && basename($cfgfile) === 'gardena.cfg'
-        && preg_match('/^\s*TOKEN\s*=\s*\S+/m', $inhalt) === 1) {
-        $zweit = dirname($dir) . '/' . basename($dir) . '.backup.gardena.cfg';
+    $zweit = dirname($dir) . '/' . basename($dir) . '.backup.gardena.cfg';
+    $zneu = ($ok && basename($cfgfile) === 'gardena.cfg') ? gardena_ini_text($inhalt) : false;
+    $zmerkwort = gardena_ini_feld($zneu, 'TOKEN');
+    if ($zmerkwort !== '' && is_file($zweit)) {
+        $zalt = gardena_ini_lesen($zweit);
+        $zalt_zugang = (gardena_ini_feld($zalt, 'CLIENT_ID') !== '' || gardena_ini_feld($zalt, 'CLIENT_SECRET') !== '');
+        $zneu_zugang = (gardena_ini_feld($zneu, 'CLIENT_ID') !== '' || gardena_ini_feld($zneu, 'CLIENT_SECRET') !== '');
+        if ($zalt_zugang && !$zneu_zugang && gardena_ini_feld($zalt, 'TOKEN') !== $zmerkwort) {
+            $zmerkwort = '';
+            gardena_log_gebremst('zweitschrift_bleibt', 'INF', 'Zweitschrift ' . $zweit
+                . ' bleibt unveraendert: sie traegt Zugangsdaten und ein anderes Token, '
+                . 'der neue Stand keine Zugangsdaten.');
+        }
+    }
+    if ($zmerkwort !== '') {
         $ztmp = $zweit . '.' . getmypid() . '.tmp';
         $zok = false;
         if (@file_put_contents($ztmp, $inhalt) !== false) {

@@ -45,9 +45,10 @@ for verzeichnis in "$BASE/config/plugins/$PDIR" "$BASE/data/plugins/$PDIR" \
 done
 
 # ---------- Die Zweitschriften NEBEN dem Ordner ----------
-# preupgrade.sh legt drei Kopien als GESCHWISTER des Konfigordners an
+# preupgrade.sh legt vier Kopien als GESCHWISTER des Konfigordners an
 # (<ordner>.backup.gardena.cfg, .backup.gardena_token.json,
-# .backup.devices_cache.json). Genau deshalb ueberstehen sie ein Update -
+# .backup.devices_cache.json, .backup.gardena_status.json), die erste ausserdem
+# gardena_cfg_write() bei jedem Speichern. Genau deshalb ueberstehen sie ein Update -
 # und genau deshalb ueberstanden sie bis 1.2.5 auch die Deinstallation.
 # Liegen geblieben waren damit das Application Secret, das Endpunkt-Token
 # und ein gueltiges OAuth2-Token der Husqvarna-Wolke: Zugangsdaten zu einem
@@ -60,27 +61,57 @@ for zweitschrift in "$BASE/config/plugins/$PDIR".backup.*; do
     fi
 done
 
-# Nur sagen, was nachgesehen ist (Regeln/06): bis 1.2.7 stand der Satz unbedingt.
-if [ -d "$BASE/config/plugins/$PDIR" ] || ls "$BASE/config/plugins/$PDIR".backup.* >/dev/null 2>&1; then
-    echo "<WARNING> Es liegen noch Dateien mit Zugangsdaten unter $BASE/config/plugins - bitte von Hand entfernen."
+# ---------- Den Nachbarn der Sicherung wegraeumen ----------
+# data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
+# LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
+# Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
+#
+# Der Stern nimmt die beiden Zwischenstaende von preupgrade.sh mit
+# (.upgrade_sicherung.neu und .upgrade_sicherung.alt): nach einem
+# durchgelaufenen preupgrade gibt es sie nicht mehr, nach einem Abbruch
+# mittendrin aber doch - und dann steht die Konfiguration darin.
+#
+# Gerechnet wird mit $BASE, nicht mit "${5:-$LBHOMEDIR}". Bis 1.2.8 standen
+# hier wieder zwei verschiedene Wurzeln: $BASE kennt den dritten Rueckfall
+# ueber den Ablageort (drei Ebenen ueber data/system/uninstall/<name>), die
+# Zeile hier kannte ihn nicht. Ohne Argument 5 und ohne LBHOMEDIR raeumte die
+# Schleife oben also auf, dieser Block nicht, und die Sicherung blieb samt
+# Application Secret und OAuth2-Token liegen. Gemessen am 17.09.2026 in WSL,
+# so gerufen wie vom Installer (Pruefung-GardenaSmartSystem-1.2.9,
+# messe_runde2.sh Q5b).
+for reste in "$BASE/data/plugins/$PDIR".upgrade_sicherung*; do
+    if [ -e "$reste" ]; then
+        rm -rf "$reste"
+        echo "<OK> Upgrade-Sicherung $reste entfernt."
+    fi
+done
+
+# Nur sagen, was nachgesehen ist (Regeln/06): bis 1.2.7 stand der Satz
+# unbedingt, und bis 1.2.8 sah er die Upgrade-Sicherung nicht an - die wurde
+# erst DANACH entfernt. Blieb sie liegen, meldete das Skript trotzdem
+# "Zugangsdaten und Zugriffstoken des Plugins sind geloescht", waehrend
+# <ordner>.upgrade_sicherung/config/gardena.cfg mit Key, Secret und Token
+# noch dastand (messe_runde2.sh Q5c). Deshalb steht die Nachschau jetzt hinter
+# ALLEM, was das Skript entfernt, und nennt jede Stelle einzeln.
+UEBRIG=0
+if [ -d "$BASE/config/plugins/$PDIR" ]; then UEBRIG=$((UEBRIG + 1)); fi
+for rest in "$BASE/config/plugins/$PDIR".backup.* \
+            "$BASE/data/plugins/$PDIR".upgrade_sicherung*; do
+    if [ -e "$rest" ]; then UEBRIG=$((UEBRIG + 1)); fi
+done
+if [ "$UEBRIG" -gt 0 ]; then
+    echo "<WARNING> Es liegen noch $UEBRIG Stelle(n) mit Zugangsdaten - bitte von Hand entfernen:"
+    if [ -d "$BASE/config/plugins/$PDIR" ]; then
+        echo "<WARNING>   $BASE/config/plugins/$PDIR"
+    fi
+    for rest in "$BASE/config/plugins/$PDIR".backup.* \
+                "$BASE/data/plugins/$PDIR".upgrade_sicherung*; do
+        if [ -e "$rest" ]; then echo "<WARNING>   $rest"; fi
+    done
 else
     echo "<INFO> Zugangsdaten und Zugriffstoken des Plugins sind geloescht."
 fi
 echo "<INFO> Die Anwendung im Husqvarna Developer Portal bleibt bestehen -"
 echo "<INFO> wer sie nicht mehr braucht, entfernt sie dort von Hand:"
 echo "<INFO>   https://developer.husqvarnagroup.cloud/"
-
-# ---------- Den Nachbarn der Sicherung wegraeumen ----------
-# data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
-# LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
-# Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
-# Derselbe Rueckfall wie oben bei PDIR. Bis 1.2.5 standen hier zwei
-# verschiedene: fehlte $3, raeumte die Schleife oben dank Vorgabe noch auf,
-# dieser Block aber nicht - und die .upgrade_sicherung blieb samt
-# Konfiguration liegen.
-UN_FOLDER="$PDIR"
-UN_BASE="${5:-$LBHOMEDIR}"
-if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
-    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
-fi
 exit 0

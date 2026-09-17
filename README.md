@@ -1,5 +1,108 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.9
+
+Diese Fassung behebt Befunde einer Nachstellung des Updates in WSL (Ubuntu,
+17.09.2026), nicht am Gerät. Sie betreffen die knappe Minute, in der LoxBerry
+bei einem Update die neuen Dateien schon kopiert, `postinstall.sh` aber noch
+nicht aufgerufen hat. Läuft in dieser Zeit der Fünf-Minuten-Takt oder öffnet
+jemand die Plugin-Seite, arbeitet das Plugin mit der mitgelieferten Vorgabe.
+
+**Behoben:**
+
+- **Die Zweitschrift der Einstellungen wurde durch die Vorgabe ersetzt.** Nach
+  einem Update mit Takt in dieser Minute stand
+  `config/plugins/<Ordner>.backup.gardena.cfg` ohne Application Key, Secret und
+  Aktionstoken da, bis zum nächsten Speichern. Die Einstellungen selbst holte
+  `postupgrade.sh` zurück; der Rettungsweg über die Zweitschrift war aber
+  wertlos. Ursache: die Prüfung „steht ein Token darin?“ zählte ein leeres
+  `TOKEN=` als gesetzt, sobald die nächste Zeile einen Wert trug. Das Token wird
+  jetzt so gelesen wie beim Laden der Konfiguration, und nur im Abschnitt
+  `[GARDENA]`. Zusätzlich ersetzt ein Stand ohne Zugangsdaten mit einem
+  anderen Token keine Zweitschrift mit Zugangsdaten mehr — so sah es aus, wenn
+  die Seite während des Updates geöffnet wurde. Wer die Zugangsdaten bewusst
+  löscht, behält sein Token; dann zieht die Zweitschrift wie bisher mit.
+- **`postinstall.sh` spielte die Zweitschrift nicht zurück**, wenn die Vorgabe
+  in dieser Minute schon vervollständigt oder mit einem neuen Token versehen
+  worden war: erkannt wurde nur die unveränderte Vorgabe an ihrer Prüfsumme.
+  Fiel `postupgrade.sh` dann aus, fehlten die Einstellungen. Als verloren gilt
+  jetzt auch eine Datei ohne Token, wenn die Zweitschrift eines trägt, und eine
+  Datei ohne Zugangsdaten mit einem anderen Token als die Zweitschrift mit
+  Zugangsdaten.
+- **Protokollzeilen aus dem Update gingen verloren.** `preupgrade.sh` sicherte
+  `log/`, `postupgrade.sh` kopierte die Sicherung zurück und überschrieb damit
+  alles, was dazwischen geschrieben worden war. LoxBerry löscht `log/` beim
+  Update nicht; gesichert und zurückkopiert wird es nicht mehr.
+- **Die Sicherung wurde ungeprüft gelöscht.** `postupgrade.sh` meldete
+  „Konfiguration zurueckgestellt.“ und löschte
+  `data/plugins/<Ordner>.upgrade_sicherung` auch dann, wenn das Kopieren
+  scheiterte. Jetzt wird nachgesehen: Rückgabewert des Kopierens und jede Datei
+  der Sicherung byteweise am Ziel. Fehlt etwas, bleibt die Sicherung liegen,
+  und das Installationsprotokoll nennt sie mit `<WARNING>`. Die Deinstallation
+  räumt sie wie bisher ab.
+
+**Ebenfalls in 1.2.9 behoben — zweiter Durchgang am 17.09.2026.** Beim
+Durchsehen der Hakenskripte fiel eine gemeinsame Bauart auf: an sechs Stellen
+entschied die *Form* einer Datei („ist sie leer?“, „steht die Zeichenfolge
+irgendwo?“) über etwas, das vom *Inhalt* abhängt. Eine `gardena.cfg`, die nur
+die mitgelieferten Vorgaben trägt, ist nicht leer — und genau so sieht sie
+während eines Updates aus.
+
+- **Ein Leerzeichen galt als eingetragenes Zugangsdatum.** Am Ende der
+  Installation entschied `grep "^CLIENT_ID=..*"` darüber, ob
+  „Zugangsdaten sind eingetragen - es ist nichts weiter zu tun.“ erscheint
+  oder der Hinweis auf die Ersteinrichtung. `CLIENT_ID=` mit einem Leerzeichen
+  dahinter erfüllte das Muster; `parse_ini_file`, mit dem das Plugin liest,
+  wirft diesen Leerraum weg und sieht einen leeren Wert. Umgekehrt fand das
+  Muster einen Wert nicht, wenn vor dem Namen ein Leerzeichen stand, und es
+  zählte auch einen `CLIENT_ID` aus einem anderen Abschnitt mit. Gelesen wird
+  jetzt mit demselben Zerleger wie an den übrigen Stellen, und verlangt werden
+  **beide** Werte: ohne Application Secret kommt keine Anmeldung zustande.
+- **Die Zweitschrift entstand nach `[ -s ]`.** `preupgrade.sh` legte
+  `config/plugins/<Ordner>.backup.gardena.cfg` an, sobald die Konfiguration
+  nicht leer war — auch aus einer Datei ohne Zugangsdaten und ohne Token.
+  Damit konnte dieselbe Minute, gegen die diese Fassung sonst schützt, die
+  gute Zweitschrift über den Umweg des Hakenskripts doch noch überschreiben.
+  Jetzt gilt dieselbe Regel wie beim Speichern aus der Oberfläche: geschrieben
+  wird nur ein Stand mit Zugangsdaten oder Token, und ein Stand ohne
+  Zugangsdaten mit einem anderen Token ersetzt keine Zweitschrift mit
+  Zugangsdaten.
+- **Dasselbe für die drei JSON-Zweitschriften** (`gardena_token.json`,
+  `devices_cache.json`, `gardena_status.json`): eine halb geschriebene Datei
+  ist nicht leer und hätte die heile Kopie ersetzt. Eine vorhandene
+  Zweitschrift wird jetzt nur von einer Datei abgelöst, die sich als JSON
+  lesen lässt; gibt es noch keine, wird auch eine beschädigte Datei gesichert
+  — etwas ist besser als nichts.
+- **Die Meldung am Ende des Updates war zu freundlich.** `postupgrade.sh`
+  meldete „Die Einstellungen sind vorhanden“, sobald eine `gardena.cfg`
+  dalag — auch wenn darin nur die Vorgaben standen und Application Key und
+  Secret fehlten. Gefragt wird jetzt nach denselben zwei Werten wie am Ende
+  der Installation; fehlt einer, steht die Aufforderung da, sie neu
+  einzutragen.
+- **Die vorhandene Sicherung wurde weggeworfen, bevor die neue stand.**
+  `preupgrade.sh` begann mit `rm -rf` auf
+  `data/plugins/<Ordner>.upgrade_sicherung` und meldete danach unbedingt
+  „Konfiguration gesichert.“ Ging das Kopieren schief oder gab es gar keine
+  Konfiguration, war beides weg. Jetzt wird die neue Sicherung daneben
+  aufgebaut, Rückgabewert und Inhalt werden geprüft, und erst dann tritt sie
+  an die Stelle der alten. Schlägt etwas fehl, bleibt die alte unangetastet,
+  und das Installationsprotokoll sagt es mit `<WARNING>`.
+- **Die Deinstallation ließ die Upgrade-Sicherung liegen**, wenn LoxBerry sie
+  ohne fünftes Argument und ohne `LBHOMEDIR` aufrief: für die Zweitschriften
+  neben dem Konfigordner war der Rückfall über den eigenen Ablageort
+  eingebaut, für die Sicherung nicht. In ihr stehen Application Key, Secret
+  und ein gültiges OAuth2-Token. Außerdem stand der Satz „Zugangsdaten und
+  Zugriffstoken des Plugins sind geloescht“ **vor** dem Abräumen der
+  Sicherung und sah sie gar nicht an. Beides berichtigt: es wird mit derselben
+  Wurzel gerechnet, die Nachschau steht hinter allem, was das Skript entfernt,
+  und nennt jede Stelle einzeln, die liegen geblieben ist.
+
+**Nicht gemessen:** am Gerät; als Benutzer `loxberry` (die Nachstellung lief
+als abgebildeter root eines Namensraums); mit der wirklichen Lücke von rund
+50 Sekunden (nachgestellt mit einem einzelnen Takt oder Seitenaufruf); an einer
+GARDENA-Anlage weiterhin nichts. Die Stände des zweiten Durchgangs liefen in
+WSL unter PHP 8.3.6, die Oberfläche zusätzlich unter PHP 7.4.33 und 8.4.24.
+
 ## Neu in 1.2.8
 
 Diese Fassung behebt Befunde einer Messung am installierten Plugin auf einem

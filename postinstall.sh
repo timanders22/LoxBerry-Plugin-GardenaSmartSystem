@@ -71,6 +71,37 @@ fi
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-gardenasmartsystem}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+# Einen Wert aus dem Abschnitt [GARDENA] lesen, wie gardena_cfg_read() es tut:
+# '#'- und ';'-Zeilen zaehlen nicht, Leerraum um Name und Wert faellt weg,
+# umschliessende Anfuehrungszeichen fallen weg, ein spaeterer Eintrag gilt.
+# Wortgleich in preupgrade.sh, postinstall.sh und postupgrade.sh: ein
+# /bin/sh-Hakenskript kann keine gemeinsame Datei einbinden (der Installer
+# ruft es aus dem Auspackordner heraus), deshalb dreimal DERSELBE Text und
+# nicht drei Fassungen. Wer eine anfasst, fasst alle drei an.
+# Der zweite Leerraum-Schnitt steht hinter den Anfuehrungszeichen: parse_ini
+# liefert fuer CLIENT_ID="  " zwei Leerzeichen, und gardena_ini_feld() gibt
+# sie durch trim() weiter als leeren Wert aus (gemessen 17.09.2026 unter
+# PHP 7.4.33, 8.3.6 und 8.4.24 - alle drei gleich).
+# Ausgabe nur in eine Variable, nie ins Protokoll - in der Datei stehen
+# Application Secret und Zugriffstoken.
+ini_feld() {
+    [ -f "$1" ] || return 0
+    awk -v k="$2" '
+        { sub(/\r$/, "") }
+        /^[ \t]*\[/ { s = $0; gsub(/^[ \t]*\[|\][ \t]*$/, "", s); next }
+        s != "GARDENA" { next }
+        /^[ \t]*[#;]/ { next }
+        {
+            i = index($0, "="); if (i == 0) next
+            n = substr($0, 1, i - 1); gsub(/^[ \t]+|[ \t]+$/, "", n)
+            if (n != k) next
+            v = substr($0, i + 1); gsub(/^[ \t]+|[ \t]+$/, "", v)
+            if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+            gsub(/^[ \t]+|[ \t]+$/, "", v)
+            w = v; da = 1
+        }
+        END { if (da) print w }' "$1" 2>/dev/null
+}
 netz_zurueck() {
     datei=$1; soll=$2
     ziel="$NETZ_CFG/$datei"
@@ -82,6 +113,30 @@ netz_zurueck() {
     else
         ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
         [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
+    fi
+    # Zusaetzlich nach INHALT (Regeln/05: Merkwort, nicht Form). Die
+    # Pruefsumme erkennt nur die unveraenderte Vorgabe. Laeuft zwischen
+    # Installer-Kopie und diesem Skript der Cron-Takt, ist die Vorgabe schon
+    # vervollstaendigt; oeffnet jemand die Oberflaeche, traegt sie ein neues
+    # Token. Beides gemessen am 17.09.2026 in WSL
+    # (Pruefung-GardenaSmartSystem-1.2.9, postupgrade.sh fiel aus): die
+    # Zweitschrift war heil, zurueckgespielt wurde sie nicht - 2 von 5
+    # Merkinhalten. Als verloren gilt deshalb auch:
+    #  - kein Token in der Datei, aber eines in der Zweitschrift;
+    #  - keine Zugangsdaten und ein anderes Token als die Zweitschrift, die
+    #    Zugangsdaten traegt (dieselbe Regel wie gardena_cfg_write).
+    # Wer Zugangsdaten bewusst geloescht hat, behielt sein Token - diese
+    # Datei bleibt.
+    if [ "$verloren" = "0" ] && [ "$datei" = "gardena.cfg" ]; then
+        z_tok=$(ini_feld "$zweit" TOKEN); i_tok=$(ini_feld "$ziel" TOKEN)
+        z_zug="$(ini_feld "$zweit" CLIENT_ID)$(ini_feld "$zweit" CLIENT_SECRET)"
+        i_zug="$(ini_feld "$ziel" CLIENT_ID)$(ini_feld "$ziel" CLIENT_SECRET)"
+        if [ -n "$z_tok" ] && [ -z "$i_tok" ]; then
+            verloren=1
+        elif [ -n "$z_zug" ] && [ -z "$i_zug" ] && [ "$z_tok" != "$i_tok" ]; then
+            verloren=1
+        fi
+        z_tok=; i_tok=; z_zug=; i_zug=
     fi
     if [ "$verloren" = "1" ]; then
         if cp -p "$zweit" "$ziel" 2>/dev/null; then
@@ -140,7 +195,18 @@ netz_ohne_vorgabe "gardena_status.json" 0640
 # unbedingt und VOR der Rueckspielung - auch nach jedem Update einer fertig
 # eingerichteten Anlage (Regeln/06: der Schlusstext raet nach einem Update
 # nicht zur Erstinstallation).
-if [ -f "$CFG" ] && grep -q "^CLIENT_ID=..*" "$CFG" 2>/dev/null; then
+#
+# Geurteilt wird nach INHALT, mit demselben Zerleger wie oben - nicht mit
+# einem Suchmuster ueber den Text. Bis 1.2.8 stand hier
+# grep -q "^CLIENT_ID=..*": das zaehlt ein einzelnes LEERZEICHEN als Wert,
+# findet den Namen nur ohne fuehrenden Leerraum und sieht nicht, in welchem
+# Abschnitt er steht. parse_ini_file, mit dem das Plugin liest, wirft
+# Leerraum weg - "CLIENT_ID= " ist dort der leere Wert, und die Meldung
+# "es ist nichts weiter zu tun" waere falsch gewesen (CLAUDE.md, 6).
+# Gebraucht werden BEIDE Werte: ohne Secret kommt keine Anmeldung zustande
+# (bin/gardenaMain.php:218, webfrontend/html/index.php:123).
+# Gemessen am 17.09.2026 in WSL (messe_runde2.sh Q1c bis Q1f, Q1h).
+if [ -n "$(ini_feld "$CFG" CLIENT_ID)" ] && [ -n "$(ini_feld "$CFG" CLIENT_SECRET)" ]; then
     echo "<OK> Zugangsdaten sind eingetragen - es ist nichts weiter zu tun."
 else
     echo "<INFO> Naechster Schritt: Plugin-Oberflaeche oeffnen, Application Key und"
