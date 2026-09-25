@@ -36,6 +36,52 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
 fi
 PDIR="${ARGV3:-gardenasmartsystem}"
 
+# ---------- Zurueckbehaltene MQTT-Themen leeren ----------
+# Bis 1.2.7 ging jeder Geraetewert retained hinaus, seitdem die Zustaende
+# (bin/functions.inc.php, gardena_retain_zustaende()). Bis 1.2.9 blieben sie
+# nach dem Deinstallieren im Broker stehen, und nach jedem Neustart von Broker
+# oder Gateway bekam der Miniserver sie wieder (in WSL gemessen,
+# Pruefung-GardenaSmartSystem-1.2.10, Faelle U1-U5). Welche Themen, wie beim
+# Broker nachgelesen wird und warum hoechstens dreimal: gardena_mqtt_leeren()
+# in bin/functions.inc.php. Einen Letzten Willen gibt es nicht: die Linie
+# spricht nur ueber den UDP-Eingang des Gateways (Regeln/07, Abschnitt 3).
+#
+# VOR dem Loeschen der Ordner: Konfiguration (Basisthema), Zustand
+# (Themenliste) und bin/ sind hier noch da; der Installer entfernt sie erst
+# nach diesem Skript (Regeln/06, purge_installation). Als loxberry, nicht als
+# root, stdin geschlossen (Regeln/02).
+#
+# Den Cron-Eintrag muss dieses Skript nicht abraeumen: der Installer
+# entfernt ihn vorher (purge_installation Schritt 1, das Skript ist Schritt 3;
+# Geraet/2026-09-05/08_plugininstall.pl:1535-1577). Einen Lauf, der davor
+# begann, wartet --mqtt-leeren ab (bis 30 s, gardenaMain.php).
+#
+# 'timeout -k 5 90' (30 s Warten auf den Abruf, dann hoechstens drei
+# Runden): ohne -k schickt timeout nur SIGTERM - ein Programm, das es nicht
+# annimmt, hielte die Deinstallation an, und die Zweitschriften mit den
+# Zugangsdaten (unten) blieben liegen (Bauart Weissware 0.9.34). Ein Abbruch
+# steht als WARNING da, nicht hinter '|| true'.
+GA_PHP=$(command -v php 2>/dev/null)
+GA_MAIN="$BASE/bin/plugins/$PDIR/gardenaMain.php"
+if [ -n "$GA_PHP" ] && [ -f "$GA_MAIN" ]; then
+    GA_RC=0
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" \
+            timeout -k 5 90 "$GA_PHP" "$GA_MAIN" --mqtt-leeren)" < /dev/null 2>&1 || GA_RC=$?
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PDIR" timeout -k 5 90 "$GA_PHP" "$GA_MAIN" \
+            --mqtt-leeren < /dev/null 2>&1 || GA_RC=$?
+    fi
+    case "$GA_RC" in
+        0|1|2) ;;
+        124) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen brach nach 90 s ab (Rueckgabe 124)." ;;
+        137) echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen wurde nach 90 s hart beendet (Rueckgabe 137)." ;;
+        *)   echo "<WARNING> MQTT: das Leeren der zurueckbehaltenen Themen endete mit Rueckgabe $GA_RC." ;;
+    esac
+else
+    echo "<INFO> MQTT: php oder bin/plugins/$PDIR/gardenaMain.php nicht gefunden - zurueckbehaltene Themen wurden nicht geleert."
+fi
+
 for verzeichnis in "$BASE/config/plugins/$PDIR" "$BASE/data/plugins/$PDIR" \
                    "$BASE/log/plugins/$PDIR"; do
     if [ -d "$verzeichnis" ]; then

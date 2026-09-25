@@ -164,26 +164,54 @@ netz_zurueck "gardena.cfg" "ba8589cf2ef0c5d8ed0fc1135a0463178b477d00400053ac8a5c
 
 
 # Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,
-# womit man vergleichen koennte, also ist das Kriterium "fehlt oder leer".
-# Eine vorhandene Datei wird nie ueberschrieben.
+# womit man vergleichen koennte. Entschieden wird nach INHALT (Regeln/05):
+# eine Datei, die sich zu einem JSON-Feld lesen laesst, wird nie
+# ueberschrieben; eine fehlende, leere oder unlesbare wird ersetzt - aber nur
+# aus einer Zweitschrift, die selbst lesbar ist. Der verdraengte Stand bleibt
+# als <datei>.kaputt (0600) liegen.
+# Bis 1.2.9 entschied "[ ! -s ]", also die Groesse: eine nicht leere, aber
+# unlesbare Datei blieb stehen und die heile Zweitschrift daneben ungenutzt;
+# eine unlesbare Zweitschrift wurde ueber eine fehlende Datei gelegt (in WSL
+# gemessen, Pruefung-GardenaSmartSystem-1.2.10, Faelle N1, N3, N5).
+# json_heil() wie in preupgrade.sh: ist php nicht aufrufbar, gilt die Datei
+# als heil - dann verhaelt sich das Skript wie bis 1.2.9.
+json_heil() {
+    [ -s "$1" ] || return 1
+    php -r 'exit(is_array(json_decode((string) @file_get_contents($argv[1]), true)) ? 0 : 1);' -- "$1" 2>/dev/null
+    rc=$?
+    case $rc in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 0 ;;
+    esac
+}
 netz_ohne_vorgabe() {
     ziel="$NETZ_CFG/$1"
     zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$1"
     modus="${2:-0600}"
     [ -f "$zweit" ] || return 0
-    if [ ! -s "$ziel" ]; then
-        if cp -p "$zweit" "$ziel" 2>/dev/null; then
-            # Die Rechte kommen jetzt je Datei mit. Bis 1.2.5 setzte dieser
-            # Weg alles auf 0600 - auch devices_cache.json, die der Code
-            # bewusst mit 0640 schreibt und die der OEFFENTLICHE Endpunkt
-            # liest. Laeuft der Cron als root und Apache als loxberry,
-            # antwortete ?action=list danach dauerhaft "Noch keine Daten"
-            # und ?action=command fand nie eine Dienstkennung.
-            chmod "$modus" "$ziel" 2>/dev/null
-            echo "<OK> $1 aus der Zweitschrift wiederhergestellt."
-        else
-            echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
+    json_heil "$ziel" && return 0
+    if ! json_heil "$zweit"; then
+        echo "<WARNING> $1 fehlt oder ist unlesbar, die Zweitschrift $zweit ist aber selbst kein lesbares JSON - nicht zurueckgespielt."
+        return 0
+    fi
+    if [ -s "$ziel" ]; then
+        if mv "$ziel" "$ziel.kaputt" 2>/dev/null; then
+            chmod 0600 "$ziel.kaputt" 2>/dev/null
+            echo "<INFO> $1 war kein lesbares JSON - der alte Stand liegt als $1.kaputt daneben."
         fi
+    fi
+    if cp -p "$zweit" "$ziel" 2>/dev/null; then
+        # Die Rechte kommen je Datei mit. Bis 1.2.5 setzte dieser Weg alles
+        # auf 0600 - auch devices_cache.json, die der Code bewusst mit 0640
+        # schreibt und die der OEFFENTLICHE Endpunkt liest. Laeuft der Cron
+        # als root und Apache als loxberry, antwortete ?action=list danach
+        # dauerhaft "Noch keine Daten" und ?action=command fand nie eine
+        # Dienstkennung.
+        chmod "$modus" "$ziel" 2>/dev/null
+        echo "<OK> $1 aus der Zweitschrift wiederhergestellt."
+    else
+        echo "<WARNING> $1 liess sich nicht zurueckspielen ($zweit)."
     fi
 }
 netz_ohne_vorgabe "gardena_token.json" 0600

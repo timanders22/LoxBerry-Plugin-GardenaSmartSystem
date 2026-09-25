@@ -15,6 +15,44 @@
 
 require_once __DIR__ . '/header.inc.php';
 
+/*
+ * Nur installiert - oder wenn der Aufrufer Wurzel UND Ordner ausdruecklich
+ * nennt (gardena_lage()). Aus einem ausgepackten Archiv heraus erkennt das
+ * SDK keinen Pluginordner; bis 1.2.9 lief dieser Dienst trotzdem und schrieb
+ * mit den Pfaden der Anlage (in WSL gemessen,
+ * Pruefung-GardenaSmartSystem-1.2.10, Fall L1).
+ */
+if (gardena_lage() === '') {
+    fwrite(STDERR, 'gardenaMain.php: nicht installiert - dieses Skript liegt nicht unter '
+        . '<LoxBerry-Wurzel>/bin/plugins/<ordner>, und LBHOMEDIR und LBPPLUGINDIR sind nicht '
+        . 'beide gesetzt. Es wurde nichts abgerufen, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
+}
+
+/*
+ * uninstall/uninstall leert hierueber die zurueckbehaltenen MQTT-Themen der
+ * Linie (gardena_mqtt_leeren()) - ohne Abruf und ohne Zustand.
+ *
+ * Vorher wird bis 30 s auf die Sperre des Abrufs gewartet und sie waehrend
+ * des Leerens gehalten. Den Cron-Eintrag entfernt der Installer schon VOR
+ * dem Deinstallationsskript (plugininstall.pl, purge_installation Schritt 1
+ * vor Schritt 3; Geraet/2026-09-05/08_plugininstall.pl:1535-1577) - ein Lauf,
+ * der vorher begann, sendet aber noch und stellte die geleerten Zustaende
+ * wieder in den Broker (in WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10,
+ * Fall S1). Wird die Sperre nicht frei, wird trotzdem geleert und es gesagt.
+ */
+if (PHP_SAPI === 'cli' && isset($argv[1]) && $argv[1] === '--mqtt-leeren') {
+    $gl_bis = microtime(true) + 30;
+    while (($gl_sperre = gardena_sperre('main')) === false && microtime(true) < $gl_bis) {
+        usleep(500000);
+    }
+    if ($gl_sperre === false) {
+        echo '<WARNING> MQTT: ein Abruf lief nach 30 s noch - es wird trotzdem geleert; was er '
+           . 'danach sendet, bleibt stehen (von Hand: mosquitto_pub -r -n -t <thema>).' . "\n";
+    }
+    exit(gardena_mqtt_leeren($lbpconfigdir));
+}
+
 // Protokoll seit 1.2.8 ueber gardena_log() in EINE Datei (gardena.log) - Begruendung
 // bei der Funktion in functions.inc.php.
 
@@ -372,44 +410,44 @@ $gunveraendert = ($gsignatur === (string) $gstand['signatur'] && $gstand['letzte
 $gvoll = (!$gunveraendert || $galter_meldung >= 1800);
 
 /*
- * Einmal nach dem Update auf 1.2.8: die ALTEN zurueckbehaltenen Werte
- * abraeumen, die jetzt fluechtig hinausgehen.
+ * Altwerte im Broker abraeumen - nur, was der Broker wirklich noch haelt.
  *
  * Bis 1.2.7 ging jeder Geraetewert retained hinaus, bis 1.2.5 auch das
  * Lebenszeichen. Ein fluechtiges publish loescht keinen zurueckbehaltenen
  * Wert - er laege weiter im Broker und kaeme nach einem Neustart des
- * Miniservers oder des Gateways als frisch heraus. Genau das soll der
- * Hausstandard verhindern (Regeln/07: "Wer von 'alles retained' auf den
- * Hausstandard umstellt, raeumt die alten Werte ab.").
+ * Miniservers oder des Gateways als frisch heraus.
  *
- * Reihenfolge: ERST loeschen, DANN den gueltigen Wert senden. Das Gateway
- * reicht die leere Nutzlast als leeren Wert an den Miniserver weiter
- * (gemessen 06.09.2026); der Wert unmittelbar dahinter ersetzt ihn. Vermerkt
- * wird die Aufraeumrunde nur nach einem vollstaendigen Lauf - scheitert
- * einer, wird sie beim naechsten wiederholt.
+ * 1.2.8 und 1.2.9 raeumten EINMAL ab, in einem Block vor allen Werten, und
+ * setzten danach den Merker retain_stand=2 - gestuetzt allein darauf, dass die
+ * Datagramme den Rechner verlassen hatten. Der UDP-Eingang des Gateways
+ * verwirft unter Last, und socket_sendto() meldet auch dann Erfolg
+ * (Regeln/07, "Ein Absender merkt nichts davon", am Geraet belegt). Jetzt
+ * fragt gardena_altlast() den Broker, raeumt nur ab, was er noch haelt, und
+ * vermerkt nur, was er leer meldet; ist er nicht zu fragen, wird in jedem
+ * Vollversand abgeraeumt. Die leere Nachricht geht UNMITTELBAR vor dem
+ * gueltigen Wert hinaus (gardena_wert_senden(), gardena_lebenszeichen()).
+ * In WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10, Faelle A1-A13.
  */
-$gaufraeumen = ($gvoll && $mqtt_enabled && (int) $gstand['retain_stand'] < 2);
-if ($gaufraeumen) {
-    $gn_aufr = 0;
+$galtlast = array();
+if ($gvoll && $mqtt_enabled) {
+    $gkandidaten = array();
     foreach ($gteil as $gt) {
         if (!gardena_retain($gt[0], $gt[1], $gt[2])) {
-            gardena_mqtt_loeschen(gardena_wert_thema($mqtt_topic, $gt[0], $gt[1], $gt[2]));
-            $gn_aufr++;
+            $gkandidaten[] = gardena_wert_thema($mqtt_topic, $gt[0], $gt[1], $gt[2]);
         }
     }
-    foreach (array('ok', 'zeitstempel', 'werte', 'fehler') as $gname) {
-        gardena_mqtt_loeschen(gardena_wert_thema($mqtt_topic, 'Plugin', 'STATUS', $gname));
-        $gn_aufr++;
+    foreach (gardena_altlast_status() as $gname) {
+        $gkandidaten[] = gardena_wert_thema($mqtt_topic, 'Plugin', 'STATUS', $gname);
     }
-    gardena_log('INF', 'Umstellung auf Retain je Thema: ' . $gn_aufr
-        . ' frueher zurueckbehaltene Themen im Broker geloescht; die aktuellen Werte folgen.');
+    $galtlast = array_flip(gardena_altlast($gkandidaten));
 }
 
 if ($gvoll) {
     foreach ($gwerte as $gschluessel => $gwert) {
         list($gdev, $gtyp, $gattr) = $gteil[$gschluessel];
         list($v, $f) = gardena_wert_senden($mqtt_topic, $gdev, $gtyp, $gattr, $gwert,
-                                           $gudp_ziel, $udpport, $mqtt_enabled);
+                                           $gudp_ziel, $udpport, $mqtt_enabled, null,
+                                           isset($galtlast[gardena_wert_thema($mqtt_topic, $gdev, $gtyp, $gattr)]));
         $versucht += $v;
         $verloren += $f;
         if ($f === 0) { $sent++; }
@@ -462,14 +500,54 @@ $gweg = array_diff($galt, $gthemen);
  * genau das - und dann wurden die retained-Werte aller seiner Geraete
  * geleert, obwohl nur das Netz kurz weg war. Wer in diesem Zeitfenster den
  * Broker oder den Miniserver neu startet, steht danach ohne Werte da.
+ *
+ * Und es wird geloescht, bis der Broker es bestaetigt. Bis 1.2.9 ging die
+ * Loeschung EINMAL ueber den UDP-Eingang hinaus, und das Thema fiel danach
+ * aus der Liste - verwarf der Eingang das Datagramm, blieb der alte Wert fuer
+ * immer im Broker (Regeln/07, "Ein Absender merkt nichts davon"). Jetzt
+ * stehen die Themen in 'weg_offen', bis gardena_mqtt_behalten_liste() sie
+ * leer meldet; ist der Broker nicht zu fragen, geht die Loeschung in drei
+ * Laeufen hinaus, danach faellt das Thema aus der Liste (README, Grenze).
+ * In WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10, Faelle W1-W5.
  */
-if ($gweg && $mqtt_enabled && $standort_fehl === 0) {
+$gweg_offen = array();
+if (isset($gstand['weg_offen']) && is_array($gstand['weg_offen'])) {
+    foreach ($gstand['weg_offen'] as $gthema => $gn) { $gweg_offen[(string) $gthema] = (int) $gn; }
+}
+if ($mqtt_enabled && $standort_fehl === 0) {
     foreach ($gweg as $gthema) {
-        // Seit 1.2.8 ueber die eigene Loeschfunktion: mqttPublish() schickt
-        // einen leeren Wert absichtlich NIE retained hinaus.
-        gardena_mqtt_loeschen($gthema);
+        if (!isset($gweg_offen[$gthema])) { $gweg_offen[$gthema] = 0; }
     }
-    gardena_log('INF', count($gweg) . ' weggefallene MQTT-Themen geleert (Geraet umbenannt oder entfernt).');
+    // Wieder da (Geraet zurueck, Basisthema zurueckgestellt): nicht loeschen.
+    foreach ($gthemen as $gthema) { unset($gweg_offen[$gthema]); }
+    if ($gweg_offen) {
+        $gf = gardena_mqtt_behalten_liste(array_keys($gweg_offen));
+        $gneu_offen = array();
+        if ($gf['lage'] === 'ok') {
+            $gzu = array_keys($gf['belegt']);
+            foreach ($gzu as $gthema) { $gneu_offen[$gthema] = 0; }
+        } else {
+            $gzu = array_keys($gweg_offen);
+            foreach ($gweg_offen as $gthema => $gn) {
+                if ($gn + 1 < 3) { $gneu_offen[$gthema] = $gn + 1; }
+            }
+        }
+        foreach ($gzu as $gthema) {
+            // Ueber die eigene Loeschfunktion: mqttPublish() schickt einen
+            // leeren Wert absichtlich NIE retained hinaus.
+            gardena_mqtt_loeschen($gthema);
+        }
+        if ($gzu) {
+            gardena_log('INF', count($gzu) . ' weggefallene MQTT-Themen geleert (Geraet umbenannt oder entfernt)'
+                . ($gf['lage'] === 'ok' ? ' - der naechste Lauf fragt beim Broker nach.'
+                                        : ' - der Broker war nicht zu fragen.'));
+        }
+        if ($gf['lage'] !== 'ok' && count($gneu_offen) < count($gweg_offen)) {
+            gardena_log('INF', (count($gweg_offen) - count($gneu_offen)) . ' weggefallene MQTT-Themen '
+                . 'dreimal ohne Rueckfrage beim Broker geleert - sie werden nicht weiter verfolgt.');
+        }
+        $gweg_offen = $gneu_offen;
+    }
 } elseif ($gweg && $mqtt_enabled) {
     gardena_log('INF', count($gweg) . ' Themen fehlen in diesem Lauf - NICHT geleert, weil '
         . $standort_fehl . ' Standort(e) nicht geantwortet haben.');
@@ -521,6 +599,7 @@ $gneuer_stand = array(
     // voller Erfolgsmeldung.
     'signatur' => $vollstaendig ? $gsignatur : (string) $gstand['signatur'],
     'themen' => $gthemen,
+    'weg_offen' => $gweg_offen,
     // Nach einem geglueckten Lauf ist die Ruecknahme aufgehoben.
     'sperre_bis' => 0,
     'fehler' => $vollstaendig ? '' :
@@ -530,8 +609,6 @@ $gneuer_stand = array(
                               : ($verloren . ' von ' . $versucht . ' Zustellungen gescheitert.'))),
 );
 if ($vollstaendig) { $gneuer_stand['letzter_erfolg'] = time(); }
-// Die Aufraeumrunde der Retain-Umstellung gilt erst nach einem vollstaendigen Lauf.
-if ($vollstaendig && $gaufraeumen) { $gneuer_stand['retain_stand'] = 2; }
 if ($gvoll && $vollstaendig) { $gneuer_stand['letzte_volle_meldung'] = time(); }
 // Die Standortliste nur dann als frisch vermerken, wenn sie in DIESEM Lauf
 // geholt wurde UND Geraete dabei herauskamen. Sonst wird sie beim naechsten
@@ -562,7 +639,7 @@ if (!gardena_status_schreiben($lbpconfigdir, $gneuer_stand)) {
 }
 
 list($glz_v, $glz_f) = gardena_lebenszeichen($mqtt_topic, gardena_status_lesen($lbpconfigdir),
-                                             $gudp_ziel, $udpport, $mqtt_enabled);
+                                             $gudp_ziel, $udpport, $mqtt_enabled, $galtlast);
 if ($glz_f > 0) {
     gardena_log('ERR', 'Lebenszeichen: ' . $glz_f . ' von ' . $glz_v . ' Zustellungen gescheitert.');
 }

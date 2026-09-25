@@ -28,10 +28,45 @@
 require_once 'loxberry_system.php';
 require_once 'loxberry_log.php';
 require_once 'loxberry_io.php';
-require_once $lbpbindir . '/gardena.class.inc.php';
-require_once $lbpbindir . '/functions.inc.php';
 
 header('Content-Type: text/plain; charset=utf-8');
+
+/*
+ * Welcher bin/-Ordner gilt, entscheidet der eigene Ablageort: installiert
+ * liegt diese Datei unter <Wurzel>/webfrontend/html/plugins/<ordner>, die
+ * Bibliothek unter <Wurzel>/bin/plugins/<ordner>; im ausgepackten Archiv
+ * unter <archiv>/webfrontend/html und <archiv>/bin. Bis 1.2.9 stand hier
+ * $lbpbindir - aus einem Archiv, in dem das SDK keinen Pluginordner erkennt,
+ * zeigte er auf bin/plugins/ der Anlage ohne Ordnernamen (in WSL gemessen,
+ * Pruefung-GardenaSmartSystem-1.2.10, Fall L8). Der gesuchte Pfad geht ins
+ * Fehlerprotokoll des Webservers, nicht in die Antwort: der Aufrufer hat sich
+ * hier noch nicht ausgewiesen.
+ */
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'html') {
+    $gbindir = dirname(dirname(dirname(dirname(__DIR__)))) . '/bin/plugins/' . basename(__DIR__);
+} else {
+    $gbindir = dirname(dirname(__DIR__)) . '/bin';
+}
+if (!is_file($gbindir . '/functions.inc.php') || !is_file($gbindir . '/gardena.class.inc.php')) {
+    error_log('GARDENA smart system: Bibliothek nicht gefunden unter ' . $gbindir);
+    http_response_code(500);
+    echo "FEHLER: Die Bibliothek des Plugins fehlt - Plugin neu installieren.\n";
+    exit;
+}
+require_once $gbindir . '/gardena.class.inc.php';
+require_once $gbindir . '/functions.inc.php';
+
+/*
+ * Nur installiert (oder ausdruecklich mit LBHOMEDIR und LBPPLUGINDIR) wirkt
+ * dieser Endpunkt - gardena_lage(). Er protokolliert, ruft ab und schaltet;
+ * aus einem ausgepackten Archiv heraus haette er das mit den Pfaden der
+ * Anlage getan (Fall L9 in der Eichung).
+ */
+if (gardena_lage() === '') {
+    http_response_code(503);
+    echo "FEHLER: Dieses Plugin ist hier nicht installiert - der Endpunkt tut nichts.\n";
+    exit;
+}
 
 /**
  * Ein einziger Ausgang - und jeder Weg schreibt eine Zeile.
@@ -214,7 +249,7 @@ if ($action === 'list') {
 // ---------- Sofort-Abruf ----------
 if ($action === 'refresh') {
     // gardenaMain liegt seit 1.1.0 in bin/, nicht mehr neben dieser Datei.
-    $skript = $lbpbindir . '/gardenaMain.php';
+    $skript = $gbindir . '/gardenaMain.php';
     if (!is_file($skript)) {
         gardena_ende(500, "FEHLER: " . $skript . " nicht gefunden - Plugin neu installieren.\n",
             'refresh: gardenaMain.php nicht gefunden');

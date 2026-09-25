@@ -30,11 +30,16 @@
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, data/plugins UND config/system/general.json traegt
+ * (Regeln/06). Das trifft die uebliche Installation genauso wie eine an einem
+ * anderen Ort. Findet sich keines - ein entpacktes Archiv, ein fremder Baum -,
+ * ist die Antwort ein Leerstring, und kein Aufrufer baut daraus einen Pfad.
+ *
+ * Bis 1.2.9 genuegten config/plugins und webfrontend: ein ausgepacktes Archiv
+ * in einem fremden Baum, der beides traegt (ein Pruefstandsrest), hielt
+ * diesen Baum fuer die Wurzel (in WSL gemessen,
+ * Pruefung-GardenaSmartSystem-1.2.10, Fall T3). Ein LoxBerry hat die
+ * general.json immer, ein solcher Rest nie.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -44,7 +49,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/data/plugins')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -53,6 +59,71 @@ if (!function_exists('lb_wurzel_ermitteln')) {
         }
         return '';
     }
+}
+
+/**
+ * Die LoxBerry-Wurzel fuer Dateien des SYSTEMS (general.json, Sprachdateien).
+ *
+ * Der Reihe nach $lbhomedir und die Konstante LBHOMEDIR des SDK, $LBHOMEDIR,
+ * zuletzt die Suche vom eigenen Ablageort aus. Es gilt nur ein Verzeichnis,
+ * das config/system/general.json traegt. Sonst: Leerstring - und kein
+ * Aufrufer setzt daraus einen Pfad ab der Laufwerkswurzel zusammen.
+ */
+function gardena_lbhome()
+{
+    $kandidaten = array(
+        isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '',
+        defined('LBHOMEDIR') ? (string) LBHOMEDIR : '',
+        (string) getenv('LBHOMEDIR'),
+    );
+    foreach ($kandidaten as $k) {
+        $k = rtrim($k, '/');
+        if ($k !== '' && is_file($k . '/config/system/general.json')) { return $k; }
+    }
+    return (string) lb_wurzel_ermitteln();
+}
+
+/**
+ * Wo laeuft dieses Plugin - und darf es auf die Anlage wirken?
+ *
+ *   'installiert'    diese Bibliothek liegt unter <Wurzel>/bin/plugins/<ordner>
+ *                    (physisch verglichen), und die Wurzel traegt general.json
+ *   'ausdruecklich'  der Aufrufer nennt Wurzel UND Ordner: $LBHOMEDIR und
+ *                    $LBPPLUGINDIR sind gesetzt (so arbeiten die
+ *                    Pruefwerkzeuge mit ihrer Attrappe)
+ *   ''               ein ausgepacktes Archiv oder ein fremder Baum - dann wird
+ *                    nichts geschrieben, nichts gesendet, nichts geschaltet
+ *
+ * Die Pfade kommen aus dem LoxBerry-SDK, und das erkennt den Pluginordner am
+ * Pfad des aufgerufenen Skripts (Regeln/03, "LBPPLUGINDIR ist am Geraet keine
+ * Umgebungsvariable"). Aus einem Archiv heraus erkennt es keinen: bis 1.2.9
+ * schrieb gardenaMain.php dann seinen Zustand nach config/plugins/ und sein
+ * Protokoll samt Sperrdatei nach log/plugins/ der Anlage, ohne Ordnernamen
+ * (in WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10, Fall L1; Bauart
+ * tb_paths() von Spotpreis-Tibber 0.9.19).
+ */
+function gardena_lage()
+{
+    static $lage = null;
+    if ($lage !== null) { return $lage; }
+    $lage = '';
+    $home = isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '';
+    if ($home === '' && defined('LBHOMEDIR')) { $home = (string) LBHOMEDIR; }
+    $home = rtrim($home, '/');
+    $ordner = isset($GLOBALS['lbpplugindir']) ? (string) $GLOBALS['lbpplugindir'] : '';
+    if ($ordner === '' && defined('LBPPLUGINDIR')) { $ordner = (string) LBPPLUGINDIR; }
+    $konf = isset($GLOBALS['lbpconfigdir']) ? (string) $GLOBALS['lbpconfigdir'] : '';
+    if ($home === '' || $ordner === '' || $konf === '') { return $lage; }
+    $soll = @realpath($home . '/bin/plugins/' . $ordner);
+    $ist = @realpath(__DIR__);
+    if ($soll !== false && $ist !== false && $soll === $ist
+        && is_file($home . '/config/system/general.json')) {
+        $lage = 'installiert';
+    } elseif ((string) getenv('LBPPLUGINDIR') !== ''
+              && rtrim((string) getenv('LBHOMEDIR'), '/') === $home) {
+        $lage = 'ausdruecklich';
+    }
+    return $lage;
 }
 
 /**
@@ -297,9 +368,14 @@ function gardena_mqtt_udpport()
         }
     }
     if (!$port) {
-        $home = isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '';
-        if ($home === '') { $home = getenv('LBHOMEDIR') ?: lb_wurzel_ermitteln(); }
-        $gen = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+        // Ohne Wurzel wird nichts gelesen. Bis 1.2.9 hiess eine leere Wurzel
+        // '' . '/config/system/general.json', also eine Datei ab der
+        // Laufwerkswurzel, und deren Port galt (in WSL gemessen,
+        // Pruefung-GardenaSmartSystem-1.2.10, Fall T2).
+        $home = gardena_lbhome();
+        $gen = ($home !== '')
+            ? @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true)
+            : null;
         // is_array() vor dem verschachtelten Zugriff: waere der Wert eine
         // Zeichenkette mit Inhalt, verrechnete PHP den Schluessel zu
         // Position 0, isset() waere wahr, und der Port ergaebe sich aus dem
@@ -397,6 +473,341 @@ function gardena_mqtt_loeschen($topic)
     $udpport = gardena_mqtt_udpport();
     if (!$udpport) { return false; }
     return sendUDP('retain ' . gardena_mqtt_thema($topic) . ' ', '127.0.0.1', $udpport);
+}
+
+/**
+ * Die Themen unter Plugin/STATUS, die eine Vorfassung zurueckbehalten hat:
+ * bis 1.2.5 ging das Lebenszeichen retained hinaus (Kopfkommentar der
+ * Altwert-Abraeumung in gardenaMain.php). 'ts' und 'zaehler' kamen mit 1.2.8
+ * und waren nie retained - eine leere Nachricht auf ihnen loeschte nichts.
+ */
+function gardena_altlast_status()
+{
+    return array('ok', 'zeitstempel', 'werte', 'fehler');
+}
+
+/**
+ * Den Broker fragen, welche der Themen $themen er zurueckbehaelt - in EINER
+ * Verbindung, ein SUBSCRIBE mit allen Filtern.
+ *
+ * Rueckgabe array('lage' => 'ok'|'unbekannt', 'belegt' => array(thema => true)).
+ * 'ok': der Broker hat die Anmeldung (CONNACK 0) und JEDEN Filter
+ * (SUBACK-Rueckgabe unter 0x80) bestaetigt; was dann nicht unter 'belegt'
+ * steht, ist leer. 'unbekannt': er war nicht zu fragen - keine Wurzel, keine
+ * general.json, keine Verbindung, Anmeldung abgewiesen, Filter abgelehnt,
+ * keine Antwort. "Nicht zu fragen" heisst nie "nichts belegt".
+ *
+ * Warum ueberhaupt fragen: gesendet wird ueber den UDP-Eingang des Gateways,
+ * und dort meldet socket_sendto() auch fuer ein verworfenes Datagramm Erfolg
+ * (Regeln/07, "Ein Absender merkt nichts davon", am Geraet belegt). Belegt
+ * ist ein Abraeumen erst, wenn der Broker selbst sagt, dass nichts mehr
+ * dasteht - und belegt ist ein Thema nur am EMPFANGENEN Paket mit
+ * Retain-Merkmal und nicht leerer Nutzlast.
+ *
+ * MQTT 3.1.1 von Hand, nur CONNECT, SUBSCRIBE (QoS 0) und DISCONNECT, ohne
+ * fremde Bibliothek; Bauart bw_mqtt_behalten_liste() (Beschattungswaechter
+ * 0.9.21). Die Anmeldung nimmt Brokeruser/Brokerpass aus der general.json
+ * (Regeln/07, Abschnitt 2); das Kennwort steht nur im CONNECT-Paket, nie in
+ * einem Protokoll und nie auf einer Kommandozeile.
+ */
+function gardena_mqtt_behalten_liste(array $themen)
+{
+    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    $soll = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $soll[(string) $t] = true; }
+    }
+    if (!$soll) {
+        $aus['lage'] = 'ok';
+        return $aus;
+    }
+    $home = gardena_lbhome();
+    if ($home === '') { return $aus; }
+    $d = @json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+    if (!is_array($d) || !isset($d['Mqtt']) || !is_array($d['Mqtt'])) { return $aus; }
+    $m = $d['Mqtt'];
+    $hol = function ($k) use ($m) {
+        return (isset($m[$k]) && is_scalar($m[$k])) ? (string) $m[$k] : '';
+    };
+    $host = trim($hol('Brokerhost'));
+    if ($host === '' || $host === 'localhost') { $host = '127.0.0.1'; }
+    $port = (int) $hol('Brokerport');
+    if ($port <= 0 || $port > 65535) { $port = 1883; }
+    $benutzer = $hol('Brokeruser');
+    $kennwort = $hol('Brokerpass');
+
+    $errno = 0;
+    $errstr = '';
+    $s = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 2);
+    if (!$s) { return $aus; }
+    stream_set_timeout($s, 1);
+
+    $zk = function ($t) { return pack('n', strlen($t)) . $t; };
+    $laenge = function ($n) {
+        $o = '';
+        do {
+            $b = $n % 128;
+            $n = intdiv($n, 128);
+            if ($n > 0) { $b |= 128; }
+            $o .= chr($b);
+        } while ($n > 0);
+        return $o;
+    };
+    /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
+    $lies = function ($n) use ($s) {
+        $d = '';
+        while (strlen($d) < $n) {
+            $t = @fread($s, $n - strlen($d));
+            if ($t === false || $t === '') {
+                $meta = stream_get_meta_data($s);
+                if (!empty($meta['timed_out']) || !empty($meta['eof']) || feof($s)) { return null; }
+                continue;
+            }
+            $d .= $t;
+        }
+        return $d;
+    };
+    /* Ein Paket: array(kopfbyte, rumpf) oder null. */
+    $paket = function () use ($lies) {
+        $k = $lies(1);
+        if ($k === null) { return null; }
+        $n = 0;
+        $mult = 1;
+        for ($i = 0; $i < 4; $i++) {
+            $b = $lies(1);
+            if ($b === null) { return null; }
+            $n += (ord($b) & 127) * $mult;
+            $mult *= 128;
+            if (!(ord($b) & 128)) { break; }
+        }
+        $r = ($n > 0) ? $lies($n) : '';
+        return ($r === null) ? null : array(ord($k), $r);
+    };
+
+    $flags = 0x02;                                  // saubere Sitzung
+    $nutz = $zk('garueck' . getmypid());
+    if ($benutzer !== '') {
+        $flags |= 0x80;
+        // Ein Kennwort ohne Benutzer laesst MQTT 3.1.1 nicht zu.
+        if ($kennwort !== '') { $flags |= 0x40; }
+    }
+    $kopf = $zk('MQTT') . chr(4) . chr($flags) . pack('n', 10);
+    if ($benutzer !== '') {
+        $nutz .= $zk($benutzer);
+        if ($kennwort !== '') { $nutz .= $zk($kennwort); }
+    }
+    if (@fwrite($s, chr(0x10) . $laenge(strlen($kopf . $nutz)) . $kopf . $nutz) !== false) {
+        $ack = $paket();
+        // CONNACK: Art 2, zweites Byte 0 = angenommen. Jede andere Antwort
+        // (5 = nicht berechtigt) heisst "nicht zu fragen".
+        if ($ack !== null && ($ack[0] >> 4) === 2 && strlen($ack[1]) >= 2 && ord($ack[1][1]) === 0) {
+            $sub = pack('n', 1);
+            foreach (array_keys($soll) as $t) { $sub .= $zk($t) . chr(0); }
+            @fwrite($s, chr(0x82) . $laenge(strlen($sub)) . $sub);
+            $bestaetigt = false;
+            $abgelehnt = false;
+            $ende = microtime(true) + 3.0;
+            while (microtime(true) < $ende) {
+                $pk = $paket();
+                if ($pk === null) { break; }           // Zeitablauf: nichts mehr gekommen
+                $art = $pk[0] >> 4;
+                if ($art === 9) {
+                    /* Je Filter ein Rueckgabebyte hinter der Paketkennung;
+                       0x80 heisst abgelehnt - danach schickt der Broker
+                       nichts, und das waere sonst "nichts belegt". */
+                    $rc = (string) substr($pk[1], 2);
+                    if (strlen($rc) !== count($soll)) { $abgelehnt = true; }
+                    for ($i = 0; $i < strlen($rc); $i++) {
+                        if (ord($rc[$i]) >= 0x80) { $abgelehnt = true; }
+                    }
+                    if ($abgelehnt) { break; }
+                    $bestaetigt = true;
+                    // Zurueckbehaltenes kommt unmittelbar nach dem SUBACK.
+                    $ende = min($ende, microtime(true) + 1.0);
+                } elseif ($art === 3 && strlen($pk[1]) >= 2) {
+                    $tl = unpack('n', substr($pk[1], 0, 2));
+                    $t = substr($pk[1], 2, $tl[1]);
+                    $versatz = 2 + $tl[1] + ((($pk[0] >> 1) & 3) > 0 ? 2 : 0);
+                    $wert = (string) substr($pk[1], $versatz);
+                    // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
+                    if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
+                        $aus['belegt'][$t] = true;
+                        if (count($aus['belegt']) === count($soll)) { break; }
+                    }
+                }
+            }
+            if ($bestaetigt && !$abgelehnt) {
+                $aus['lage'] = 'ok';
+            } else {
+                $aus['belegt'] = array();
+            }
+        }
+        @fwrite($s, chr(0xE0) . chr(0));
+    }
+    fclose($s);
+    return $aus;
+}
+
+/**
+ * Welche der Themen $kandidaten tragen noch einen zurueckbehaltenen Altwert?
+ * Rueckgabe: die Themen, die in diesem Vollversand UNMITTELBAR vor ihrem
+ * gueltigen Wert mit leerer retain-Nutzlast abgeraeumt werden
+ * (gardena_wert_senden(), gardena_lebenszeichen()).
+ *
+ * Gefragt wird nur nach Themen, die der Broker nicht schon leer gemeldet hat
+ * (Merker im Datenordner). Seine Antwort entscheidet:
+ *   leer gemeldet    -> in den Merker, nichts abraeumen
+ *   belegt gemeldet  -> abraeumen, NICHT in den Merker; der naechste
+ *                       Vollversand fragt wieder
+ *   nicht zu fragen  -> alle offenen abraeumen, KEIN Merker - dann raeumt
+ *                       jeder Vollversand ab (README, Grenze)
+ * Der Merker entsteht nur aus der Antwort des Brokers, nie aus dem Senden
+ * (Regeln/07, Nachtrag 19.09.2026). Er traegt die Kennung
+ * "gardena leer-bestaetigt v1" und die vollen Themen samt Basisthema;
+ * retain_stand aus gardena_status.json (1.2.8, 1.2.9) gilt nicht.
+ * purge_installation leert den Datenordner bei jedem Update, danach wird
+ * einmal nachgefragt.
+ */
+function gardena_altlast(array $kandidaten)
+{
+    $kennung = 'gardena leer-bestaetigt v1';
+    $datadir = isset($GLOBALS['lbpdatadir']) ? (string) $GLOBALS['lbpdatadir'] : '';
+    if ($datadir === '' && defined('LBPDATADIR')) { $datadir = (string) LBPDATADIR; }
+    $merker = ($datadir !== '') ? rtrim($datadir, '/') . '/retain_altlast_bestaetigt' : '';
+    $bestaetigt = array();
+    if ($merker !== '' && is_file($merker)) {
+        $zeilen = explode("\n", (string) @file_get_contents($merker));
+        if (trim((string) array_shift($zeilen)) === $kennung) {
+            foreach ($zeilen as $t) {
+                $t = trim($t);
+                if ($t !== '') { $bestaetigt[$t] = true; }
+            }
+        }
+    }
+    $offen = array();
+    foreach ($kandidaten as $t) {
+        $t = (string) $t;
+        if ($t !== '' && !isset($bestaetigt[$t])) { $offen[$t] = true; }
+    }
+    if (!$offen) { return array(); }
+    $f = gardena_mqtt_behalten_liste(array_keys($offen));
+    if ($f['lage'] !== 'ok') {
+        gardena_log_gebremst('altlast_unbekannt', 'INF', 'MQTT: der Broker liess sich nicht befragen '
+            . '(Brokerhost, Brokerport und Zugangsdaten in general.json) - fruehere Altwerte gehen '
+            . 'in jedem Vollversand mit leerer Nutzlast unmittelbar vor dem gueltigen Wert hinaus. '
+            . 'Siehe README.', 86400);
+        return array_keys($offen);
+    }
+    $neu = $bestaetigt;
+    foreach (array_keys($offen) as $t) {
+        if (!isset($f['belegt'][$t])) { $neu[$t] = true; }
+    }
+    if ($merker !== '' && count($neu) > count($bestaetigt)) {
+        ksort($neu);
+        if (!is_dir($datadir)) { @mkdir($datadir, 0775, true); }
+        @file_put_contents($merker, $kennung . "\n" . implode("\n", array_keys($neu)) . "\n");
+    }
+    if ($f['belegt']) {
+        $b = array_keys($f['belegt']);
+        gardena_log('INF', 'MQTT: ' . count($b) . ' zurueckbehaltene Altwerte im Broker ('
+            . implode(', ', array_slice($b, 0, 5)) . (count($b) > 5 ? ', ...' : '')
+            . ') - sie gehen mit leerer Nutzlast unmittelbar vor dem gueltigen Wert hinaus; '
+            . 'der naechste Vollversand fragt wieder nach.');
+    }
+    return array_keys($f['belegt']);
+}
+
+/**
+ * Die zurueckbehaltenen Themen der Linie leeren - fuer uninstall/uninstall
+ * (gardenaMain.php --mqtt-leeren). Ins Protokoll kommen hoechstens
+ * Sendefehler; was geschah, steht in der Ausgabe fuer den Installer.
+ *
+ * Welche Themen: jedes, das eine Fassung retained gesendet haben kann - alle
+ * Geraetethemen aus dem Zustand ('themen'; bis 1.2.7 ging jeder Geraetewert
+ * retained hinaus), die noch nicht bestaetigt geloeschten weggefallenen
+ * ('weg_offen') und die vier alten Lebenszeichen-Themen. VOR der ersten Runde
+ * und nach jeder wird der Broker gefragt; hinaus geht nur, was dort noch
+ * steht, hoechstens $runden Runden. Ist er nicht zu fragen, gehen alle in
+ * jeder Runde hinaus, und die Ausgabe sagt, dass nicht nachgelesen wurde - der
+ * Eingang verwirft unter Last Datagramme (Regeln/07). Bauart bw_mqtt_leeren()
+ * (Beschattungswaechter 0.9.21).
+ *
+ * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas, 2 nicht
+ * moeglich.
+ */
+function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
+{
+    $g = gardena_cfg_read(rtrim((string) $cfgdir, '/') . '/gardena.cfg');
+    $basis = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
+    $port = gardena_mqtt_udpport();
+    if (!$port) {
+        echo '<INFO> MQTT: kein UDP-Eingangsport des Gateways bekannt - zurueckbehaltene Themen '
+           . 'unter ' . gardena_mqtt_thema($basis) . '/ wurden nicht geleert.' . "\n";
+        return 2;
+    }
+    $st = gardena_status_lesen($cfgdir);
+    $alle = array();
+    foreach ((array) $st['themen'] as $t) {
+        $t = (string) $t;
+        if (strpos($t, '|') !== false) {          // Stand aus 1.2.5
+            $tp = explode('|', $t, 3);
+            if (count($tp) !== 3) { continue; }
+            $t = gardena_wert_thema($basis, $tp[0], $tp[1], $tp[2]);
+        }
+        if ($t !== '') { $alle[$t] = true; }
+    }
+    foreach (array_keys((array) $st['weg_offen']) as $t) {
+        if ((string) $t !== '') { $alle[(string) $t] = true; }
+    }
+    foreach (gardena_altlast_status() as $sn) {
+        $alle[gardena_wert_thema($basis, 'Plugin', 'STATUS', $sn)] = true;
+    }
+    $alle = array_keys($alle);
+    $n = count($alle);
+    $f = gardena_mqtt_behalten_liste($alle);
+    $nachgelesen = ($f['lage'] === 'ok');
+    $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen der Linie steht '
+           . 'zurueckbehalten - nichts zu leeren.' . "\n";
+        return 0;
+    }
+    $zu_leeren = count($offen);
+    $datagramme = 0;
+    $gelaufen = 0;
+    for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
+        if ($r > 1) { usleep((int) $pause_us); }
+        $gelaufen = $r;
+        foreach ($offen as $t) {
+            if (gardena_mqtt_loeschen($t)) { $datagramme++; }
+        }
+        usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
+        $f = gardena_mqtt_behalten_liste($offen);
+        if ($f['lage'] === 'ok') {
+            $nachgelesen = true;
+            $offen = array_keys($f['belegt']);
+        } else {
+            $nachgelesen = false;
+        }
+    }
+    echo '<INFO> MQTT: ' . $zu_leeren . ' von ' . $n . ' Themen mit leerer Nutzlast an den '
+       . 'UDP-Eingang ' . (int) $port . ' des Gateways gesendet (' . $gelaufen . ' Runde(n), '
+       . $datagramme . ' Datagramme).' . "\n";
+    if ($nachgelesen && !$offen) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen steht mehr '
+           . 'zurueckbehalten.' . "\n";
+        return 0;
+    }
+    if ($nachgelesen) {
+        echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
+           . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
+           . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
+        return 1;
+    }
+    echo '<INFO> MQTT: der Broker liess sich nicht befragen - nicht nachgelesen. Der UDP-Eingang '
+       . 'verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit '
+       . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
+    return 0;
 }
 
 /**
@@ -588,7 +999,8 @@ function gardena_wert_flach($wert)
  * Rueckgabe: array(versucht, gescheitert)
  */
 function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
-                             $udp_ziel, $udp_port, $mqtt_ein, $retain = null)
+                             $udp_ziel, $udp_port, $mqtt_ein, $retain = null,
+                             $vorher_leeren = false)
 {
     // Keine Angabe: die Tabelle entscheidet (gardena_retain), nicht der Aufruf.
     if ($retain === null) { $retain = gardena_retain($geraet, $dienst, $attribut); }
@@ -606,6 +1018,14 @@ function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
     }
     if ($mqtt_ein) {
         $versucht++;
+        // Ein Altwert, den der Broker noch haelt, geht UNMITTELBAR vor dem
+        // gueltigen Wert mit leerer retain-Nutzlast hinaus. Das Gateway reicht
+        // die leere Nachricht als leeren Wert an den Miniserver weiter
+        // (gardena_mqtt_loeschen()); der Wert dahinter ersetzt ihn. Welche
+        // Themen: gardena_altlast().
+        if ($vorher_leeren) {
+            gardena_mqtt_loeschen(gardena_wert_thema($basis, $geraet, $dienst, $attribut));
+        }
         if (!mqttPublish(gardena_wert_thema($basis, $geraet, $dienst, $attribut), $wert, $retain)) {
             $fehl++;
         }
@@ -680,8 +1100,13 @@ function gardena_status_lesen($cfgdir)
                 // ab 1.2.0
                 'signatur' => '', 'letzte_volle_meldung' => 0, 'sperre_bis' => 0,
                 'themen' => array(), 'locations' => array(), 'locations_stand' => 0,
-                // ab 1.2.8: 2 = die alten zurueckbehaltenen Werte sind abgeraeumt
-                'retain_stand' => 0);
+                // 1.2.8 und 1.2.9: 2 = das Abraeumen war GESENDET. Wird nicht
+                // mehr ausgewertet - ein Merker auf den Sendeerfolg ueber UDP
+                // beweist nichts (Regeln/07); siehe gardena_altlast().
+                'retain_stand' => 0,
+                // Thema => Laeufe ohne Rueckfrage: weggefallene Themen, deren
+                // Loeschung der Broker noch nicht bestaetigt hat (gardenaMain.php).
+                'weg_offen' => array());
     return $d;
 }
 
@@ -698,9 +1123,11 @@ function gardena_status_schreiben($cfgdir, $neu)
 
 /**
  * Das Lebenszeichen hinausgeben.
+ * $altlast: Thema => true fuer die Themen, deren Altwert im Broker unmittelbar
+ * vor dem gueltigen Wert abgeraeumt wird (gardena_altlast()).
  * Rueckgabe: array(versucht, gescheitert) - wie gardena_wert_senden().
  */
-function gardena_lebenszeichen($basis, $status, $udp_ziel, $udp_port, $mqtt_ein)
+function gardena_lebenszeichen($basis, $status, $udp_ziel, $udp_port, $mqtt_ein, $altlast = array())
 {
     $werte = array(
         'ok' => !empty($status['ok']) ? 1 : 0,
@@ -726,7 +1153,8 @@ function gardena_lebenszeichen($basis, $status, $udp_ziel, $udp_port, $mqtt_ein)
         // Aufruf. Retained zeigte es nach dem Abschalten des LoxBerry weiter
         // "lebt"; ein neu verbindender Abonnent bekam sofort ok=1.
         list($v, $f) = gardena_wert_senden($basis, 'Plugin', 'STATUS', $name, $wert,
-                                           $udp_ziel, $udp_port, $mqtt_ein);
+                                           $udp_ziel, $udp_port, $mqtt_ein, null,
+                                           isset($altlast[gardena_wert_thema($basis, 'Plugin', 'STATUS', $name)]));
         $versucht += $v;
         $fehl += $f;
     }
@@ -1314,18 +1742,17 @@ function gardena_t($schluessel)
         // Installiert liegen die Dateien unter
         // <home>/templates/plugins/<ordner>/lang/. Diese Datei liegt in
         // bin/plugins/<ordner>/ - der Ordnername steht also im Ablageort.
-        $home = isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '';
-        if ($home === '' || !is_dir($home)) {
-            $home = getenv('LBHOMEDIR') ?: '';
-        }
-        if ($home === '' || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
+        //
+        // Die Wurzel nur ueber gardena_lbhome(), ohne festen Systempfad. Bis
+        // 1.2.9 stand als letzter Rueckfall der feste Installationspfad eines
+        // Standard-LoxBerry da, und eine leere Wurzel ergab
+        // /templates/plugins/<ordner>/lang ab der Laufwerkswurzel - aus einem
+        // ausgepackten Archiv las gardena_t() dann fremde Texte (in WSL
+        // gemessen, Pruefung-GardenaSmartSystem-1.2.10, Fall T1).
+        $home = gardena_lbhome();
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = ($home !== '') ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(__FILE__)) . '/templates/lang';
         }

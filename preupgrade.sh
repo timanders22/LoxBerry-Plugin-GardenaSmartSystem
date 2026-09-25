@@ -123,6 +123,20 @@ else
 fi
 
 if [ "$SICHER_OK" = "1" ]; then
+    # Der Zeitpunkt DIESES Vorgangs gehoert in die Sicherung: postupgrade.sh
+    # spielt nur eine Sicherung aus diesem Update zurueck (Regeln/06,
+    # Entscheidung vom 17.09.2026). Bis 1.2.9 trug sie keinen, und eine
+    # liegengebliebene Sicherung aus einem frueheren Update wurde eingespielt,
+    # sobald das Neusichern scheiterte (in WSL gemessen,
+    # Pruefung-GardenaSmartSystem-1.2.10, Faelle P2-P5). Ohne lesbare Uhr kein
+    # Zeitpunkt - dann spielt postupgrade.sh sie nicht ein (geschlossen).
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in
+        ''|*[!0-9]*)
+            echo "<WARNING> Die Uhr ist nicht lesbar - die Sicherung bekommt keinen Zeitpunkt,"
+            echo "<WARNING> und postupgrade.sh spielt sie deshalb nicht zurueck." ;;
+        *) echo "$JETZT" > "$NEU/zeitpunkt" ;;
+    esac
     rm -rf "$SICHER.alt" 2>/dev/null
     if [ -d "$SICHER" ]; then mv "$SICHER" "$SICHER.alt" 2>/dev/null; fi
     if mv "$NEU" "$SICHER" 2>/dev/null; then

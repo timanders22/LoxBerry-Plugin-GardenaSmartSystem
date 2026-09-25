@@ -89,7 +89,43 @@ echo "<INFO> Stelle Konfiguration zurueck"
 # gardena.cfg am Ziel nicht ersetzbar): "<OK> Konfiguration zurueckgestellt.",
 # Sicherung weg, Zugangsdaten nirgends mehr.
 RUECK_OK=1
-if [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; then
+# Nur eine Sicherung aus DIESEM Update wird eingespielt (Regeln/06,
+# Entscheidung vom 17.09.2026; Bauart Renault-NG 2.1.11). Ihr Zeitpunkt
+# (preupgrade.sh) muss eine Zahl sein - ohne fuehrende Null, hoechstens zwoelf
+# Stellen, damit die Rechnung weder oktal liest noch ueberlaeuft - und
+# hoechstens 3600 s alt; bis 300 s "aus der Zukunft" gilt er noch. Geprueft
+# wird VOR der Rechnung: ein Zeitpunkt wie a[$(befehl)] darf nie in $(( ))
+# gelangen (Klasse M, Bestand-2026-09-18). Ohne lesbare Uhr: nichts einspielen.
+# Eine Sicherung, die nicht aus diesem Vorgang stammt, bleibt unberuehrt
+# liegen und wird mit Ablageort gemeldet; uninstall raeumt sie weg. Bis 1.2.9
+# wurde sie eingespielt - scheiterte in preupgrade.sh das Neusichern, lag die
+# eines frueheren Updates dort und ueberschrieb die jetzige Konfiguration
+# (in WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10, Faelle P2-P4).
+SICHER_GILT=1
+SICHER_GRUND=""
+SICHER_ALT=0
+if [ -d "$SICHER/config" ]; then
+    SICHER_GILT=0
+    ga_t0=$(cat "$SICHER/zeitpunkt" 2>/dev/null)
+    ga_jetzt=$(date +%s 2>/dev/null)
+    case "$ga_t0" in
+        ''|*[!0-9]*|0*|?????????????*)
+            SICHER_GRUND="sie traegt keinen gueltigen Zeitpunkt (Stand bis 1.2.9 oder ein abgebrochenes Update)" ;;
+        *)
+            case "$ga_jetzt" in
+                ''|*[!0-9]*|0*|?????????????*)
+                    SICHER_GRUND="die Uhr ist nicht lesbar" ;;
+                *)
+                    ga_alter=$((ga_jetzt - ga_t0))
+                    if [ "$ga_alter" -ge -300 ] && [ "$ga_alter" -le 3600 ]; then
+                        SICHER_GILT=1
+                    else
+                        SICHER_GRUND="sie stammt nicht aus diesem Update (angelegt vor $ga_alter s)"
+                    fi ;;
+            esac ;;
+    esac
+fi
+if [ "$SICHER_GILT" = "1" ] && [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; then
     ZIEL="$BASE/config/plugins/$PFOLDER"
     if cp -a "$SICHER/config/." "$ZIEL/" 2>/dev/null; then CP_RC=0; else CP_RC=$?; fi
     chmod 0640 "$ZIEL/gardena.cfg" 2>/dev/null
@@ -107,6 +143,12 @@ if [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; th
         echo "<WARNING> Von dort von Hand nach $ZIEL kopieren."
     fi
 else
+    if [ "$SICHER_GILT" = "0" ]; then
+        RUECK_OK=0
+        SICHER_ALT=1
+        echo "<WARNING> Die Upgrade-Sicherung wird NICHT eingespielt: $SICHER_GRUND."
+        echo "<WARNING> Sie bleibt unberuehrt liegen: $SICHER"
+    fi
     # Kein blinder Alarm. BERICHTIGT in 1.2.6: der Kommentar behauptete
     # hier, der Installer loesche data/plugins/<ordner> und damit die
     # Sicherung aus preupgrade.sh - "diese Kette kann hier gar nichts
@@ -165,6 +207,8 @@ if [ "$RUECK_OK" = "1" ]; then
     rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" 2>/dev/null
     rm -rf "/tmp/uploads/${ARGV1}_upgrade" "/tmp/${ARGV1}_upgrade" 2>/dev/null
     echo "<OK> Update abgeschlossen."
+elif [ "$SICHER_ALT" = "1" ]; then
+    echo "<WARNING> Update abgeschlossen; eine Sicherung aus einem frueheren Vorgang wurde nicht eingespielt (siehe oben)."
 else
     echo "<WARNING> Update abgeschlossen, die Konfiguration aber nicht vollstaendig zurueckgestellt (siehe oben)."
 fi

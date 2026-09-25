@@ -23,8 +23,27 @@ global $lbpconfigdir, $lbpplugindir, $lbplogdir, $lbpbindir;
 // Die Bibliotheken liegen seit 1.1.0 in bin/. loxberry_log.php wird hier
 // mitgeladen, damit gardena_log() auch aus der Oberflaeche heraus wirklich
 // schreibt - bis 1.0.2 fehlte es, und jede Meldung verschwand still.
-require_once $lbpbindir . '/functions.inc.php';
-require_once $lbpbindir . '/gardena.class.inc.php';
+//
+// Welcher bin/-Ordner gilt, entscheidet der eigene Ablageort: installiert
+// <Wurzel>/webfrontend/htmlauth/plugins/<ordner> -> <Wurzel>/bin/plugins/<ordner>,
+// im ausgepackten Archiv <archiv>/webfrontend/htmlauth -> <archiv>/bin. Bis
+// 1.2.9 stand hier $lbpbindir, und aus einem Archiv heraus, in dem das SDK
+// keinen Pluginordner erkennt, zeigte er auf bin/plugins/ der Anlage ohne
+// Ordnernamen - die Seite brach beim Einbinden ab (in WSL gemessen,
+// Pruefung-GardenaSmartSystem-1.2.10, Fall L5).
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'htmlauth') {
+    $gbindir = dirname(dirname(dirname(dirname(__DIR__)))) . '/bin/plugins/' . basename(__DIR__);
+} else {
+    $gbindir = dirname(dirname(__DIR__)) . '/bin';
+}
+if (!is_file($gbindir . '/functions.inc.php') || !is_file($gbindir . '/gardena.class.inc.php')) {
+    http_response_code(500);
+    echo 'GARDENA smart system: die Bibliothek des Plugins fehlt unter '
+        . htmlspecialchars($gbindir, ENT_QUOTES, 'UTF-8') . ' - Plugin neu installieren.';
+    exit;
+}
+require_once $gbindir . '/functions.inc.php';
+require_once $gbindir . '/gardena.class.inc.php';
 
 /*
  * Kein Protokollobjekt des SDK mehr (bis 1.2.7: LBLog::newLog 'GardenaUI').
@@ -644,6 +663,20 @@ if ($gzuviel) {
     $gpost = false;
 }
 
+/*
+ * Aus einem ausgepackten Archiv heraus schreibt diese Seite nichts
+ * (gardena_lage()): die Pfade des SDK zeigen dort in die Konfiguration der
+ * Anlage ohne Ordnernamen. Seit die Bibliothek nach dem Ablageort gesucht
+ * wird (oben), laeuft die Seite dort durch; ohne diese Sperre legte schon das
+ * erste Oeffnen ein Aktionstoken in config/plugins/ der Anlage an (in WSL
+ * gemessen, Pruefung-GardenaSmartSystem-1.2.10, Fall L6 in der Eichung).
+ */
+$g_lage = gardena_lage();
+if ($g_lage === '') {
+    $gfehler[] = gardena_t('ALLG.NICHT_INSTALLIERT');
+    $gpost = false;
+}
+
 // Protokoll leeren
 if ($gpost && isset($_POST['clearlog'])) {
     // Rueckgabe pruefen: scheitert das Schreiben (Rechte, Platz), tat der
@@ -1151,7 +1184,7 @@ if ($gcfg_zustand === 'unlesbar') {
     $gfehler[] = sprintf(gardena_t('EINST.CFG_UNLESBAR'), $gconfigfile);   // roh: maskiert wird bei der Ausgabe
     gardena_log('ERR', 'Die Konfigurationsdatei ist vorhanden, aber nicht lesbar: '
         . $gconfigfile . ' - es wird NICHTS geschrieben und kein Token erzeugt.');
-} else {
+} elseif ($g_lage !== '') {
     gardena_cfg_vervollstaendigen($gconfigfile);
 }
 
@@ -1164,7 +1197,7 @@ $gc = gardena_cfg_read($gconfigfile);
 // und unlesbar, wuerde ein neues Token jede im Miniserver eingetragene
 // Adresse ungueltig machen - und der alte Wert steht vielleicht noch in der
 // Datei, die man gerade nicht lesen kann.
-if ((string) $gc['TOKEN'] === '' && !$gpost && $gcfg_zustand !== 'unlesbar') {
+if ((string) $gc['TOKEN'] === '' && !$gpost && $gcfg_zustand !== 'unlesbar' && $g_lage !== '') {
     $gneu = gtoken_erzeugen($gconfigfile, $gtokenmsg);
     if ($gneu !== '') { $gc['TOKEN'] = $gneu; }
 }
@@ -1903,7 +1936,7 @@ $gb_name = function ($geraet, $dienst, $attr) use ($gb_topic, $gb_geraet) {
 <?php
 /* Die Selbstpruefung laeuft bei jedem Aufruf der Seite. Sie liest nur -
  * kein API-Aufruf, kein Versand, kein Schreiben. */
-$gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $lbpbindir, $lbpconfigdir, $gordner);
+$gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $gbindir, $lbpconfigdir, $gordner);
 ?>
 <h3 class="sm-h3"><?= gardena_t('TEST.H_PRUEFUNG') ?></h3>
 <div class="sm-alert <?= $gpruef['kreuze'] ? 'sm-err' : 'sm-ok' ?>"><b><?=

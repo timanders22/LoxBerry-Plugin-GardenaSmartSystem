@@ -1,5 +1,69 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.10
+
+Diese Fassung behebt Befunde einer Durchsicht vom 25.09.2026. Gemessen in WSL
+(Ubuntu, PHP 8.3.6) mit Attrappen für Wolke, LoxBerry-SDK, MQTT-Gateway und
+Broker, **nicht am Gerät** (55 Fälle, vorher 31 rot, nachher 0).
+
+**Behoben:**
+
+- **Alte zurückbehaltene MQTT-Werte gelten erst als abgeräumt, wenn der Broker
+  es bestätigt.** 1.2.8 und 1.2.9 räumten die Altwerte aus 1.2.7 und früher
+  einmal ab und merkten sich das, sobald die Datagramme den LoxBerry verlassen
+  hatten. Der UDP-Eingang des MQTT-Gateways verwirft unter Last Datagramme, ohne
+  dass der Absender es merkt – der Altwert konnte stehen bleiben, während das
+  Plugin ihn für erledigt hielt. Jetzt fragt das Plugin den Broker (kurze eigene
+  MQTT-Anmeldung mit den Zugangsdaten aus der LoxBerry-Konfiguration), räumt nur
+  ab, was dort noch steht, und vermerkt nur, was der Broker leer meldet. Die
+  leere Nachricht geht unmittelbar vor dem gültigen Wert desselben Themas
+  hinaus. **Grenze:** ist der Broker nicht zu fragen (keine Verbindung,
+  Anmeldung oder Abonnement abgewiesen), wird bei jeder vollständigen Meldung
+  erneut abgeräumt, bis er wieder antwortet.
+- **Weggefallene Themen** (Gerät umbenannt, entfernt oder ausgenommen) werden
+  gelöscht, bis der Broker es bestätigt; bisher ging die Löschung genau einmal
+  hinaus. Ist der Broker nicht zu fragen, geht sie in drei Läufen hinaus, danach
+  wird das Thema nicht weiter verfolgt.
+- **Die Deinstallation räumt den Broker auf.** Bisher blieben die
+  zurückbehaltenen Themen des Plugins nach dem Entfernen stehen, und Loxone
+  bekam sie nach jedem Neustart von Broker oder Gateway wieder. Jetzt fragt die
+  Deinstallation den Broker, leert höchstens dreimal, was dort noch steht, und
+  sagt im Installationsprotokoll, was geschah. Einen Abruf, der beim
+  Deinstallieren noch läuft, wartet sie bis 30 s ab, damit er die geleerten
+  Werte nicht wieder hineinschreibt (den Cron-Eintrag entfernt LoxBerry schon
+  vorher). Nach 90 s (hart nach 95 s) bricht dieser Schritt ab und meldet es;
+  die übrigen Aufräumschritte laufen trotzdem. **Grenze:** ein Sofortabruf über
+  `?action=refresh`, den Loxone genau in den Sekunden zwischen diesem Schritt
+  und dem Entfernen der Plugin-Dateien auslöst, schreibt wieder zurück.
+- **Nach einem Update wird nur die Sicherung aus diesem Update eingespielt.**
+  Scheiterte das Sichern in `preupgrade.sh`, blieb die Sicherung eines
+  früheren Updates liegen, und `postupgrade.sh` spielte sie über die jetzige
+  Konfiguration. Die Sicherung trägt jetzt ihren Zeitpunkt; eine ältere als
+  eine Stunde, eine ohne Zeitpunkt oder eine bei nicht lesbarer Uhr wird nicht
+  eingespielt, bleibt liegen und wird mit Ablageort gemeldet.
+- **Ein ausgepacktes Archiv wirkt nicht mehr auf die Anlage.** Aus einem
+  entpackten Archiv heraus aufgerufen, schrieb `bin/gardenaMain.php` mit den
+  Pfaden der Anlage: den Zustand nach `config/plugins/`, Protokoll und
+  Sperrdatei nach `log/plugins/`, jeweils ohne Ordnernamen. Jetzt läuft der
+  Abruf nur installiert (oder wenn `LBHOMEDIR` und `LBPPLUGINDIR` ausdrücklich
+  gesetzt sind) und sagt sonst, warum nicht. Oberfläche und Loxone-Endpunkt
+  suchen ihre Bibliothek am eigenen Ablageort und schreiben aus einem Archiv
+  heraus nichts.
+- **Keine Pfade mehr ab der Laufwerkswurzel.** Ohne gefundene LoxBerry-Wurzel
+  las das Plugin Sprachtexte aus einem festen Installationspfad oder aus
+  `/templates/…` und den UDP-Port des Gateways aus `/config/system/general.json`.
+  Als Wurzel gilt jetzt nur ein Verzeichnis mit `config/plugins`, `data/plugins`
+  und `config/system/general.json`.
+- **`postinstall.sh` entscheidet nach Inhalt.** Eine nicht leere, aber
+  unlesbare `gardena_status.json`, `devices_cache.json` oder
+  `gardena_token.json` wird aus der Zweitschrift ersetzt (der alte Stand bleibt
+  als `.kaputt` daneben); eine unlesbare Zweitschrift wird nicht mehr über eine
+  fehlende Datei gelegt.
+
+**Unverändert:** alle MQTT-Themen, UDP-Zeilen und die Retain-Einstellung je
+Thema – Zustände wie `activity`, `state`, `rfLinkState` retained, Messwerte und
+`Plugin/STATUS/*` flüchtig.
+
 ## Neu in 1.2.9
 
 Diese Fassung behebt Befunde einer Nachstellung des Updates in WSL (Ubuntu,
