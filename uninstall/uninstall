@@ -132,6 +132,17 @@ for reste in "$BASE/data/plugins/$PDIR".upgrade_sicherung*; do
     fi
 done
 
+# ---------- Die Marke "Aktualisierung laeuft" (1.2.11, I1) ----------
+# preupgrade.sh legt data/plugins/<ordner>.upgrade_laeuft an, postinstall.sh
+# raeumt sie ab. Bricht ein Update dazwischen ab, bleibt sie liegen und gaelte
+# ohne Altersgrenze (Entscheidung 8, Frage 17) - wer frisch anfangen will,
+# deinstalliert vorher. Die .alt-Staende von preinstall.sh fassen die Sterne
+# oben mit (.backup.*.alt, .upgrade_sicherung.alt).
+if [ -e "$BASE/data/plugins/$PDIR.upgrade_laeuft" ]; then
+    rm -f "$BASE/data/plugins/$PDIR.upgrade_laeuft"
+    echo "<OK> Marke $BASE/data/plugins/$PDIR.upgrade_laeuft entfernt."
+fi
+
 # Nur sagen, was nachgesehen ist (Regeln/06): bis 1.2.7 stand der Satz
 # unbedingt, und bis 1.2.8 sah er die Upgrade-Sicherung nicht an - die wurde
 # erst DANACH entfernt. Blieb sie liegen, meldete das Skript trotzdem

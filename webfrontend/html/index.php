@@ -217,6 +217,21 @@ if ($action !== '' && (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET']))) {
         'ABGEWIESEN ' . $action . ': keine Zugangsdaten hinterlegt');
 }
 
+/*
+ * "Plugin aktiv: Nein" sperrt auch Befehle und den Sofortabruf (1.2.11, C3/C4;
+ * Entscheidung des Hausherrn Nr. 10 vom 30.09.2026).
+ *
+ * Bis 1.2.10 schaltete ENABLED=0 nur den Abruf ab: ein Ventilbefehl aus
+ * Loxone ging weiter an die Wolke, und ?action=refresh meldete "Abruf
+ * gestartet", ohne dass etwas abgerufen wurde (in WSL gemessen, code Befunde 3
+ * und 4). Die Geraeteliste bleibt lesbar - sie loest nichts aus.
+ */
+if (($action === 'refresh' || $action === 'command') && (string) $g['ENABLED'] !== '1') {
+    gardena_ende(409,
+        "FEHLER: Plugin ist ausgeschaltet (Plugin aktiv: Nein) - es wird nichts abgerufen und nichts geschaltet.\n",
+        'ABGEWIESEN ' . $action . ': Plugin ist ausgeschaltet (ENABLED=0)');
+}
+
 // ---------- Geraeteliste aus dem Zwischenspeicher ----------
 if ($action === 'list') {
     header('Content-Type: application/json; charset=utf-8');
@@ -284,7 +299,13 @@ if ($action === 'refresh') {
             . "Ein Sofortabruf ist fruehestens " . gardena_bremse_abruf_s() . " Sekunden nach dem letzten Lauf moeglich.\n",
             'refresh abgewiesen: zu frueh (' . $gseit . ' s nach dem letzten Lauf)');
     }
-    $gprobe = gardena_sperre('main');
+    $gprobe = gardena_sperre('main', $gprobe_grund);
+    if ($gprobe === false && $gprobe_grund === 'nicht_zu_oeffnen') {
+        // Nicht "laeuft bereits" (1.2.11, I6): die Sperrdatei ist nicht nutzbar.
+        gardena_ende(500, "FEHLER: Die Sperrdatei des Abrufs laesst sich nicht oeffnen - es wurde kein Abruf "
+            . "gestartet. Rechte im Protokollordner pruefen.\n",
+            'refresh: Sperrdatei nicht zu oeffnen, kein Abruf gestartet');
+    }
     if ($gprobe === false) {
         gardena_ende(200, "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n",
             'refresh: laeuft bereits, kein zweiter Lauf gestartet');
@@ -292,9 +313,26 @@ if ($action === 'refresh') {
     flock($gprobe, LOCK_UN);
     fclose($gprobe);
     $php = defined('PHP_BINARY') && PHP_BINARY !== '' ? PHP_BINARY : '/usr/bin/php';
-    shell_exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' > /dev/null 2>&1 &');
-    gardena_ende(200, "OK: Abruf gestartet (Ergebnis im Protokoll und unter ?action=list).\n",
-        'refresh: Abruf gestartet');
+    /*
+     * --sofort (1.2.11, C3): der Lauf ueberspringt den eingestellten Abstand.
+     * "Abruf gestartet" steht erst da, wenn der Lauf seine Sperre wirklich hat
+     * (gardena_sofort_warten()); meldet er sich binnen 5 s nicht, ist das ein
+     * Fehler, keine Erfolgsmeldung.
+     */
+    gardena_sofort_vergessen();
+    shell_exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --sofort > /dev/null 2>&1 &');
+    $gsofort = gardena_sofort_warten(5.0);
+    if ($gsofort === 'gestartet') {
+        gardena_ende(200, "OK: Abruf gestartet (Ergebnis im Protokoll und unter ?action=list).\n",
+            'refresh: Abruf gestartet');
+    }
+    if ($gsofort === 'belegt') {
+        gardena_ende(200, "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n",
+            'refresh: laeuft bereits (der gestartete Lauf fand die Sperre belegt)');
+    }
+    gardena_ende(503, "FEHLER: Der Abruf ist nicht angelaufen (binnen 5 Sekunden keine Rueckmeldung) - "
+        . "Grund im Protokoll (Reiter Logdateien, Fehler des Cron-Rahmens).\n",
+        'refresh: Abruf nicht angelaufen (keine Rueckmeldung binnen 5 s)');
 }
 
 // ---------- Kommando ----------
@@ -385,12 +423,26 @@ if ($action === 'command') {
     // Die Vorgabe greift nur, wenn seconds WIRKLICH fehlt (siehe oben).
     if ($cmd === 'START_SECONDS_TO_OVERRIDE' && $seconds === null) { $seconds = 3600; }
 
+    /*
+     * Obergrenze je Dienst (1.2.11, C1; Entscheidung 10): Ventil 3 h, Maeher und
+     * Steckdose 24 h je Befehl - gardena_sekunden_grenzen(). Bis 1.2.10 ging
+     * seconds=9999960 (115 Tage) an die Wolke (in WSL gemessen, code Befund 1).
+     */
+    $ggrenze = gardena_sekunden_grenze($type);
+    if ($seconds !== null && $ggrenze > 0 && $seconds > $ggrenze) {
+        gardena_ende(400,
+            "FEHLER: seconds ist fuer " . $type . " hoechstens " . $ggrenze . " (" . ($ggrenze / 3600)
+            . " h je Befehl), angegeben: " . $seconds . ". Der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: seconds ueber der Grenze ' . $ggrenze . ' fuer ' . $type);
+    }
+
     // Service-ID im Cache suchen (Geraetename oder Geraete-ID)
     $gcache = $lbpconfigdir . '/devices_cache.json';
     $cache = is_file($gcache)
         ? json_decode((string) @file_get_contents($gcache), true) : null;
     $serviceMap = array('MOWER_CONTROL' => 'MOWER', 'VALVE_CONTROL' => 'VALVE', 'POWER_SOCKET_CONTROL' => 'POWER_SOCKET');
     $serviceId = '';
+    $gmehrfach = 1;
     if (is_array($cache) && !empty($cache['locations']) && is_array($cache['locations'])) {
         foreach ($cache['locations'] as $loc) {
             // Ohne diese Pruefung waere ein Zwischenspeicher ohne 'devices'
@@ -404,6 +456,9 @@ if ($action === 'command') {
                 $svcType = $serviceMap[$type];
                 if (isset($dev['services'][$svcType]['_service_id']['value'])) {
                     $serviceId = $dev['services'][$svcType]['_service_id']['value'];
+                    if (isset($dev['mehrfach'][$svcType]) && is_numeric($dev['mehrfach'][$svcType])) {
+                        $gmehrfach = (int) $dev['mehrfach'][$svcType];
+                    }
                     break 2;
                 }
             }
@@ -415,6 +470,20 @@ if ($action === 'command') {
         gardena_ende(503,
             "FEHLER: Es gibt noch kein Geraete-Abbild - erst muss ein Abruf gelingen (?action=refresh).\n",
             'command abgewiesen: noch kein Geraete-Abbild');
+    }
+    /*
+     * Mehrere Dienste gleichen Typs an einem Geraet (1.2.11, C10; Entscheidung
+     * 10): Befehle werden abgewiesen, bis an echter Hardware gemessen ist, wie
+     * die Wolke ein Mehrventil-Geraet liefert. Bis 1.2.10 ging der Befehl an
+     * das zuletzt gelieferte Ventil (an der Attrappe gemessen, code Befund 10).
+     */
+    if ($serviceId !== '' && $gmehrfach > 1) {
+        gardena_ende(409,
+            "FEHLER: Das Geraet '" . $devQuery . "' hat " . $gmehrfach . " Dienste vom Typ " . $svcType
+            . " (etwa mehrere Ventile). Befehle an ein solches Geraet werden abgewiesen, bis an echter"
+            . " Hardware gemessen ist, welches Ventil die Wolke unter welcher Kennung fuehrt."
+            . " Der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Geraet mit ' . $gmehrfach . ' Diensten vom Typ ' . $svcType);
     }
     if ($serviceId === '') {
         gardena_ende(404,
@@ -437,6 +506,15 @@ if ($action === 'command') {
             'command abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis));
     }
     $gzuviel = gardena_bremse_befehl();
+    if ($gzuviel < 0) {
+        // Die Bremse faellt geschlossen aus (1.2.11, C2).
+        gardena_log_gebremst('bremse_merker', 'ERR', 'Der Merker der Befehlsbremse ('
+            . gardena_log_datei('gardena_befehle.merker') . ') laesst sich nicht oeffnen oder schreiben - '
+            . 'Befehle werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
+        gardena_ende(503, "FEHLER: Die Befehlsbremse ist nicht nutzbar (Merkerdatei im Protokollordner) - "
+            . "der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Merker der Befehlsbremse nicht nutzbar');
+    }
     if ($gzuviel > 0) {
         gardena_ende(429, "FEHLER: Mehr als " . gardena_bremse_befehle_h() . " Befehle in der letzten Stunde"
             . " - der Befehl wurde NICHT gesendet. Flattert ein Baustein am Virtuellen Ausgang?\n",

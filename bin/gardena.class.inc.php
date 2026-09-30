@@ -147,18 +147,39 @@ class gardena
             // trifft deshalb nicht zu.
         }
         $ctx = stream_context_create(array('http' => $opt, 'ssl' => array('verify_peer' => true, 'verify_peer_name' => true)));
-        $result = @file_get_contents($url, false, $ctx);
+        /*
+         * Die Kopfzeilen kommen aus dem Datenstrom selbst (1.2.11, C9).
+         *
+         * Bis 1.2.10 las dieser Zweig sie aus der Variablen, die PHP nach
+         * file_get_contents() im lokalen Gueltigkeitsbereich anlegt. PHP 8.5
+         * meldet diese Variable als verfallen - vier Meldungen je Lauf, und
+         * der Endpunkt gab sie bei eingeschalteter Fehleranzeige vor seiner
+         * Antwort aus (code Befund 9). stream_get_meta_data() liefert dieselben
+         * Zeilen unter 'wrapper_data'; gemessen unter PHP 7.4.33 und 8.5.11
+         * (code=429 retry=42, keine Meldung).
+         */
+        $kopf = array();
+        $result = false;
+        $fh = @fopen($url, 'rb', false, $ctx);
+        if ($fh !== false) {
+            $meta = stream_get_meta_data($fh);
+            if (isset($meta['wrapper_data']) && is_array($meta['wrapper_data'])) {
+                $kopf = $meta['wrapper_data'];
+            }
+            $result = @stream_get_contents($fh);
+            $nach = stream_get_meta_data($fh);
+            if (!empty($nach['timed_out'])) { $result = false; }
+            fclose($fh);
+        }
         if ($alt_timeout !== false) { ini_set('default_socket_timeout', (string) $alt_timeout); }
         $http = 0;
-        if (isset($http_response_header) && is_array($http_response_header)) {
-            foreach ($http_response_header as $h) {
-                if (preg_match('#^HTTP/\S+\s+(\d{3})#', $h, $m)) { $http = (int) $m[1]; }
-            }
+        foreach ($kopf as $h) {
+            if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string) $h, $m)) { $http = (int) $m[1]; }
         }
         $err = ($result === false) ? 'HTTP-Fehler (PHP-Streams): Verbindung fehlgeschlagen' : '';
         $this->last_http = $http;
-        if ($http === 429 && isset($http_response_header) && is_array($http_response_header)) {
-            $this->retry_after = $this->retryAfterLesen($http_response_header);
+        if ($http === 429) {
+            $this->retry_after = $this->retryAfterLesen($kopf);
         }
         return array($result, $http, $err);
     }
@@ -208,10 +229,19 @@ class gardena
         if (function_exists('gardena_json_write')) {
             gardena_json_write($this->tokenfile, $daten, 0600);
         } else {
+            // Rueckfall ohne Bibliothek (1.2.11, C7): Rechte ueber die
+            // Erzeugungsmaske VOR dem Inhalt, eine kurze Schreibung raeumt
+            // die Nebendatei weg.
             $tmp = $this->tokenfile . '.' . getmypid() . '.tmp';
-            if (@file_put_contents($tmp, json_encode($daten)) !== false) {
+            $js = (string) json_encode($daten);
+            $alt = umask(0077);
+            $n = @file_put_contents($tmp, $js);
+            umask($alt);
+            if ($n === strlen($js)) {
                 @chmod($tmp, 0600);
                 if (!@rename($tmp, $this->tokenfile)) { @unlink($tmp); }
+            } else {
+                @unlink($tmp);
             }
         }
         $this->log('INF', 'Gardena: neues OAuth2-Token erhalten (gueltig ' . $expires . ' s).');
@@ -325,6 +355,20 @@ class gardena
             }
             // Service-ID fuer Kommandos merken (z.B. "abc123:mower")
             $flat['_service_id'] = array('value' => (string) $svc['id'], 'timestamp' => '');
+            /*
+             * Mehrere Dienste gleichen Typs an EINEM Geraet (1.2.11, C10) -
+             * etwa ein Ventilblock mit dev1:1 und dev1:2. Der Schluessel ist
+             * der Typ: bis 1.2.10 ueberschrieb der zweite Dienst den ersten,
+             * und ein Befehl ging an das zuletzt gelieferte Ventil (an der
+             * Attrappe gemessen, code Befund 10). Gezaehlt wird hier; der
+             * Endpunkt weist Befehle an ein solches Geraet mit 409 ab
+             * (Entscheidung 10), bis an echter Hardware gemessen ist, wie die
+             * Wolke es liefert.
+             */
+            if (isset($devices[$realId]['services'][$type])) {
+                $devices[$realId]['mehrfach'][$type] = isset($devices[$realId]['mehrfach'][$type])
+                    ? (int) $devices[$realId]['mehrfach'][$type] + 1 : 2;
+            }
             $devices[$realId]['services'][$type] = $flat;
         }
         return $devices;

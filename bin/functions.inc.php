@@ -436,26 +436,46 @@ function gardena_mqtt_nutzlast($wert)
  * Kein eigener MQTT-Client noetig - das Gateway nimmt Nachrichten der Form
  * "publish <Thema> <Wert>" bzw. "retain <Thema> <Wert>" entgegen.
  */
-function mqttPublish($topic, $value, $retain = false)
+/**
+ * Eine Zeile an den UDP-Eingang des Gateways - mit 5 ms Abstand vor jedem
+ * Datagramm (1.2.11, M6). Bis 1.2.10 gab es eine Pause nur im UDP-Zweig zum
+ * Miniserver; ueber MQTT gingen 116 Datagramme in 0,026 s hinaus (in WSL
+ * gemessen, Durchgang 29.09.2026, mqtt Befund 7). Am Geraet verlor ein
+ * solcher Stoss am Eingang rund 12,6 % (Regeln/07; Muster Fensterbilanz
+ * 0.12.9, 5 ms je Datagramm).
+ */
+function gardena_gateway_senden($zeile)
 {
     $udpport = gardena_mqtt_udpport();
     if (!$udpport) { return false; }
+    usleep(5000);
+    return sendUDP($zeile, '127.0.0.1', $udpport);
+}
+
+function mqttPublish($topic, $value, $retain = false)
+{
     $nutzlast = gardena_mqtt_nutzlast($value);
     /*
-     * Ein LEERER Wert geht nie retained hinaus.
+     * Ein LEERER Wert geht nie hinaus - er geht als "-" hinaus (1.2.11, M1;
+     * Entscheidung 5 vom 29.09.2026).
      *
      * Eine leere Nutzlast mit Retain LOESCHT das zurueckbehaltene Thema
-     * (mqttgateway.pl, sub udpin). Gesaeubert wird vorher: ein Wert aus
-     * blossem Leerraum ist erst NACH gardena_mqtt_nutzlast() leer - geprueft
-     * wird deshalb hier, nicht beim Aufrufer. Loeschen ist eine eigene
-     * Absicht und hat eine eigene Funktion: gardena_mqtt_loeschen().
+     * (mqttgateway.pl, sub udpin), und das Gateway reicht sie als leeren Wert
+     * an den Miniserver weiter. Bis 1.2.10 ging ein leerer Wert fluechtig
+     * hinaus: activity='' kam als leere Nachricht an, und im Broker blieb der
+     * alte Zustand (etwa OK_CUTTING) zurueckbehalten stehen (in WSL gemessen,
+     * mqtt Befund 1, Fall N1). Der Strich steht NACH dem Saeubern (Regeln/07,
+     * Sprachsteuerung 0.11.5): ein Wert aus blossem Leerraum wird erst hier
+     * leer. Retained bleibt, was die Tabelle sagt - ein Zustand ohne Aussage
+     * steht dann als "-" im Broker, nie als Altwert.
      *
-     * Die Vorgabe ist seit 1.2.8 FLUECHTIG: ein Thema, fuer das niemand
-     * entschieden hat, soll nicht auf Dauer im Broker stehen.
+     * Loeschen ist eine eigene Absicht und hat eine eigene Funktion:
+     * gardena_mqtt_loeschen() - nur fuer das gewollte Abraeumen
+     * (Praefixwechsel, Abschalten, Deinstallation).
      */
-    if ($nutzlast === '') { $retain = false; }
+    if ($nutzlast === '') { $nutzlast = '-'; }
     $msg = ($retain ? 'retain ' : 'publish ') . gardena_mqtt_thema($topic) . ' ' . $nutzlast;
-    return sendUDP($msg, '127.0.0.1', $udpport);
+    return gardena_gateway_senden($msg);
 }
 
 /**
@@ -470,9 +490,7 @@ function mqttPublish($topic, $value, $retain = false)
  */
 function gardena_mqtt_loeschen($topic)
 {
-    $udpport = gardena_mqtt_udpport();
-    if (!$udpport) { return false; }
-    return sendUDP('retain ' . gardena_mqtt_thema($topic) . ' ', '127.0.0.1', $udpport);
+    return gardena_gateway_senden('retain ' . gardena_mqtt_thema($topic) . ' ');
 }
 
 /**
@@ -512,7 +530,9 @@ function gardena_altlast_status()
  */
 function gardena_mqtt_behalten_liste(array $themen)
 {
-    $aus = array('lage' => 'unbekannt', 'belegt' => array());
+    // 'werte' (1.2.11): Thema => zurueckbehaltener Wert - damit laesst sich
+    // pruefen, ob ein weggefallenes Thema schon auf "-" steht (M1).
+    $aus = array('lage' => 'unbekannt', 'belegt' => array(), 'werte' => array());
     $soll = array();
     foreach ($themen as $t) {
         if ((string) $t !== '') { $soll[(string) $t] = true; }
@@ -632,6 +652,7 @@ function gardena_mqtt_behalten_liste(array $themen)
                     // Am empfangenen Paket: nur mit gesetztem Retain-Merkmal.
                     if (isset($soll[$t]) && ($pk[0] & 1) && $wert !== '') {
                         $aus['belegt'][$t] = true;
+                        $aus['werte'][$t] = $wert;
                         if (count($aus['belegt']) === count($soll)) { break; }
                     }
                 }
@@ -640,6 +661,7 @@ function gardena_mqtt_behalten_liste(array $themen)
                 $aus['lage'] = 'ok';
             } else {
                 $aus['belegt'] = array();
+                $aus['werte'] = array();
             }
         }
         @fwrite($s, chr(0xE0) . chr(0));
@@ -692,11 +714,30 @@ function gardena_altlast(array $kandidaten)
     if (!$offen) { return array(); }
     $f = gardena_mqtt_behalten_liste(array_keys($offen));
     if ($f['lage'] !== 'ok') {
+        /*
+         * Nicht zu fragen (1.2.11, M5): hoechstens einmal je Stunde
+         * abraeumen, nie vor dem Lebenszeichen ok, und der Merker bleibt offen.
+         * Bis 1.2.10 ging in JEDEM Vollversand vor zwoelf Werten - auch vor
+         * ok - eine leere Nachricht hinaus; das Gateway reicht sie als leeren
+         * Wert an den Miniserver weiter, und ein Baustein, der auf ok=0
+         * alarmiert, konnte flackern (in WSL gemessen, mqtt Befund 5).
+         */
         gardena_log_gebremst('altlast_unbekannt', 'INF', 'MQTT: der Broker liess sich nicht befragen '
             . '(Brokerhost, Brokerport und Zugangsdaten in general.json) - fruehere Altwerte gehen '
-            . 'in jedem Vollversand mit leerer Nutzlast unmittelbar vor dem gueltigen Wert hinaus. '
-            . 'Siehe README.', 86400);
-        return array_keys($offen);
+            . 'hoechstens einmal je Stunde mit leerer Nutzlast unmittelbar vor dem gueltigen Wert '
+            . 'hinaus, das Lebenszeichen ok nie. Siehe README.', 86400);
+        if ($merker === '') { return array(); }
+        $stempel = $merker . '.unbekannt_am';
+        clearstatcache(true, $stempel);
+        if (is_file($stempel) && (time() - (int) @filemtime($stempel)) < 3600) { return array(); }
+        if (!is_dir($datadir)) { @mkdir($datadir, 0775, true); }
+        if (!@touch($stempel)) { return array(); }
+        $raus = array();
+        foreach (array_keys($offen) as $t) {
+            if (substr($t, -strlen('/Plugin/STATUS/ok')) === '/Plugin/STATUS/ok') { continue; }
+            $raus[] = $t;
+        }
+        return $raus;
     }
     $neu = $bestaetigt;
     foreach (array_keys($offen) as $t) {
@@ -718,34 +759,14 @@ function gardena_altlast(array $kandidaten)
 }
 
 /**
- * Die zurueckbehaltenen Themen der Linie leeren - fuer uninstall/uninstall
- * (gardenaMain.php --mqtt-leeren). Ins Protokoll kommen hoechstens
- * Sendefehler; was geschah, steht in der Ausgabe fuer den Installer.
- *
- * Welche Themen: jedes, das eine Fassung retained gesendet haben kann - alle
- * Geraetethemen aus dem Zustand ('themen'; bis 1.2.7 ging jeder Geraetewert
- * retained hinaus), die noch nicht bestaetigt geloeschten weggefallenen
- * ('weg_offen') und die vier alten Lebenszeichen-Themen. VOR der ersten Runde
- * und nach jeder wird der Broker gefragt; hinaus geht nur, was dort noch
- * steht, hoechstens $runden Runden. Ist er nicht zu fragen, gehen alle in
- * jeder Runde hinaus, und die Ausgabe sagt, dass nicht nachgelesen wurde - der
- * Eingang verwirft unter Last Datagramme (Regeln/07). Bauart bw_mqtt_leeren()
- * (Beschattungswaechter 0.9.21).
- *
- * Rueckgabe 0 geleert oder nicht nachpruefbar, 1 es steht noch etwas, 2 nicht
- * moeglich.
+ * Alle Themen, die diese Linie je zurueckbehalten haben kann (1.2.11, M3):
+ * die Geraetethemen aus dem Zustand ('themen'; bis 1.2.7 ging jeder Wert
+ * retained hinaus), die weggefallenen ('weg_offen'), die Merkerliste
+ * 'retained_themen' ueber alle Praefixe und die vier alten Themen des
+ * Lebenszeichens unter dem geltenden Praefix.
  */
-function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
+function gardena_mqtt_eigene_themen($st, $basis)
 {
-    $g = gardena_cfg_read(rtrim((string) $cfgdir, '/') . '/gardena.cfg');
-    $basis = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
-    $port = gardena_mqtt_udpport();
-    if (!$port) {
-        echo '<INFO> MQTT: kein UDP-Eingangsport des Gateways bekannt - zurueckbehaltene Themen '
-           . 'unter ' . gardena_mqtt_thema($basis) . '/ wurden nicht geleert.' . "\n";
-        return 2;
-    }
-    $st = gardena_status_lesen($cfgdir);
     $alle = array();
     foreach ((array) $st['themen'] as $t) {
         $t = (string) $t;
@@ -759,27 +780,56 @@ function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
     foreach (array_keys((array) $st['weg_offen']) as $t) {
         if ((string) $t !== '') { $alle[(string) $t] = true; }
     }
+    foreach ((array) $st['retained_themen'] as $t) {
+        if ((string) $t !== '') { $alle[(string) $t] = true; }
+    }
     foreach (gardena_altlast_status() as $sn) {
         $alle[gardena_wert_thema($basis, 'Plugin', 'STATUS', $sn)] = true;
     }
+    return array_keys($alle);
+}
+
+/**
+ * Die Themen $themen im Broker leeren (leere retain-Nutzlast) und nachlesen -
+ * der gemeinsame Kern fuer die Deinstallation (gardena_mqtt_leeren) und das
+ * Abschalten (gardena_mqtt_abschalten, 1.2.11 M4). Bauart bw_mqtt_leeren()
+ * (Beschattungswaechter 0.9.21).
+ *
+ * VOR der ersten Runde und nach jeder wird der Broker gefragt; hinaus geht nur,
+ * was dort noch steht, hoechstens $runden Runden. Ist er nicht zu fragen,
+ * gehen alle in jeder Runde hinaus - der Eingang verwirft unter Last
+ * Datagramme (Regeln/07).
+ *
+ * Rueckgabe: array('lage' => 'leer'|'offen'|'unbekannt'|'kein_port',
+ *   'vorher_leer' => der Broker meldete schon vor der ersten Runde nichts,
+ *   'n', 'zu_leeren', 'offen', 'datagramme', 'runden')
+ */
+function gardena_mqtt_abraeumen(array $themen, $runden = 3, $pause_us = 1000000)
+{
+    $alle = array();
+    foreach ($themen as $t) {
+        if ((string) $t !== '') { $alle[(string) $t] = true; }
+    }
     $alle = array_keys($alle);
-    $n = count($alle);
+    $aus = array('lage' => 'leer', 'vorher_leer' => false, 'n' => count($alle), 'zu_leeren' => 0,
+                 'offen' => array(), 'datagramme' => 0, 'runden' => 0);
+    if (!gardena_mqtt_udpport()) {
+        $aus['lage'] = 'kein_port';
+        return $aus;
+    }
     $f = gardena_mqtt_behalten_liste($alle);
     $nachgelesen = ($f['lage'] === 'ok');
     $offen = $nachgelesen ? array_keys($f['belegt']) : $alle;
     if ($nachgelesen && !$offen) {
-        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen der Linie steht '
-           . 'zurueckbehalten - nichts zu leeren.' . "\n";
-        return 0;
+        $aus['vorher_leer'] = true;
+        return $aus;
     }
-    $zu_leeren = count($offen);
-    $datagramme = 0;
-    $gelaufen = 0;
+    $aus['zu_leeren'] = count($offen);
     for ($r = 1; $r <= max(1, (int) $runden) && $offen; $r++) {
         if ($r > 1) { usleep((int) $pause_us); }
-        $gelaufen = $r;
+        $aus['runden'] = $r;
         foreach ($offen as $t) {
-            if (gardena_mqtt_loeschen($t)) { $datagramme++; }
+            if (gardena_mqtt_loeschen($t)) { $aus['datagramme']++; }
         }
         usleep(300000);     // dem Gateway Zeit bis zum Broker lassen
         $f = gardena_mqtt_behalten_liste($offen);
@@ -790,15 +840,54 @@ function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
             $nachgelesen = false;
         }
     }
-    echo '<INFO> MQTT: ' . $zu_leeren . ' von ' . $n . ' Themen mit leerer Nutzlast an den '
-       . 'UDP-Eingang ' . (int) $port . ' des Gateways gesendet (' . $gelaufen . ' Runde(n), '
-       . $datagramme . ' Datagramme).' . "\n";
-    if ($nachgelesen && !$offen) {
+    $aus['offen'] = $offen;
+    $aus['lage'] = !$nachgelesen ? 'unbekannt' : ($offen ? 'offen' : 'leer');
+    return $aus;
+}
+
+/**
+ * Die zurueckbehaltenen Themen der Linie leeren - fuer uninstall/uninstall
+ * (gardenaMain.php --mqtt-leeren). Ins Protokoll kommen hoechstens
+ * Sendefehler; was geschah, steht in der Ausgabe fuer den Installer.
+ *
+ * Welche Themen: gardena_mqtt_eigene_themen() - seit 1.2.11 auch jedes
+ * Thema, das je retained hinausging, ueber alle Praefixe (M3). Bis 1.2.10
+ * zaehlte nur 'themen', und das schrieb auch ein Lauf mit MQTT aus fort - nach
+ * einem Praefixwechsel bei ausgeschaltetem MQTT meldete die Deinstallation
+ * "keines der 31 Themen steht zurueckbehalten", waehrend 19 im Broker standen
+ * (in WSL gemessen, mqtt Befund 3, Fall U2).
+ *
+ * <OK> steht nur nach der Bestaetigung des Brokers. Rueckgabe 0 geleert oder
+ * nicht nachpruefbar, 1 es steht noch etwas, 2 nicht moeglich.
+ */
+function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
+{
+    $g = gardena_cfg_read(rtrim((string) $cfgdir, '/') . '/gardena.cfg');
+    $basis = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
+    $port = gardena_mqtt_udpport();
+    if (!$port) {
+        echo '<INFO> MQTT: kein UDP-Eingangsport des Gateways bekannt - zurueckbehaltene Themen '
+           . 'unter ' . gardena_mqtt_thema($basis) . '/ wurden nicht geleert.' . "\n";
+        return 2;
+    }
+    $st = gardena_status_lesen($cfgdir);
+    $a = gardena_mqtt_abraeumen(gardena_mqtt_eigene_themen($st, $basis), $runden, $pause_us);
+    $n = $a['n'];
+    if ($a['vorher_leer']) {
+        echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen der Linie steht '
+           . 'zurueckbehalten - nichts zu leeren.' . "\n";
+        return 0;
+    }
+    echo '<INFO> MQTT: ' . $a['zu_leeren'] . ' von ' . $n . ' Themen mit leerer Nutzlast an den '
+       . 'UDP-Eingang ' . (int) $port . ' des Gateways gesendet (' . $a['runden'] . ' Runde(n), '
+       . $a['datagramme'] . ' Datagramme).' . "\n";
+    if ($a['lage'] === 'leer') {
         echo '<OK> MQTT: der Broker bestaetigt: keines der ' . $n . ' Themen steht mehr '
            . 'zurueckbehalten.' . "\n";
         return 0;
     }
-    if ($nachgelesen) {
+    if ($a['lage'] === 'offen') {
+        $offen = $a['offen'];
         echo '<WARNING> MQTT: ' . count($offen) . ' Themen stehen noch zurueckbehalten im Broker ('
            . implode(', ', array_slice($offen, 0, 5)) . (count($offen) > 5 ? ', ...' : '')
            . '). Von Hand: mosquitto_pub -r -n -t <thema> (mit den Broker-Zugangsdaten).' . "\n";
@@ -808,6 +897,60 @@ function gardena_mqtt_leeren($cfgdir, $runden = 3, $pause_us = 1000000)
        . 'verwirft unter Last Datagramme; was stehen bleibt, laesst sich mit '
        . 'mosquitto_pub -r -n -t <thema> von Hand loeschen.' . "\n";
     return 0;
+}
+
+/**
+ * Abschalten raeumt ab (1.2.11, M4).
+ *
+ * Steht MQTT auf aus oder das Plugin auf "Plugin aktiv: Nein", raeumt der
+ * naechste Lauf die zurueckbehaltenen Themen der Linie im Broker ab und liest
+ * nach. Vorher geht noch einmal das Lebenszeichen ok=0 hinaus (fluechtig), damit
+ * ein Baustein in Loxone den Stillstand sieht. Bis 1.2.10 blieben die Zustaende
+ * eines abgeschalteten Plugins unbegrenzt retained stehen, und das letzte ok
+ * blieb im Eingang auf 1 (in WSL gemessen, mqtt Befund 4, Fall A).
+ *
+ * Bestaetigt der Broker, gilt es als erledigt. Ist er nicht zu fragen,
+ * hoechstens einmal je Stunde und hoechstens dreimal; danach wird es nicht
+ * weiter verfolgt, und das Protokoll sagt es.
+ */
+function gardena_mqtt_abschalten($cfgdir, $g)
+{
+    $st = gardena_status_lesen($cfgdir);
+    if (!empty($st['mqtt_aus_geleert'])) { return; }
+    if (!$st['themen'] && !$st['retained_themen'] && !$st['weg_offen']) {
+        // Nie etwas gesendet (frische Anlage, MQTT nie an): nichts abzuraeumen.
+        gardena_status_schreiben($cfgdir, array('mqtt_aus_geleert' => 1));
+        return;
+    }
+    if (!gardena_mqtt_udpport()) { return; }
+    if (!empty($st['mqtt_aus_am']) && (time() - (int) $st['mqtt_aus_am']) < 3600) { return; }
+    $basis = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
+    if (empty($st['mqtt_aus_versuche'])) {
+        mqttPublish(gardena_wert_thema($basis, 'Plugin', 'STATUS', 'ok'), 0, false);
+    }
+    $a = gardena_mqtt_abraeumen(gardena_mqtt_eigene_themen($st, $basis), 3, 1000000);
+    $versuche = (int) $st['mqtt_aus_versuche'] + 1;
+    if ($a['lage'] === 'leer') {
+        gardena_status_schreiben($cfgdir, array('mqtt_aus_geleert' => 1, 'mqtt_aus_versuche' => 0,
+            'mqtt_aus_am' => 0, 'retained_themen' => array(), 'weg_offen' => array(), 'themen' => array()));
+        gardena_log('INF', 'MQTT abgeschaltet: ' . ($a['vorher_leer'] ? 'nichts stand zurueckbehalten.'
+            : ($a['zu_leeren'] . ' zurueckbehaltene Themen geleert - der Broker bestaetigt es.')));
+        return;
+    }
+    if ($a['lage'] === 'unbekannt' && $versuche >= 3) {
+        // Die Listen bleiben: die Deinstallation versucht es noch einmal.
+        gardena_status_schreiben($cfgdir, array('mqtt_aus_geleert' => 1, 'mqtt_aus_versuche' => $versuche,
+            'mqtt_aus_am' => time()));
+        gardena_log('ERR', 'MQTT abgeschaltet: ' . $a['n'] . ' Themen dreimal mit leerer Nutzlast gesendet, '
+            . 'der Broker war nicht zu fragen - nicht nachgelesen, es wird nicht weiter verfolgt. '
+            . 'Von Hand: mosquitto_pub -r -n -t <thema>.');
+        return;
+    }
+    gardena_status_schreiben($cfgdir, array('mqtt_aus_versuche' => $versuche, 'mqtt_aus_am' => time()));
+    gardena_log('INF', 'MQTT abgeschaltet: ' . ($a['lage'] === 'offen'
+        ? (count($a['offen']) . ' Themen stehen noch zurueckbehalten - naechster Versuch in einer Stunde.')
+        : ($a['zu_leeren'] . ' Themen mit leerer Nutzlast gesendet, der Broker war nicht zu fragen '
+           . '(Versuch ' . $versuche . ' von 3).')));
 }
 
 /**
@@ -956,7 +1099,8 @@ function gardena_name_umgeschrieben($geraet)
  * unter allen Fehlerarten am teuersten ist. Ueber MQTT ging zusaetzlich eine
  * leere retained-Nutzlast hinaus.
  *
- * Ein Wert, den es nicht gibt, wird deshalb NICHT gesendet. Der virtuelle
+ * Ein Wert, den es nicht gibt, wird deshalb ueber UDP NICHT gesendet (ueber
+ * MQTT geht seit 1.2.11 ein "-" hinaus, gardena_wert_senden(), M1). Der virtuelle
  * Eingang behaelt dann seinen letzten Wert - dass er alt ist, beantwortet
  * das Lebenszeichen (STATUS.Plugin.zeitstempel), nicht eine erfundene Null.
  * Gezaehlt werden die uebersprungenen Werte trotzdem: sie stehen im Zustand
@@ -1004,10 +1148,20 @@ function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
 {
     // Keine Angabe: die Tabelle entscheidet (gardena_retain), nicht der Aufruf.
     if ($retain === null) { $retain = gardena_retain($geraet, $dienst, $attribut); }
-    $wert = gardena_wert_flach($wert);
+    /*
+     * Ein Wert, den die Wolke nicht liefert (null, oder ein Feld, das sich
+     * nicht in JSON fassen laesst), geht seit 1.2.11 (M1, Entscheidung 5/8)
+     * ueber MQTT als "-" hinaus - retained bei Zustaenden, fluechtig bei
+     * Messwerten. Bis 1.2.10 ging er gar nicht hinaus, und im Broker blieb
+     * der alte Zustand stehen (mqtt Befund 1, Fall N1). Ueber UDP geht weiter
+     * nichts: ein Virtueller Eingang mit Befehlserkennung laese aus einer
+     * Zeile ohne Zahl eine 0.
+     */
+    $fehlt = gardena_wert_fehlt($wert);
+    $wert = $fehlt ? '-' : gardena_wert_flach($wert);
     $versucht = 0;
     $fehl = 0;
-    if ((string) $udp_ziel !== '') {
+    if ((string) $udp_ziel !== '' && !$fehlt) {
         $versucht++;
         // Umbrueche raus: Loxone wertet den UDP-Eingang zeilenweise aus. Der
         // Geraetename kommt aus der Gardena-App, der Wert aus einer fremden
@@ -1106,7 +1260,16 @@ function gardena_status_lesen($cfgdir)
                 'retain_stand' => 0,
                 // Thema => Laeufe ohne Rueckfrage: weggefallene Themen, deren
                 // Loeschung der Broker noch nicht bestaetigt hat (gardenaMain.php).
-                'weg_offen' => array());
+                'weg_offen' => array(),
+                // ab 1.2.11 (M3, M4): jedes Thema, das je retained hinausging
+                // (auch als "-"), bis der Broker es leer meldet - fuer das
+                // Abraeumen beim Abschalten und bei der Deinstallation, ueber
+                // alle Praefixe hinweg.
+                'retained_themen' => array(),
+                // 1 = nach dem Abschalten (MQTT aus oder Plugin aus) abgeraeumt
+                'mqtt_aus_geleert' => 0,
+                // Versuche ohne Rueckfrage beim Broker und der Zeitpunkt des letzten
+                'mqtt_aus_versuche' => 0, 'mqtt_aus_am' => 0);
     return $d;
 }
 
@@ -1114,11 +1277,40 @@ function gardena_status_lesen($cfgdir)
  * Den Zustand fortschreiben. $neu ersetzt nur die uebergebenen Schluessel -
  * 'letzter_erfolg' ueberlebt damit einen gescheiterten Lauf.
  */
-function gardena_status_schreiben($cfgdir, $neu)
+function gardena_status_schreiben($cfgdir, $neu, $lauf_beginn = 0)
 {
+    /*
+     * Lesen, aendern, schreiben unter EINER Sperre (1.2.11, C5).
+     *
+     * Bis 1.2.10 las jeder Schreiber den Stand, aenderte ihn und schrieb ihn
+     * zurueck - ohne Sperre. Bekam ein Befehl WAEHREND eines Abrufs HTTP 429,
+     * vermerkte der Endpunkt sperre_bis; der Abruf schrieb danach seinen Stand
+     * mit sperre_bis = 0 darueber, und der naechste Lauf klopfte sofort wieder
+     * an (in WSL gemessen, Durchgang 29.09.2026, code Befund 5).
+     *
+     * $lauf_beginn: eine Abrufsperre, die erst NACH dem Beginn des Laufs
+     * vermerkt wurde (sperre_bis liegt dahinter), hebt dieser Lauf nicht auf.
+     * Eine Sperre von vorher kann es nicht geben - mit ihr bricht der Lauf ab.
+     *
+     * Rechte 0600 (C8, Regeln/05): Konfiguration, Zweitschrift und Zustand.
+     */
+    $sperre = @fopen(gardena_status_datei($cfgdir) . '.lock', 'c');
+    if ($sperre !== false && !flock($sperre, LOCK_EX)) { fclose($sperre); $sperre = false; }
+    if ($sperre === false) {
+        gardena_log_gebremst('status_sperre', 'ERR', 'Die Sperre des Zustands ('
+            . gardena_status_datei($cfgdir) . '.lock) liess sich nicht nehmen - geschrieben wird ohne sie.');
+    }
     $d = gardena_status_lesen($cfgdir);
-    foreach ($neu as $k => $v) { $d[$k] = $v; }
-    return gardena_json_write(gardena_status_datei($cfgdir), $d, 0640);
+    foreach ($neu as $k => $v) {
+        if ($k === 'sperre_bis' && (int) $v === 0 && (int) $lauf_beginn > 0
+            && (int) $d['sperre_bis'] > (int) $lauf_beginn) {
+            continue;
+        }
+        $d[$k] = $v;
+    }
+    $ok = gardena_json_write(gardena_status_datei($cfgdir), $d, 0600);
+    if ($sperre !== false) { flock($sperre, LOCK_UN); fclose($sperre); }
+    return $ok;
 }
 
 /**
@@ -1477,9 +1669,70 @@ function gardena_ini_wert($v)
     return ltrim($s, "[ ");
 }
 
+/**
+ * Eine Nebendatei anlegen - Rechte VOR dem Inhalt, im Fehlerfall weggeraeumt
+ * (1.2.11, C7; Regeln/03 "atomar schreiben").
+ *
+ * Bis 1.2.10 entstand die Nebendatei mit file_put_contents() unter der
+ * Erzeugungsmaske (0644 bei umask 022), chmod stand erst dahinter, und
+ * scheiterte das Schreiben auf einem vollen Datentraeger, blieb sie liegen -
+ * mit Teilen des Secrets und des Aktionstokens (in WSL auf einem 24-kB-tmpfs
+ * gemessen, Durchgang 29.09.2026, code Befund 7).
+ *
+ * Rueckgabe true nur, wenn der GANZE Inhalt geschrieben und die Datei
+ * geschlossen ist; sonst ist sie entfernt.
+ */
+function gardena_nebendatei_schreiben($tmp, $inhalt, $modus)
+{
+    $inhalt = (string) $inhalt;
+    $alt = umask(0077);
+    $fh = @fopen($tmp, 'x');
+    umask($alt);
+    if ($fh === false) { return false; }
+    @chmod($tmp, $modus);
+    $ok = true;
+    $rest = $inhalt;
+    while ($rest !== '') {
+        $n = @fwrite($fh, $rest);
+        if ($n === false || $n === 0) { $ok = false; break; }
+        $rest = (string) substr($rest, $n);
+    }
+    if ($ok && !@fflush($fh)) { $ok = false; }
+    if (!@fclose($fh)) { $ok = false; }
+    if ($ok) {
+        clearstatcache(true, $tmp);
+        if ((int) @filesize($tmp) !== strlen($inhalt)) { $ok = false; }
+    }
+    if (!$ok) { @unlink($tmp); }
+    return $ok;
+}
+
+/**
+ * Darf dieser Wert als Aktionstoken in die Datei? (1.2.11, C11)
+ * Nie ein leeres Token (jede im Miniserver eingetragene Adresse waere stumm
+ * ungueltig) und nie die Zeichenkette "Array" (ein Feld, das auf dem Weg in
+ * eine Zeichenkette verrutscht ist - Bauart E, AWM-Abfuhr 1.4.15).
+ */
+function gardena_token_schreibbar($v)
+{
+    if (is_array($v) || is_object($v) || is_bool($v) || $v === null) { return false; }
+    $s = (string) $v;
+    if ($s === '' || strcasecmp($s, 'Array') === 0) { return false; }
+    return preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $s) === 1;
+}
+
 function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
 {
     if (!is_array($werte) || !$werte) { return true; }
+    /* Ein leeres oder unbrauchbares Aktionstoken wird nie geschrieben
+     * (1.2.11, C11). Der Schluessel faellt aus diesem Schreibvorgang heraus;
+     * das geltende Token in der Datei bleibt. */
+    if (array_key_exists('TOKEN', $werte) && !gardena_token_schreibbar($werte['TOKEN'])) {
+        gardena_log('ERR', 'Ein leeres oder unbrauchbares Aktionstoken wurde nicht in die '
+            . basename($cfgfile) . ' geschrieben - das geltende bleibt.');
+        unset($werte['TOKEN']);
+        if (!$werte) { return false; }
+    }
 
     $dir = dirname($cfgfile);
     if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
@@ -1509,8 +1762,10 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
     foreach ($zeilen as $i => $zeile) {
         // Zeilenende einer Windows-Datei entfernen. FILE_IGNORE_NEW_LINES
         // nimmt nur das \n weg, das \r bliebe sonst am Wert kleben - und
-        // parse_ini_file liest es mit. dos2unix laeuft nur bei der
-        // Installation ueber die Oberflaeche, nicht beim Auto-Update.
+        // parse_ini_file liest es mit. BERICHTIGT in 1.2.11: der Installer
+        // ruft dos2unix bei jeder Installation fuer alle Textdateien auf
+        // (plugininstall.pl:815-817, auch beim Auto-Update); eine spaeter von
+        // Hand unter Windows bearbeitete Datei kann trotzdem CRLF tragen.
         $zeile = rtrim($zeile, "\r");
         $zeilen[$i] = $zeile;
 
@@ -1554,11 +1809,11 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
 
     $tmp = $cfgfile . '.' . getmypid() . '.' . mt_rand(1000, 9999) . '.tmp';
     $ok = false;
-    if (@file_put_contents($tmp, $inhalt) !== false) {
-        // Rechte VOR dem Umbenennen setzen: in der Datei stehen das
-        // Application Secret und das Zugriffstoken. Nach dem rename() gaebe
-        // es sonst einen Augenblick, in dem sie mit 0644 dalaege.
-        @chmod($tmp, 0640);
+    // Rechte VOR dem Inhalt (1.2.11, C7): in der Datei stehen das Application
+    // Secret und das Zugriffstoken. 0600 statt 0640 (C8, Regeln/05): die 0640
+    // hatte keine gemessene Begruendung - der Webserver des LoxBerry laeuft als
+    // loxberry (mod_php), derselbe Benutzer wie der Cron.
+    if (gardena_nebendatei_schreiben($tmp, $inhalt, 0600)) {
         $ok = @rename($tmp, $cfgfile);
         if (!$ok) { @unlink($tmp); }
     }
@@ -1613,10 +1868,10 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
         }
     }
     if ($zmerkwort !== '') {
-        $ztmp = $zweit . '.' . getmypid() . '.tmp';
+        $ztmp = $zweit . '.' . getmypid() . '.' . mt_rand(1000, 9999) . '.tmp';
         $zok = false;
-        if (@file_put_contents($ztmp, $inhalt) !== false) {
-            @chmod($ztmp, 0640);
+        // Gleiche Rechte wie das Original: 0600 (1.2.11, C8).
+        if (gardena_nebendatei_schreiben($ztmp, $inhalt, 0600)) {
             $zok = @rename($ztmp, $zweit);
             if (!$zok) { @unlink($ztmp); }
         }
@@ -1652,7 +1907,7 @@ function gardena_cfg_set($cfgfile, $key, $value)
  * den Geraete-Zwischenspeicher halb geschrieben lesen, waehrend der Cron
  * ihn ersetzt.
  */
-function gardena_json_write($pfad, $daten, $modus = 0640)
+function gardena_json_write($pfad, $daten, $modus = 0600)
 {
     $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($js === false) {
@@ -1663,11 +1918,11 @@ function gardena_json_write($pfad, $daten, $modus = 0640)
     $dir = dirname($pfad);
     if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
     $tmp = $pfad . '.' . getmypid() . '.' . mt_rand(1000, 9999) . '.tmp';
-    if (@file_put_contents($tmp, $js) === false) {
+    // Rechte vor dem Inhalt, im Fehlerfall weggeraeumt (1.2.11, C7).
+    if (!gardena_nebendatei_schreiben($tmp, $js, $modus)) {
         gardena_log('ERR', $tmp . ' liess sich nicht schreiben - Platz? Rechte?');
         return false;
     }
-    @chmod($tmp, $modus);
     if (!@rename($tmp, $pfad)) {
         @unlink($tmp);
         gardena_log('ERR', basename($pfad) . ' liess sich nicht ersetzen.');
@@ -1688,21 +1943,79 @@ function gardena_json_write($pfad, $daten, $modus = 0640)
  * Rueckgabe: der offene Dateizeiger (offen halten - mit ihm faellt die
  * Sperre) oder false.
  */
-function gardena_sperre($name = 'main')
+function gardena_sperre($name = 'main', &$grund = null)
 {
+    /*
+     * $grund (1.2.11, I6): 'belegt' - ein anderer Lauf haelt die Sperre;
+     * 'nicht_zu_oeffnen' - die Sperrdatei laesst sich nicht oeffnen. Bis
+     * 1.2.10 lieferten beide Faelle false, und gardenaMain.php hielt eine
+     * root-eigene Sperrdatei aus einem Handaufruf fuer "Abruf laeuft bereits":
+     * bis zum naechsten Neustart rief das Plugin nichts mehr ab, ohne jede
+     * Meldung (in WSL gemessen, Durchgang 29.09.2026, installer Befund 6).
+     */
+    $grund = '';
     $dir = isset($GLOBALS['lbplogdir']) && is_dir((string) $GLOBALS['lbplogdir'])
         ? (string) $GLOBALS['lbplogdir'] : sys_get_temp_dir();
     $f = rtrim($dir, '/') . '/gardena_' . preg_replace('/[^a-z0-9_]/', '', $name) . '.lock';
     $fh = @fopen($f, 'c');
     if ($fh === false) {
+        $grund = 'nicht_zu_oeffnen';
         gardena_log('ERR', 'Sperrdatei ' . $f . ' nicht zu oeffnen - Platz und Rechte pruefen.');
         return false;
     }
     if (!flock($fh, LOCK_EX | LOCK_NB)) {
         fclose($fh);
+        $grund = 'belegt';
         return false;
     }
     return $fh;
+}
+
+/* ==================================================================
+ * Sofortabruf (1.2.11, C3)
+ *
+ * ?action=refresh startet gardenaMain.php --sofort im Hintergrund und sagt
+ * erst dann "Abruf gestartet", wenn der Lauf seine Sperre wirklich hat. Bis
+ * 1.2.10 kam die Meldung unmittelbar nach dem Start des Hintergrundprozesses -
+ * auch dann, wenn der Lauf wegen des gestreckten Takts gar nicht abrief
+ * (in WSL gemessen: "OK: Abruf gestartet", 0 Anfragen an die Wolke; code
+ * Befund 3). Der Merker liegt im Protokollordner (RAM-Scheibe) und endet
+ * nicht auf .log, damit die Logwartung ihn nicht mitzaehlt.
+ * ================================================================== */
+function gardena_sofort_datei()
+{
+    return gardena_log_datei('gardena_sofort.merker');
+}
+
+/** gardenaMain.php --sofort: 'gestartet' (Sperre genommen) oder 'belegt'. */
+function gardena_sofort_melden($stand)
+{
+    $f = gardena_sofort_datei();
+    if ($f === '') { return false; }
+    return @file_put_contents($f, $stand . ' ' . getmypid() . ' ' . time()) !== false;
+}
+
+function gardena_sofort_vergessen()
+{
+    $f = gardena_sofort_datei();
+    if ($f !== '' && is_file($f)) { @unlink($f); }
+}
+
+/** Auf die Meldung des Laufs warten. Rueckgabe: 'gestartet', 'belegt' oder ''. */
+function gardena_sofort_warten($sekunden)
+{
+    $f = gardena_sofort_datei();
+    if ($f === '') { return ''; }
+    $bis = microtime(true) + (float) $sekunden;
+    do {
+        clearstatcache(true, $f);
+        if (is_file($f)) {
+            $teile = explode(' ', trim((string) @file_get_contents($f)));
+            if ($teile[0] === 'gestartet' || $teile[0] === 'belegt') { return $teile[0]; }
+        }
+        usleep(100000);
+    } while (microtime(true) < $bis);
+    return '';
 }
 
 /* ==================================================================
@@ -1879,6 +2192,68 @@ function gardena_befehle()
     );
 }
 
+/**
+ * Obergrenze fuer seconds je Dienst, in Sekunden (1.2.11, C1; Entscheidung
+ * des Hausherrn Nr. 10 vom 30.09.2026).
+ *
+ * Bis 1.2.10 gab es nur eine Untergrenze: seconds=9999960 ging als "115 Tage"
+ * an die Wolke (in WSL gemessen, code Befund 1, mqtt Befund 6). Ob die Wolke
+ * selbst begrenzt, ist nicht gemessen. Ein Tippfehler im Virtuellen Ausgang -
+ * eine Null zu viel - oeffnete ein Ventil fuer Tage.
+ *
+ *   VALVE_CONTROL          hoechstens 3 Stunden je Befehl (Entscheidung 10)
+ *   MOWER_CONTROL          hoechstens 24 Stunden je Befehl
+ *   POWER_SOCKET_CONTROL   hoechstens 24 Stunden je Befehl; "dauerhaft" gibt es
+ *                          nur ueber den eigenen Befehl START_OVERRIDE, nicht
+ *                          ueber eine grosse Zahl
+ *
+ * Ohne Angabe bleibt es bei 3600 s (webfrontend/html/index.php).
+ */
+function gardena_sekunden_grenzen()
+{
+    return array(
+        'MOWER_CONTROL' => 86400,
+        'VALVE_CONTROL' => 10800,
+        'POWER_SOCKET_CONTROL' => 86400,
+    );
+}
+
+function gardena_sekunden_grenze($type)
+{
+    $g = gardena_sekunden_grenzen();
+    return isset($g[(string) $type]) ? (int) $g[(string) $type] : 0;
+}
+
+/**
+ * Sprachschluessel (Abschnitt LOX) der Bedeutung je Befehl - fuer die
+ * Befehlstabelle im Reiter "Einbindung in Loxone" (1.2.11, O6). Bis 1.2.10
+ * war die Tabelle von Hand geschrieben und nannte fuer die Steckdose keinen
+ * Ausschaltbefehl, obwohl der Endpunkt ihn annimmt (oberflaeche Befund B10).
+ * Ein Befehl aus gardena_befehle() ohne Eintrag hier faellt im Reiter Test auf.
+ */
+function gardena_befehl_texte()
+{
+    return array(
+        'MOWER_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => 'C_MOWER_START',
+            'START_DONT_OVERRIDE' => 'C_MOWER_DONT',
+            'PARK_UNTIL_NEXT_TASK' => 'C_MOWER_PARK_NEXT',
+            'PARK_UNTIL_FURTHER_NOTICE' => 'C_MOWER_PARK_FURTHER',
+        ),
+        'VALVE_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => 'C_VALVE_START',
+            'STOP_UNTIL_NEXT_TASK' => 'C_VALVE_STOP',
+            'PAUSE' => 'C_VALVE_PAUSE',
+            'UNPAUSE' => 'C_VALVE_UNPAUSE',
+        ),
+        'POWER_SOCKET_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => 'C_SOCKET_START',
+            'START_OVERRIDE' => 'C_SOCKET_OVERRIDE',
+            'STOP_UNTIL_NEXT_TASK' => 'C_SOCKET_STOP',
+        ),
+    );
+}
+
 /* ==================================================================
  * Bremsen fuer Ausloeser aus Loxone (seit 1.2.8)
  *
@@ -1940,15 +2315,22 @@ function gardena_kontingent_vermerken($cfgdir, $retry_after)
  * beginnt die Stunde von vorn - das ist in Ordnung, die Bremse soll ein
  * Flattern abfangen, keine Buchhaltung sein.
  *
- * Rueckgabe: 0 = erlaubt, sonst die Zahl der Befehle in der letzten Stunde.
+ * Rueckgabe: 0 = erlaubt, -1 = der Merker ist nicht nutzbar (abweisen),
+ * sonst die Zahl der Befehle in der letzten Stunde.
+ *
+ * Die Bremse faellt GESCHLOSSEN aus (1.2.11, C2; Regeln/05 "ein Schutz faellt
+ * geschlossen aus"). Bis 1.2.10 hiess ein fehlender Protokollordner oder ein
+ * nicht zu oeffnender Merker "erlaubt": mit dem Merker als Ordner gingen 32
+ * von 32 Befehlen an die Wolke, ohne eine Protokollzeile (in WSL gemessen,
+ * Durchgang 29.09.2026, code Befund 2).
  */
 function gardena_bremse_befehl()
 {
     $f = gardena_log_datei('gardena_befehle.merker');
-    if ($f === '') { return 0; }          // ohne Protokollordner keine Bremse, aber kein Absturz
+    if ($f === '') { return -1; }
     $fh = @fopen($f, 'c+');
-    if (!$fh) { return 0; }
-    flock($fh, LOCK_EX);
+    if (!$fh) { return -1; }
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return -1; }
     $roh = stream_get_contents($fh);
     $liste = json_decode((string) $roh, true);
     if (!is_array($liste)) { $liste = array(); }
@@ -1957,10 +2339,11 @@ function gardena_bremse_befehl()
     foreach ($liste as $t) { if ((int) $t > $grenze) { $jung[] = (int) $t; } }
     $zu_viele = count($jung) >= gardena_bremse_befehle_h();
     if (!$zu_viele) { $jung[] = time(); }
-    ftruncate($fh, 0); rewind($fh);
-    fwrite($fh, json_encode($jung));
+    $js = json_encode($jung);
+    $geschrieben = ftruncate($fh, 0) && rewind($fh) && @fwrite($fh, $js) === strlen($js);
     flock($fh, LOCK_UN);
     fclose($fh);
+    if (!$geschrieben) { return -1; }
     return $zu_viele ? count($jung) : 0;
 }
 
@@ -2114,7 +2497,11 @@ function gardena_wert_pruefen($k, $v)
             ? '' : gardena_t('EINST.PRUEF_PORT');
     }
     if ($k === 'INTERVALL') {
-        return (preg_match('/^[0-9]{1,4}$/', $v) === 1 && (int) $v >= 5 && (int) $v <= 1440)
+        // Ein Vielfaches von 5 (1.2.11, O3): der Cron laeuft alle fuenf
+        // Minuten, aus 7 wurden bis 1.2.10 wirksam 10 - der Reiter Test zeigte
+        // aber "alle 7 Minuten" (oberflaeche Befund B5).
+        return (preg_match('/^[0-9]{1,4}$/', $v) === 1 && (int) $v >= 5 && (int) $v <= 1440
+                && (int) $v % 5 === 0)
             ? '' : gardena_t('EINST.PRUEF_TAKT');
     }
     if ($k === 'MINISERVER') {
@@ -2125,6 +2512,10 @@ function gardena_wert_pruefen($k, $v)
         return preg_match('/^[0-9]{1,9}$/', $v) === 1 ? '' : gardena_t('EINST.PRUEF_ZAHL');
     }
     if ($k === 'TOKEN') {
+        // "Array" ist kein Token, sondern ein verrutschtes Feld (1.2.11, C11).
+        // Leer bleibt zulaessig: in einer Sicherung heisst es "kein Token
+        // gesichert", und das Zurueckspielen behaelt dann das geltende (C6).
+        if (strcasecmp($v, 'Array') === 0) { return gardena_t('EINST.PRUEF_TOKEN'); }
         return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', $v) === 1
             ? '' : gardena_t('EINST.PRUEF_TOKEN');
     }
@@ -2135,8 +2526,13 @@ function gardena_wert_pruefen($k, $v)
     if ($k === 'AUSGENOMMEN') {
         return (strlen($v) <= 2048) ? '' : gardena_t('EINST.PRUEF_LANG');
     }
-    // CLIENT_ID, CLIENT_SECRET: Form gibt Husqvarna vor, wir pruefen nur die
-    // Laenge und - ueber gardena_wert_taugt() - die Steuerzeichen.
+    // CLIENT_ID, CLIENT_SECRET: Form gibt Husqvarna vor, wir pruefen die
+    // Laenge und - ueber gardena_wert_taugt() - die Steuerzeichen. Ein
+    // fuehrendes '[' wird abgewiesen statt gekuerzt (1.2.11, O3): bis 1.2.10
+    // schnitt gardena_ini_wert() es wortlos ab (oberflaeche Befund B5).
+    if (($k === 'CLIENT_ID' || $k === 'CLIENT_SECRET') && $v !== '' && $v[0] === '[') {
+        return gardena_t('EINST.PRUEF_KLAMMER');
+    }
     return (strlen($v) <= 512) ? '' : gardena_t('EINST.PRUEF_LANG');
 }
 

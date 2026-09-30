@@ -22,7 +22,30 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     exit 0
 fi
 
-# Einen Wert aus dem Abschnitt [GARDENA] lesen, wie gardena_cfg_read() es tut:
+# Ist eine gardena.cfg fuer das PLUGIN lesbar? (1.2.11, I4)
+# Dieselbe Pruefung wie gardena_cfg_zustand() in bin/functions.inc.php:
+# '#'-Zeilen entfernen ([[:blank:]] ist Leerzeichen oder Tabulator, wie dort),
+# parse_ini_string(..., true, INI_SCANNER_RAW), und im
+# Abschnitt [GARDENA] (oder ohne Abschnitt) mindestens ein einfacher Wert.
+# Rueckgabe 0 lesbar, 1 unlesbar oder leer. Ist php nicht aufrufbar, gilt die
+# Datei als lesbar - dann verhaelt sich das Skript wie bis 1.2.10.
+# Wortgleich in preupgrade.sh, postinstall.sh und postupgrade.sh.
+cfg_lesbar() {
+    [ -s "$1" ] || return 1
+    php -r '$r = @parse_ini_string(preg_replace("/^[[:blank:]]*#.*$/m", "", (string) @file_get_contents($argv[1])), true, INI_SCANNER_RAW); if (!is_array($r)) { exit(1); } $g = (isset($r["GARDENA"]) && is_array($r["GARDENA"])) ? $r["GARDENA"] : $r; foreach ($g as $v) { if (!is_array($v)) { exit(0); } } exit(1);' -- "$1" 2>/dev/null
+    rc=$?
+    case $rc in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Einen Wert aus dem Abschnitt [GARDENA] lesen. BERICHTIGT in 1.2.11 (K2): hier
+# stand "wie gardena_cfg_read() es tut" - das awk nimmt aber Dateien an, die
+# PHP ablehnt (etwa "[GARDENA" ohne "]"; in WSL gemessen, Durchgang 29.09.2026,
+# installer Befund 4). Ob eine Datei fuer das Plugin LESBAR ist, sagt deshalb
+# cfg_lesbar(); ini_feld() fragt nur, welcher Wert dasteht. Gelesen wird so:
 # '#'- und ';'-Zeilen zaehlen nicht, Leerraum um Name und Wert faellt weg,
 # umschliessende Anfuehrungszeichen fallen weg, ein spaeterer Eintrag gilt.
 # Wortgleich in preupgrade.sh, postinstall.sh und postupgrade.sh: ein
@@ -89,52 +112,41 @@ echo "<INFO> Stelle Konfiguration zurueck"
 # gardena.cfg am Ziel nicht ersetzbar): "<OK> Konfiguration zurueckgestellt.",
 # Sicherung weg, Zugangsdaten nirgends mehr.
 RUECK_OK=1
-# Nur eine Sicherung aus DIESEM Update wird eingespielt (Regeln/06,
-# Entscheidung vom 17.09.2026; Bauart Renault-NG 2.1.11). Ihr Zeitpunkt
-# (preupgrade.sh) muss eine Zahl sein - ohne fuehrende Null, hoechstens zwoelf
-# Stellen, damit die Rechnung weder oktal liest noch ueberlaeuft - und
-# hoechstens 3600 s alt; bis 300 s "aus der Zukunft" gilt er noch. Geprueft
-# wird VOR der Rechnung: ein Zeitpunkt wie a[$(befehl)] darf nie in $(( ))
-# gelangen (Klasse M, Bestand-2026-09-18). Ohne lesbare Uhr: nichts einspielen.
-# Eine Sicherung, die nicht aus diesem Vorgang stammt, bleibt unberuehrt
-# liegen und wird mit Ablageort gemeldet; uninstall raeumt sie weg. Bis 1.2.9
-# wurde sie eingespielt - scheiterte in preupgrade.sh das Neusichern, lag die
-# eines frueheren Updates dort und ueberschrieb die jetzige Konfiguration
-# (in WSL gemessen, Pruefung-GardenaSmartSystem-1.2.10, Faelle P2-P4).
-SICHER_GILT=1
-SICHER_GRUND=""
-SICHER_ALT=0
-if [ -d "$SICHER/config" ]; then
-    SICHER_GILT=0
-    ga_t0=$(cat "$SICHER/zeitpunkt" 2>/dev/null)
-    ga_jetzt=$(date +%s 2>/dev/null)
-    case "$ga_t0" in
-        ''|*[!0-9]*|0*|?????????????*)
-            SICHER_GRUND="sie traegt keinen gueltigen Zeitpunkt (Stand bis 1.2.9 oder ein abgebrochenes Update)" ;;
-        *)
-            case "$ga_jetzt" in
-                ''|*[!0-9]*|0*|?????????????*)
-                    SICHER_GRUND="die Uhr ist nicht lesbar" ;;
-                *)
-                    ga_alter=$((ga_jetzt - ga_t0))
-                    if [ "$ga_alter" -ge -300 ] && [ "$ga_alter" -le 3600 ]; then
-                        SICHER_GILT=1
-                    else
-                        SICHER_GRUND="sie stammt nicht aus diesem Update (angelegt vor $ga_alter s)"
-                    fi ;;
-            esac ;;
-    esac
-fi
-if [ "$SICHER_GILT" = "1" ] && [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; then
+# Welche Sicherung eingespielt wird (BERICHTIGT in 1.2.11, K3 und I3):
+# hier stand "Nur eine Sicherung aus DIESEM Update wird eingespielt", geprueft
+# ueber ein Hoechstalter von 3600 s. Beides stimmte nicht: eine Sicherung aus
+# einem frueheren Vorgang wurde eingespielt, sobald das Neusichern scheiterte
+# (installer Befund 2, U5/U6), und die Sicherung DIESES Updates wurde
+# abgelehnt, wenn zwischen preupgrade und postupgrade mehr als eine Stunde lag
+# (Befund 3, U4). Seit 1.2.11 raeumt preupgrade.sh jeden frueheren Bestand weg,
+# BEVOR es neu sichert (I2); was hier liegt, stammt deshalb aus diesem
+# Vorgang - ohne Altersgrenze (Entscheidung 1).
+if [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER/config" 2>/dev/null)" ]; then
     ZIEL="$BASE/config/plugins/$PFOLDER"
+    # Nie eine unlesbare gardena.cfg ueber eine lesbare legen (1.2.11, I4).
+    # Bis 1.2.10 spielte dieser Schritt eine abgeschnittene Datei zurueck und
+    # meldete "<OK> Konfiguration zurueckgestellt." (installer Befund 4, U3).
+    GA_OHNE_CFG=0
+    if [ -f "$SICHER/config/gardena.cfg" ] && ! cfg_lesbar "$SICHER/config/gardena.cfg" \
+       && cfg_lesbar "$ZIEL/gardena.cfg"; then
+        if mv "$SICHER/config/gardena.cfg" "$SICHER/gardena.cfg.unlesbar" 2>/dev/null; then
+            GA_OHNE_CFG=1
+            echo "<WARNING> Die gesicherte gardena.cfg laesst sich nicht lesen - die jetzige, lesbare bleibt stehen."
+        fi
+    fi
     if cp -a "$SICHER/config/." "$ZIEL/" 2>/dev/null; then CP_RC=0; else CP_RC=$?; fi
-    chmod 0640 "$ZIEL/gardena.cfg" 2>/dev/null
-    chmod 0600 "$ZIEL/gardena_token.json" 2>/dev/null
+    # 0600 fuer alles, was Zugangsdaten oder Zustand traegt (1.2.11, I5/C8).
+    chmod 0600 "$ZIEL/gardena.cfg" "$ZIEL/gardena_token.json" "$ZIEL/gardena_status.json" \
+               "$ZIEL/devices_cache.json" 2>/dev/null
     ABWEICHEND=$( { cd "$SICHER/config" && find . -type f | while IFS= read -r f; do
                       cmp -s "$f" "$ZIEL/$f" || printf '%s ' "${f#./}"
                   done; } 2>/dev/null || echo "(Sicherung nicht lesbar)")
     if [ "$CP_RC" -eq 0 ] && [ -z "$ABWEICHEND" ]; then
-        echo "<OK> Konfiguration zurueckgestellt."
+        if [ "$GA_OHNE_CFG" = "1" ]; then
+            echo "<OK> Konfiguration zurueckgestellt - ohne die unlesbare gardena.cfg; die lesbare bleibt stehen."
+        else
+            echo "<OK> Konfiguration zurueckgestellt."
+        fi
     else
         RUECK_OK=0
         echo "<WARNING> Die Konfiguration liess sich NICHT vollstaendig zurueckstellen"
@@ -143,12 +155,6 @@ if [ "$SICHER_GILT" = "1" ] && [ -d "$SICHER/config" ] && [ -n "$(ls -A "$SICHER
         echo "<WARNING> Von dort von Hand nach $ZIEL kopieren."
     fi
 else
-    if [ "$SICHER_GILT" = "0" ]; then
-        RUECK_OK=0
-        SICHER_ALT=1
-        echo "<WARNING> Die Upgrade-Sicherung wird NICHT eingespielt: $SICHER_GRUND."
-        echo "<WARNING> Sie bleibt unberuehrt liegen: $SICHER"
-    fi
     # Kein blinder Alarm. BERICHTIGT in 1.2.6: der Kommentar behauptete
     # hier, der Installer loesche data/plugins/<ordner> und damit die
     # Sicherung aus preupgrade.sh - "diese Kette kann hier gar nichts
@@ -162,15 +168,10 @@ else
     # nachsehen, wie es wirklich steht; eine Warnung bei heiler
     # Konfiguration erschreckt ohne Grund und entwertet die echte.
     #
-    # Geurteilt wird nach INHALT, nicht nach Form. Bis 1.2.8 stand hier
-    # "[ -s ]": eine gardena.cfg, die nur die mitgelieferten Vorgaben traegt,
-    # ist nicht leer - die Zeile "<OK> Die Einstellungen sind vorhanden"
-    # erschien also auch dann, wenn Application Key und Secret fehlten. Eine
-    # Meldung darf nicht besser aussehen als der Zustand (CLAUDE.md, 6).
-    # Gefragt wird dasselbe wie am Ende von postinstall.sh: stehen BEIDE
-    # Zugangsdaten da? Ohne eines von beiden kommt keine Anmeldung zustande
-    # (bin/gardenaMain.php:218, webfrontend/html/index.php:123), und genau
-    # die verlangt der Text darunter nachzutragen.
+    # Geurteilt wird nach INHALT, nicht nach Form: stehen BEIDE Zugangsdaten
+    # da? Ohne eines von beiden kommt keine Anmeldung zustande
+    # (bin/gardenaMain.php, webfrontend/html/index.php), und genau die
+    # verlangt der Text darunter nachzutragen.
     # Gemessen am 17.09.2026 in WSL (messe_runde2.sh Q3c, Q3d, Q3e).
     NETZ_PRUEF="$BASE/config/plugins/$PFOLDER/gardena.cfg"
     if [ -n "$(ini_feld "$NETZ_PRUEF" CLIENT_ID)" ] \
@@ -207,8 +208,6 @@ if [ "$RUECK_OK" = "1" ]; then
     rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" 2>/dev/null
     rm -rf "/tmp/uploads/${ARGV1}_upgrade" "/tmp/${ARGV1}_upgrade" 2>/dev/null
     echo "<OK> Update abgeschlossen."
-elif [ "$SICHER_ALT" = "1" ]; then
-    echo "<WARNING> Update abgeschlossen; eine Sicherung aus einem frueheren Vorgang wurde nicht eingespielt (siehe oben)."
 else
     echo "<WARNING> Update abgeschlossen, die Konfiguration aber nicht vollstaendig zurueckgestellt (siehe oben)."
 fi

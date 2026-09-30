@@ -23,7 +23,46 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     exit 0
 fi
 
-# Einen Wert aus dem Abschnitt [GARDENA] lesen, wie gardena_cfg_read() es tut:
+# ---------------------------------------------------------------------------
+# ZUERST die Marke "Aktualisierung laeuft" (1.2.11, I1; Entscheidung 1).
+# preinstall.sh legt ohne sie liegengebliebene Zweitschriften beiseite, und
+# postinstall.sh spielt nur mit ihr ein - ohne Altersgrenze. Sie liegt NEBEN
+# dem Datenordner; purge_installation ("rm -rf .../<ordner>/") trifft den
+# Nachbarn mit dem Punkt nicht. postinstall.sh raeumt sie per trap ab, die
+# Deinstallation ebenfalls.
+# ---------------------------------------------------------------------------
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+if date +%s > "$MARKE" 2>/dev/null; then
+    chmod 0600 "$MARKE" 2>/dev/null
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - dieses Update wird dann wie eine"
+    echo "<WARNING> Neuinstallation behandelt (Zweitschriften werden beiseitegelegt, nicht eingespielt)."
+fi
+
+# Ist eine gardena.cfg fuer das PLUGIN lesbar? (1.2.11, I4)
+# Dieselbe Pruefung wie gardena_cfg_zustand() in bin/functions.inc.php:
+# '#'-Zeilen entfernen ([[:blank:]] ist Leerzeichen oder Tabulator, wie dort),
+# parse_ini_string(..., true, INI_SCANNER_RAW), und im
+# Abschnitt [GARDENA] (oder ohne Abschnitt) mindestens ein einfacher Wert.
+# Rueckgabe 0 lesbar, 1 unlesbar oder leer. Ist php nicht aufrufbar, gilt die
+# Datei als lesbar - dann verhaelt sich das Skript wie bis 1.2.10.
+# Wortgleich in preupgrade.sh, postinstall.sh und postupgrade.sh.
+cfg_lesbar() {
+    [ -s "$1" ] || return 1
+    php -r '$r = @parse_ini_string(preg_replace("/^[[:blank:]]*#.*$/m", "", (string) @file_get_contents($argv[1])), true, INI_SCANNER_RAW); if (!is_array($r)) { exit(1); } $g = (isset($r["GARDENA"]) && is_array($r["GARDENA"])) ? $r["GARDENA"] : $r; foreach ($g as $v) { if (!is_array($v)) { exit(0); } } exit(1);' -- "$1" 2>/dev/null
+    rc=$?
+    case $rc in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Einen Wert aus dem Abschnitt [GARDENA] lesen. BERICHTIGT in 1.2.11 (K2): hier
+# stand "wie gardena_cfg_read() es tut" - das awk nimmt aber Dateien an, die
+# PHP ablehnt (etwa "[GARDENA" ohne "]"; in WSL gemessen, Durchgang 29.09.2026,
+# installer Befund 4). Ob eine Datei fuer das Plugin LESBAR ist, sagt deshalb
+# cfg_lesbar(); ini_feld() fragt nur, welcher Wert dasteht. Gelesen wird so:
 # '#'- und ';'-Zeilen zaehlen nicht, Leerraum um Name und Wert faellt weg,
 # umschliessende Anfuehrungszeichen fallen weg, ein spaeterer Eintrag gilt.
 # Wortgleich in preupgrade.sh, postinstall.sh und postupgrade.sh: ein
@@ -91,6 +130,28 @@ SICHER="$BASE/data/plugins/$PFOLDER.upgrade_sicherung"
 # -> die alte nach $SICHER.alt schieben -> die neue an ihren Platz -> die
 # alte wegwerfen. In keinem Augenblick gibt es keine Sicherung.
 NEU="$SICHER.neu"
+
+# Ein liegengebliebener Bestand stammt IMMER aus einem frueheren Vorgang
+# (1.2.11, I2; Entscheidung 1): postupgrade.sh loescht ihn, sobald er
+# eingespielt ist. Er wird weggeraeumt, BEVOR neu gesichert wird. Bis 1.2.10
+# blieb er liegen, wenn das Neusichern scheiterte, und postupgrade.sh spielte
+# den fremden Stand ueber die richtige Konfiguration (in WSL gemessen,
+# installer Befund 2, Faelle U5/U6). Er geht nach .alt (0600); die
+# Deinstallation raeumt ihn ab.
+if [ -e "$SICHER" ] || [ -L "$SICHER" ]; then
+    rm -rf "${SICHER:?}.alt" 2>/dev/null
+    if mv "$SICHER" "$SICHER.alt" 2>/dev/null; then
+        chmod 0700 "$SICHER.alt" 2>/dev/null
+        find "$SICHER.alt" -type f -exec chmod 0600 {} + 2>/dev/null
+        echo "<INFO> Eine Upgrade-Sicherung aus einem frueheren Vorgang lag noch da - beiseitegelegt: $SICHER.alt"
+    elif rm -rf "${SICHER:?}" 2>/dev/null && [ ! -e "$SICHER" ]; then
+        echo "<INFO> Eine Upgrade-Sicherung aus einem frueheren Vorgang lag noch da - entfernt."
+    else
+        echo "<WARNING> Eine Upgrade-Sicherung aus einem frueheren Vorgang liess sich weder beiseitelegen"
+        echo "<WARNING> noch entfernen: $SICHER - bitte von Hand entfernen, sonst spielt postupgrade.sh sie ein."
+    fi
+fi
+
 echo "<INFO> Sichere Konfiguration nach $SICHER"
 rm -rf "$NEU" 2>/dev/null
 mkdir -p "$NEU/config" 2>/dev/null
@@ -104,9 +165,9 @@ if [ -d "$BASE/config/plugins/$PFOLDER" ]; then
         CP_RC=$?
     fi
     # In der Datei stehen Application Secret und Zugriffstoken - die Kopie
-    # bekommt dieselben engen Rechte.
-    chmod 0640 "$NEU/config/gardena.cfg" 2>/dev/null
-    chmod 0600 "$NEU/config/gardena_token.json" 2>/dev/null
+    # bekommt dieselben engen Rechte: 0600 (1.2.11, I5/C8).
+    chmod 0600 "$NEU/config/gardena.cfg" "$NEU/config/gardena_token.json" \
+               "$NEU/config/gardena_status.json" "$NEU/config/devices_cache.json" 2>/dev/null
     # Die Wirkung pruefen, nicht den Rueckgabewert allein (CLAUDE.md, 2):
     # jede Datei der Konfiguration byteweise in der neuen Sicherung.
     ABWEICHEND=$( { cd "$BASE/config/plugins/$PFOLDER" && find . -type f | while IFS= read -r f; do
@@ -123,35 +184,28 @@ else
 fi
 
 if [ "$SICHER_OK" = "1" ]; then
-    # Der Zeitpunkt DIESES Vorgangs gehoert in die Sicherung: postupgrade.sh
-    # spielt nur eine Sicherung aus diesem Update zurueck (Regeln/06,
-    # Entscheidung vom 17.09.2026). Bis 1.2.9 trug sie keinen, und eine
-    # liegengebliebene Sicherung aus einem frueheren Update wurde eingespielt,
-    # sobald das Neusichern scheiterte (in WSL gemessen,
-    # Pruefung-GardenaSmartSystem-1.2.10, Faelle P2-P5). Ohne lesbare Uhr kein
-    # Zeitpunkt - dann spielt postupgrade.sh sie nicht ein (geschlossen).
+    # Der Zeitpunkt dieses Vorgangs steht zur Auskunft in der Sicherung. Seit
+    # 1.2.11 gilt er nicht mehr als Altersgrenze (I3, Entscheidung 1): ob eine
+    # Sicherung zu diesem Update gehoert, entscheidet allein, dass ein
+    # frueherer Bestand oben weggeraeumt wurde.
     JETZT=$(date +%s 2>/dev/null)
     case "$JETZT" in
-        ''|*[!0-9]*)
-            echo "<WARNING> Die Uhr ist nicht lesbar - die Sicherung bekommt keinen Zeitpunkt,"
-            echo "<WARNING> und postupgrade.sh spielt sie deshalb nicht zurueck." ;;
+        ''|*[!0-9]*) ;;
         *) echo "$JETZT" > "$NEU/zeitpunkt" ;;
     esac
-    rm -rf "$SICHER.alt" 2>/dev/null
-    if [ -d "$SICHER" ]; then mv "$SICHER" "$SICHER.alt" 2>/dev/null; fi
     if mv "$NEU" "$SICHER" 2>/dev/null; then
-        rm -rf "$SICHER.alt" 2>/dev/null
         echo "<OK> Konfiguration gesichert."
     else
-        if [ -d "$SICHER.alt" ]; then mv "$SICHER.alt" "$SICHER" 2>/dev/null; fi
         rm -rf "$NEU" 2>/dev/null
-        echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen."
-        echo "<WARNING> Platz und Rechte in $BASE/data/plugins pruefen."
+        echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen (Platz und Rechte in"
+        echo "<WARNING> $BASE/data/plugins pruefen). Aus einer Upgrade-Sicherung wird bei diesem Update nichts"
+        echo "<WARNING> eingespielt; den Rueckweg bildet die Zweitschrift neben dem Konfigordner."
     fi
 else
     rm -rf "$NEU" 2>/dev/null
-    if [ -d "$SICHER" ]; then
-        echo "<WARNING> Die bisherige Sicherung unter $SICHER bleibt unangetastet."
+    if [ -d "$BASE/config/plugins/$PFOLDER" ]; then
+        echo "<WARNING> Aus einer Upgrade-Sicherung wird bei diesem Update nichts eingespielt - auch keine"
+        echo "<WARNING> aeltere (I2). Den Rueckweg bildet die Zweitschrift neben dem Konfigordner."
     fi
 fi
 
@@ -194,6 +248,13 @@ ZWEIT_SCHREIBEN=1
 ZWEIT_GRUND=
 if [ ! -f "$NETZ_CFG/gardena.cfg" ]; then
     ZWEIT_SCHREIBEN=0
+elif ! cfg_lesbar "$NETZ_CFG/gardena.cfg"; then
+    # Eine Datei, die das Plugin nicht lesen kann, ersetzt nie die Zweitschrift
+    # (1.2.11, I4). Bis 1.2.10 fand ini_feld() in einer abgeschnittenen Datei
+    # noch CLIENT_ID, und die heile Zweitschrift wurde ueberschrieben -
+    # danach war das Aktionstoken nirgends mehr (installer Befund 4, Fall U3).
+    ZWEIT_SCHREIBEN=0
+    ZWEIT_GRUND=unlesbar
 elif [ -z "$N_TOK" ] && [ -z "$N_CID" ] && [ -z "$N_SEC" ]; then
     ZWEIT_SCHREIBEN=0
     ZWEIT_GRUND=nichts_wertvolles
@@ -216,14 +277,18 @@ fi
 # Token weg sind.
 if [ "$ZWEIT_SCHREIBEN" = "1" ]; then
     if cp -p "$NETZ_CFG/gardena.cfg" "$NETZ_ZWEIT" 2>/dev/null; then
-        # 0640 wie das Original (gardena_cfg_write, postinstall.sh) - bis 1.2.7
-        # 0600, und Regeln/05 verlangt dieselben Rechte an der Zweitschrift.
-        chmod 0640 "$NETZ_ZWEIT" 2>/dev/null
+        # 0600 wie das Original (1.2.11, I5/C8; Regeln/05: dieselben Rechte an
+        # der Zweitschrift). Die 0640 bis 1.2.10 hatte keine gemessene
+        # Begruendung - der Webserver laeuft als loxberry (mod_php).
+        chmod 0600 "$NETZ_ZWEIT" 2>/dev/null
         echo "<INFO> Zweitschrift der Einstellungen angelegt."
     else
         echo "<WARNING> Die Zweitschrift der Einstellungen liess sich NICHT anlegen."
         echo "<WARNING> Platz und Rechte in $NETZ_BASE/config/plugins pruefen."
     fi
+elif [ "$ZWEIT_GRUND" = "unlesbar" ]; then
+    echo "<WARNING> Die gardena.cfg laesst sich nicht lesen (Zerleger des Plugins) - die Zweitschrift"
+    echo "<WARNING> der Einstellungen bleibt unveraendert und ist nach dem Update der Rueckweg."
 elif [ "$ZWEIT_GRUND" = "fremdes_token" ]; then
     echo "<INFO> Die Zweitschrift der Einstellungen bleibt unveraendert: sie traegt"
     echo "<INFO> Zugangsdaten und ein anderes Zugriffstoken, die jetzige Datei keine."
@@ -278,14 +343,15 @@ netz_json_zweitschrift() {   # $1 Dateiname, $2 Rechte
         echo "<WARNING> Die Zweitschrift von $1 liess sich NICHT anlegen."
     fi
 }
+# Alle Zweitschriften 0600 (1.2.11, I5/C8).
 netz_json_zweitschrift gardena_token.json  0600
-netz_json_zweitschrift devices_cache.json  0640
+netz_json_zweitschrift devices_cache.json  0600
 # gardena_status.json gehoert MIT in die Zweitschrift.
 # Bis 1.2.5 fehlte sie: der Sammelweg (cp -a nach $SICHER) deckt sie ab, die
 # Zweitschrift kannte nur drei Dateien. Faellt der Sammelweg aus - genau der
 # Fall, fuer den es die Zweitschrift gibt -, gehen 'letzter_erfolg' und
 # 'sperre_bis' (die HTTP-429-Wartezeit) verloren; das Lebenszeichen meldet
 # danach zeitstempel=0, in Loxone also "noch nie erfolgreich".
-netz_json_zweitschrift gardena_status.json 0640
+netz_json_zweitschrift gardena_status.json 0600
 
 exit 0

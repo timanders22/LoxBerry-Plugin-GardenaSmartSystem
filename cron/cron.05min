@@ -19,7 +19,37 @@
 PHPBIN="$(command -v php 2>/dev/null)"
 [ -n "$PHPBIN" ] || PHPBIN=/usr/bin/php
 
+# ALS ROOT VON HAND GESTARTET? (1.2.11, I6; Regeln/06)
+# LoxBerry ruft diese Datei als loxberry auf (/etc/cron.d/lbdefaults). Ein
+# Handaufruf als root legte bis 1.2.10 Sperrdatei, gardena.log, Zustand und
+# Geraete-Abbild root-eigen an; danach rief der Takt als loxberry bis zum
+# naechsten Neustart nichts mehr ab und meldete nichts (in WSL gemessen,
+# Durchgang 29.09.2026, installer Befund 6). Als root wird deshalb an
+# loxberry abgegeben; gibt es den Benutzer nicht, endet der Aufruf mit
+# Rueckgabewert 1, und nichts wird als root angelegt.
+if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    if id loxberry >/dev/null 2>&1; then
+        exec su -s /bin/sh loxberry -c "$0"
+    fi
+    echo "Gardena: als root gestartet, einen Benutzer loxberry gibt es nicht - der Abruf laeuft nicht." >&2
+    exit 1
+fi
+
 LOGDIR="REPLACELBPLOGDIR"
+# DIE FEHLER GEHEN NACH cron.err (1.2.11, I7; Hausstandard Regeln/06).
+# Bis 1.2.10 standen sie in gardena_cron.log. log_maint.pl kuerzt *.log unter
+# log/plugins stuendlich ueber alle Plugins auf die 24 neuesten Dateien - die
+# Fehlerspur verschwand am Geraet binnen einer Stunde (installer Befund 7).
+# cron.err zaehlt dort nicht mit. Die Datei wird angelegt und bei jedem Lauf
+# beruehrt (ein Anhaengen ohne Inhalt frischt die Aenderungszeit nicht auf,
+# Abfahrts-Assistent 1.6.10) und ueber 256 kB auf die letzten 300 Zeilen
+# gekappt (Bauform Docker NG 1.3.7).
+ERR="$LOGDIR/cron.err"
+mkdir -p "$LOGDIR" 2>/dev/null
+if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+touch "$ERR" 2>/dev/null
 melde() {
     # Nur melden, wenn wirklich etwas schiefging - im Normalfall schweigt
     # der Cron. Ohne diese Zeilen passierte bis 1.2.5 GAR NICHTS und niemand
@@ -27,8 +57,8 @@ melde() {
     # else-Zweig fehlte, und der Lauf endete mit 0. Die Ausfallerkennung
     # hilft hier nicht - sie wird von dem Skript geschrieben, das gar nicht
     # erst startet.
-    if [ -d "$LOGDIR" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERR $1" >> "$LOGDIR/gardena_cron.log"
+    if [ -w "$ERR" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERR $1" >> "$ERR"
     else
         logger -t gardenasmartsystem "$1" 2>/dev/null
     fi

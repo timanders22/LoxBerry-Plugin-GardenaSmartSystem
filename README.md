@@ -1,5 +1,66 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.11
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an einer Wolken-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht am Gerät
+und nicht an der echten Husqvarna-Wolke. Befunde mit Datei:Zeile:
+`Pruefung-Durchgang-2026-09-29/GardenaSmartSystem_BEFUNDE_UND_VERBESSERUNGEN.md`.
+Die Abschnitte zu älteren Fassungen weiter unten beschreiben den damaligen
+Stand (etwa die Rechte 0640 oder die Grenze bei Mehrventil-Geräten).
+
+**Befehle aus Loxone**
+
+* **Ein Ventil läuft höchstens 3 Stunden je Befehl.** Bisher ging jede Dauer
+  durch — 9 999 960 s (115 Tage) kamen bei der Wolke an. Mäher und Steckdose
+  haben eigene Grenzen (24 h). Längeres wird mit 400 abgewiesen.
+* **„Plugin aktiv: Nein“ sperrt auch die Befehle** (409). Bisher ruhte nur der
+  Abruf.
+* **Geräte mit mehreren Ventilen** (etwa eine *smart Irrigation Control*):
+  Befehle werden mit 409 abgewiesen, bis an einem echten Gerät gemessen ist,
+  wie die Wolke die Ventile liefert. Bisher schaltete ein Befehl das zuletzt
+  gelieferte Ventil.
+* Die Befehlsbremse lässt nichts mehr durch, wenn ihr Merker nicht lesbar ist
+  (503 statt aller Befehle).
+* Der Sofortabruf ruft jetzt wirklich ab; bisher meldete er „gestartet“ und tat
+  bei gestrecktem Takt nichts.
+* Eine Drosselung der Wolke (429) bleibt stehen; bisher löschte der laufende
+  Abruf sie wieder, und das Plugin fragte sofort erneut.
+* Die Steckdose hat in Tabelle und Vorlage jetzt auch einen Ausschaltbefehl.
+
+**MQTT**
+
+* Ein Gerät, das die Wolke nicht mehr führt, und ein Wert ohne Aussage gehen
+  einmal als `-` hinaus, nie mehr als leere Nachricht.
+* Nach einem Präfixwechsel und nach dem Einschalten von MQTT gehen sofort alle
+  Werte hinaus (bisher bis zu 30 Minuten nichts).
+* Abschalten und Deinstallation räumen alle zurückbehaltenen Themen ab, auch
+  unter früheren Präfixen.
+* 5 ms Pause zwischen den Datagrammen.
+
+**Oberfläche, Sicherung, Dateien**
+
+* Nach jedem Absenden leitet die Seite um; F5 wiederholt nichts mehr.
+* Eingaben werden abgewiesen und benannt statt still zurechtgebogen. **Wer
+  `INTERVALL=7` stehen hat, trägt einmal 5 oder 10 ein** — nur Vielfache von 5
+  wirken.
+* Ein leeres Token in einer Sicherung heißt „keins gesichert“: das geltende
+  bleibt. Ein Tokenwechsel wird gemeldet.
+* Konfiguration, Zweitschrift und Status haben die Rechte **0600** (bisher
+  0640); dort stehen Secret und Token.
+* Die Titel der Steuerbefehle tragen jetzt Umlaute bzw. unter Englisch
+  englische Titel. **Ein erneuter Import legt neue Bausteine an** und
+  überschreibt nichts.
+
+**Installation**
+
+* Eine Neuinstallation spielt Zugangsdaten und Token einer früheren
+  Installation nicht mehr ein (neu: `preinstall.sh`, Reste nach `.alt`).
+* Eine beschädigte Konfiguration überschreibt vor dem Update nicht mehr die
+  heile Zweitschrift.
+* Ein Lauf als root hinterlässt keine Sperre mehr, die den Abruf bis zum
+  nächsten Neustart stilllegt; Fehler stehen in `cron.err`.
+
 ## Neu in 1.2.10
 
 Diese Fassung behebt Befunde einer Durchsicht vom 25.09.2026. Gemessen in WSL
