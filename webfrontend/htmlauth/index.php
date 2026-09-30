@@ -239,7 +239,7 @@ function gardena_endpunkt_probe($ordner, $token)
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
         $r = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         return array($r === false ? 0 : $code, (string) $r);
     }
     if (!ini_get('allow_url_fopen')) { return array(0, ''); }

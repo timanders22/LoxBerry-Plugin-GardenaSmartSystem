@@ -109,7 +109,7 @@ class gardena
             $result = curl_exec($ch);
             $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err = ($result === false) ? ('cURL-Fehler: ' . curl_error($ch)) : '';
-            curl_close($ch);
+            if (PHP_VERSION_ID < 80000) { curl_close($ch); }
             $this->last_http = $http;
             if ($http === 429) { $this->retry_after = $this->retryAfterLesen($kopf); }
             return array($result, $http, $err);
