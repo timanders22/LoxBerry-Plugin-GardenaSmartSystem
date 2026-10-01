@@ -1,5 +1,25 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.13
+
+Welle 4 und Abschnitt D der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 10, 16, 19 und 25).
+Gemessen an einer Gardena-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht an der echten Wolke.
+
+* **Schnittstelle für die Bewässerung** (ab Werk aus): `POST action=ventil` mit
+  `befehl=oeffnen` (Pflichtfeld `minuten`, höchstens die eingestellte
+  Höchstdauer, nie über 3 h), `schliessen` oder `zustand`. Nur lokal
+  (127.0.0.1), nur per POST, mit eigenem Ventil-Token. `GESENDET=1` heißt „von
+  der Wolke angenommen“, nicht „ausgeführt“. Mehrventil-Geräte bleiben gesperrt.
+* **Befehlsbremse:** Derselbe Ventilbefehl mit derselben Dauer innerhalb von 60 s
+  geht nur einmal hinaus (`UNVERAENDERT=1`); gilt gemeinsam für Loxone und die
+  Schnittstelle. Unterdrückte Befehle zählen nicht gegen die 30 je Stunde.
+* **Geräteliste roh anzeigen** im Reiter Test (Kennungen durch Platzhalter
+  ersetzt, höchstens einmal je Minute) – zum Messen von Mehrventil-Geräten.
+* **Abrufabstand als Auswahl** 5/10/15/30/60 Minuten; ein gespeicherter Altwert
+  bleibt wählbar.
+* **Nach einer Beanstandung wird nichts gespeichert;** „Einstellungen sichern“
+  liefert die Datei immer, bei auffälligen Werten mit gelber Warnung.
+
 ## Neu in 1.2.12
 
 Sammelnachzug vom 30.09.2026, sonst keine Änderung: `curl_close()` wird nur
@@ -713,6 +733,17 @@ dem Zerlegen nur ganze Zeilen, deren erstes sichtbares Zeichen `#` ist; ein
   - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
 - Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list&token=…`
   (rein lesend, aber **mit** Token — seit 1.1.0 verlangen es alle Endpunkte)
+- **Gleicher Ventilbefehl nur einmal:** Derselbe Befehl mit derselben Dauer an dasselbe
+  Ventil (`type=VALVE_CONTROL`) innerhalb von 60 Sekunden geht nicht erneut an die Wolke.
+  Der Endpunkt antwortet dann mit HTTP 200 und `UNVERAENDERT=1`, und der Befehl zählt
+  nicht gegen die 30 Befehle je Stunde. Ein anderer Befehl geht sofort hinaus. Mäher und
+  Steckdose sind nicht betroffen. Lässt sich der Merker im Protokollordner nicht führen,
+  werden Ventilbefehle mit HTTP 503 abgewiesen.
+- **Geräteliste roh** (Reiter *Test*): fragt die Wolke einmal (höchstens einmal je Minute,
+  nie während einer Abrufsperre) und zeigt ihre Antwort, wie sie kommt — gekürzt auf
+  20 000 Zeichen, jede Kennung durch einen Platzhalter ersetzt (der Teil hinter dem
+  Doppelpunkt bleibt), Seriennummern geschwärzt, ohne Key, Secret und Tokens. Damit lässt
+  sich an einer echten Anlage messen, wie die Wolke ein Gerät mit mehreren Ventilen liefert.
 
 ### Zugriffstoken
 
@@ -725,11 +756,85 @@ angezeigt; die fertigen Loxone-Adressen enthalten es bereits. Ist noch keins hin
 werden Schaltbefehle abgewiesen (fail closed). Über „Neues Token erzeugen“ lässt es sich
 jederzeit wechseln – die Virtuellen Ausgänge in Loxone müssen dann angepasst werden.
 
+## Schnittstelle für die Bewässerung (Ventile direkt, ab Werk aus)
+
+Das Plugin *Bewässerung* kann die GARDENA-Ventile direkt öffnen, schließen und ihren
+Zustand lesen, ohne den Umweg über Loxone. Die Schnittstelle ist **ab Werk aus**; eine
+eingerichtete Anlage ändert sich durch das Update nicht. Eingeschaltet wird sie im Reiter
+*Einstellungen*, Abschnitt „Schnittstelle für die Bewässerung“. Dort steht auch die
+Höchstdauer je Öffnen (1–180 Minuten, ab Werk 60), und dort entsteht das Ventil-Token.
+
+**Aufruf** — nur per POST und nur vom LoxBerry selbst (`127.0.0.1`/`::1`):
+
+```
+POST http://127.0.0.1/plugins/gardenasmartsystem/index.php
+     action=ventil&token=<Ventil-Token>&ventil=<Gerätename>&befehl=oeffnen&minuten=10
+     action=ventil&token=<Ventil-Token>&ventil=<Gerätename>&befehl=schliessen
+     action=ventil&token=<Ventil-Token>&ventil=<Gerätename>&befehl=zustand
+```
+
+- `ventil` ist der Gerätename aus der GARDENA-App (Groß-/Kleinschreibung egal) oder die
+  Gerätekennung, wie bei `?action=command`.
+- `minuten` gehört nur zu `oeffnen` und ist dort Pflicht: 1 bis zur eingestellten
+  Höchstdauer. Ein längerer Wert wird mit HTTP 400 abgewiesen, nicht gekürzt.
+- `quelle` (freiwillig, `A-Z a-z 0-9 _ -`, höchstens 40 Zeichen) erscheint nur im Protokoll.
+- Andere Felder werden mit HTTP 400 abgewiesen.
+
+**Antwort:** eine Zeile `GARDENA_VENTIL;OK=1;…` bzw. `GARDENA_VENTIL;OK=0;GRUND=…` und ein
+passender HTTP-Code.
+
+| Fall | HTTP | Antwort |
+|---|---|---|
+| geöffnet | 200 | `OK=1;BEFEHL=oeffnen;MINUTEN=10;GESENDET=1;BIS=<Unix-Zeit>` |
+| geschlossen | 200 | `OK=1;BEFEHL=schliessen;GESENDET=1` |
+| derselbe Befehl binnen 60 s | 200 | `OK=1;BEFEHL=…;UNVERAENDERT=1;SEIT_S=<s>` (nichts gesendet) |
+| Zustand | 200 | `OK=1;BEFEHL=zustand;OFFEN=0/1/-;AKTIVITAET=…;ALTER=<s>;LETZTER_BEFEHL=oeffnen/schliessen/laeuft/-;LETZTE_MINUTEN=…;LETZTER_BEFEHL_VOR_S=<s>` |
+| Zustand veraltet (älter als 3× Takt) | 200 | wie oben, aber `OK=0;GRUND=VERALTET` |
+| `?action=ventil` in der Adresse | 405 | `GRUND=NUR_POST` |
+| nicht vom LoxBerry selbst | 403 | `GRUND=NUR_LOKAL` |
+| Schnittstelle aus | 409 | `GRUND=SCHNITTSTELLE_AUS` |
+| kein / falsches Ventil-Token | 403 | `GRUND=KEIN_TOKEN` / `GRUND=TOKEN` |
+| „Plugin aktiv: Nein“ / keine Zugangsdaten (nur oeffnen/schliessen) | 409 | `GRUND=PLUGIN_AUS` / `GRUND=KEINE_ZUGANGSDATEN` |
+| Befehl, Feld, Länge, `minuten` falsch | 400 | `GRUND=BEFEHL`, `FELD`, `ZU_LANG`, `UNBEKANNTES_FELD`, `VENTIL_FEHLT`, `MINUTEN;ERLAUBT=1..<n>`, `MINUTEN_UNNOETIG`, `QUELLE` |
+| noch kein Geräte-Abbild | 503 | `GRUND=KEIN_ABBILD` |
+| Gerät unbekannt / ohne Ventil | 404 | `GRUND=VENTIL_UNBEKANNT` / `GRUND=KEIN_VENTIL` |
+| Gerät mit mehreren Ventilen | 409 | `GRUND=MEHRVENTIL;ANZAHL=<n>` |
+| Abrufsperre nach HTTP 429 | 503 | `GRUND=ABRUFSPERRE;BIS=<hh:mm>` |
+| mehr als 30 Befehle je Stunde | 429 | `GRUND=BREMSE;GRENZE=30` |
+| Merker der Bremse nicht nutzbar | 503 | `GRUND=BREMSE_MERKER` |
+| Wolke lehnt ab | 502 | `GRUND=ANMELDUNG`, `WOLKE` oder `KONTINGENT;HTTP=<Code>` |
+
+`GESENDET=1` heißt: die Wolke hat den Befehl **angenommen** (HTTP 202), nicht ausgeführt.
+Den Zustand liefert `zustand` aus dem letzten Abruf (Takt), nicht live. Ein Befehl, den
+die Bewässerung schickt, und derselbe Befehl aus Loxone binnen 60 Sekunden gehen nur
+einmal hinaus (gemeinsamer Merker).
+
+**Ventil-Token:** ein eigenes Geheimnis, getrennt vom Token der Loxone-Adressen, und wie ein
+Kennwort zu behandeln: es steht im Rumpf des POST, nie in einer Adresse, und nie im
+Protokoll. Es entsteht beim ersten Einschalten der Schnittstelle (oder per Knopf „Neues
+Ventil-Token erzeugen“) und wird in die Einstellungen der Bewässerung eingetragen. Es
+steht in „Einstellungen sichern“; eine Sicherung ohne Ventil-Token behält das geltende.
+
+**Reiter Test:** Die Zeile „Schnittstelle für die Bewässerung“ sagt, ob sie an ist, wie
+viele Ventile im Abbild stehen und wann sie zuletzt angemeldet gerufen wurde.
+
 ## Hinweise
 
 - Husqvarna begrenzt die API-Nutzung (Rate Limit); wie hoch die Grenze liegt,
   ist in diesem Plugin nicht gemessen. Nach HTTP 429 wartet das Plugin die
   Sperre ab.
+- Der Abrufabstand ist eine Auswahl: 5, 10, 15, 30 oder 60 Minuten. Ein früher
+  gespeicherter anderer Wert (etwa 20 aus einer Sicherung) bleibt wählbar und ist als
+  solcher gekennzeichnet.
+- Eine ungültige Eingabe in einem Formular wird beanstandet, und es wird **nichts**
+  gespeichert — auch nicht die übrigen Felder. Die eingetippten Werte stehen danach
+  wieder im Formular, das beanstandete Feld ist rot umrandet. Still bleiben nur
+  Leerzeichen am Rand.
+- „Einstellungen sichern“ liefert die Datei immer vollständig. Würde ein gespeicherter
+  Wert das Zurückspielen nicht bestehen, steht am Knopf eine gelbe Warnung und in der
+  Datei die Kopfzeile `_warnung` (nur die Namen, nie die Werte). Eine Sicherung aus einer
+  älteren Fassung ohne die Schlüssel der Bewässerungs-Schnittstelle wird angenommen; die
+  laufenden Werte bleiben.
 - Protokoll: Reiter *Logdateien*, Datei `log/plugins/gardenasmartsystem/gardena.log`
   (RAM-Scheibe — ein Neustart löscht sie).
 

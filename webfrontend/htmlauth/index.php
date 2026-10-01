@@ -577,6 +577,31 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
         }
     }
 
+    /* ---- Schnittstelle fuer die Bewaesserung (1.2.13, Gardena-1; ab Werk aus) ----
+     * Gardena ist hier der Anbieter: die Zeile sagt, ob die Schnittstelle an
+     * ist, ob sie ein Token hat, wie viele Ventile im Abbild stehen und wann
+     * sie zuletzt angemeldet gerufen wurde (Merker ohne Token). */
+    if ((string) $cfg['VENTIL_SCHNITTSTELLE'] !== '1') {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_VENTIL'), gardena_t('TEST.A_VENTIL_AUS'));
+    } elseif ((string) $cfg['VENTIL_TOKEN'] === '') {
+        $z[] = gardena_pruefzeile(-1, gardena_t('TEST.F_VENTIL'), gardena_t('TEST.A_VENTIL_KEIN_TOKEN'));
+    } elseif (gardena_ventil_max_min($cfg) < 1) {
+        $z[] = gardena_pruefzeile(-1, gardena_t('TEST.F_VENTIL'), gardena_t('TEST.A_VENTIL_MAX_KAPUTT'));
+    } else {
+        $v_zahl = gardena_ventile_zahl($cache);
+        $v_l = gardena_ventil_letzter_lesen();
+        $v_text = ($v_l === null) ? gardena_t('TEST.A_VENTIL_NIE')
+            : sprintf(gardena_t('TEST.A_VENTIL_LETZTER'), gardena_alter_text(max(0, time() - $v_l['t'])),
+                      $v_l['befehl'], $v_l['code']);
+        if ($v_zahl < 1) {
+            $z[] = gardena_pruefzeile(empty($cache) ? 0 : -1, gardena_t('TEST.F_VENTIL'),
+                gardena_t('TEST.A_VENTIL_KEINE') . ' ' . $v_text);
+        } else {
+            $z[] = gardena_pruefzeile(1, gardena_t('TEST.F_VENTIL'),
+                sprintf(gardena_t('TEST.A_VENTIL_AN'), $v_zahl, gardena_ventil_max_min($cfg)) . ' ' . $v_text);
+        }
+    }
+
     /* ---- Ist jede benutzte CSS-Klasse auch definiert? ----
      * Die Klasse sm-warnung stand seit jeher im HTML und in keiner Regel des
      * Stilblocks - der Warnhinweis an der Sicherungsdatei war dadurch
@@ -845,6 +870,71 @@ $gtest = '';
 $gtokenmsg = '';
 $gfehler = array();
 
+/* ==================================================================
+ * Eingaben nach einer Beanstandung (1.2.13, X-2; Regeln/04)
+ *
+ * Seit der Umleitung nach jedem POST (1.2.11) verlor ein abgewiesenes
+ * Formular die Eingaben: der GET danach zeigte die gespeicherten Werte. Jetzt
+ * reisen die eingetippten Werte mit der Einmalmeldung - nur fuer das EINE
+ * beanstandete Formular, nur dessen Felder, nie ein Geheimnis (das Secret und
+ * die Tokens bleiben draussen). Das beanstandete Feld traegt sm-beanstandet
+ * und aria-invalid. Nach einem erfolgreichen Speichern zeigt der GET die
+ * gespeicherten Werte.
+ * ================================================================== */
+$geingaben = array();
+$geingaben_form = '';
+$gmarkiert = array();
+$gneu_form = '';
+$gneu_mark = array();
+$groh = '';
+
+/** Wert fuer ein Feld: nach einer Beanstandung die Eingabe, sonst der gespeicherte. */
+function gfeld($form, $feld, $gespeichert)
+{
+    global $geingaben, $geingaben_form;
+    if ($geingaben_form === $form && isset($geingaben[$feld]) && is_string($geingaben[$feld])) {
+        return $geingaben[$feld];
+    }
+    return (string) $gespeichert;
+}
+
+/** Markierung eines beanstandeten Feldes, sonst leer. */
+function gmark($form, $feld)
+{
+    global $gmarkiert, $geingaben_form;
+    return ($geingaben_form === $form && in_array($feld, $gmarkiert, true))
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
+}
+
+/** Die Felder eines Formulars, wie sie getippt wurden - ohne Geheimnisse. */
+function gardena_eingaben_sammeln($form)
+{
+    $felder = array(
+        'save' => array('enabled', 'client_id', 'udp_enabled', 'miniserver', 'udpport', 'intervall',
+                        'messer_intervall', 'secret_loeschen'),
+        'mqtt' => array('mqtt_enabled', 'mqtt_topic'),
+        'ventil' => array('ventil_schnittstelle', 'ventil_max_min'),
+    );
+    if (!isset($felder[$form])) { return array(); }
+    $aus = array();
+    foreach ($felder[$form] as $f) {
+        if (isset($_POST[$f]) && is_string($_POST[$f])) { $aus[$f] = substr($_POST[$f], 0, 512); }
+    }
+    if ($form === 'save') {
+        $l = array();
+        if (isset($_POST['ausgenommen']) && is_array($_POST['ausgenommen'])) {
+            foreach ($_POST['ausgenommen'] as $v) {
+                if (is_string($v)) { $l[] = substr($v, 0, 512); }
+            }
+        }
+        $aus['ausgenommen'] = $l;
+    }
+    return $aus;
+}
+
+/** Die Auswahl des Abrufabstands in Minuten (1.2.13, b1). */
+function gardena_takt_auswahl() { return array('5', '10', '15', '30', '60'); }
+
 $gpost = ($_SERVER['REQUEST_METHOD'] === 'POST');
 
 /* ==================================================================
@@ -899,6 +989,14 @@ if (!$gpost) {
         }
         if (isset($gm['tokenmsg']) && is_string($gm['tokenmsg'])) { $gtokenmsg = $gm['tokenmsg']; }
         if (isset($gm['test']) && is_string($gm['test'])) { $gtest = $gm['test']; }
+        if (isset($gm['eingaben']['form'], $gm['eingaben']['felder']) && is_string($gm['eingaben']['form'])
+            && is_array($gm['eingaben']['felder'])) {
+            $geingaben_form = $gm['eingaben']['form'];
+            $geingaben = $gm['eingaben']['felder'];
+            $gmarkiert = (isset($gm['eingaben']['markiert']) && is_array($gm['eingaben']['markiert']))
+                ? $gm['eingaben']['markiert'] : array();
+        }
+        if (isset($gm['roh']) && is_string($gm['roh'])) { $groh = $gm['roh']; }
     }
     unset($gm, $gmf);
 }
@@ -1013,6 +1111,141 @@ if ($gpost && isset($_POST['newtoken'])) {
     $gneu = gtoken_erzeugen($gconfigfile, $gtokenmsg);
     if ($gneu !== '') { $gtokenmsg = gardena_t('TOKEN.NEU_OK'); }
     $g_tab = 'tab-settings';
+}
+
+/* ---------- Schnittstelle fuer die Bewaesserung (1.2.13, Gardena-1) ----------
+ *
+ * Eigenes Formular mit eigenem Handler: Schalter (ab Werk aus) und
+ * Hoechstdauer je Oeffnen. Beim Einschalten ohne Ventil-Token wird eines
+ * erzeugt - wie beim Loxone-Token erst, wenn wirklich gespeichert wird. Das
+ * Ventil-Token ist ein eigenes Geheimnis und nie gleich dem Loxone-Token.
+ */
+function gardena_ventil_token_neu($loxone_token)
+{
+    for ($i = 0; $i < 3; $i++) {
+        try {
+            $t = gardena_token_new();
+        } catch (RuntimeException $e) {
+            return '';
+        }
+        if ($t !== (string) $loxone_token) { return $t; }
+    }
+    return '';
+}
+
+if ($gpost && isset($_POST['ventil_save'])) {
+    $gneu_form = 'ventil';
+    $g_tab = 'tab-settings';
+    $gv_alt = gardena_cfg_read($gconfigfile);
+    $gv_neu = array();
+    foreach (array('VENTIL_SCHNITTSTELLE' => array('ventil_schnittstelle', 'EINST.VENTIL_SCHALTER'),
+                   'VENTIL_MAX_MIN' => array('ventil_max_min', 'EINST.VENTIL_MAX')) as $gk => $gdef) {
+        $gw = isset($_POST[$gdef[0]]) ? $_POST[$gdef[0]] : '';
+        $gw = is_string($gw) ? trim($gw) : null;
+        $ggrund = !gardena_wert_taugt($gw) ? gardena_t('EINST.PRUEF_FORM') : gardena_wert_pruefen($gk, (string) $gw);
+        if ($ggrund !== '') {
+            $gfehler[] = gardena_t($gdef[1]) . ': ' . $ggrund;
+            $gneu_mark[] = $gdef[0];
+        } else {
+            $gv_neu[$gk] = (string) $gw;
+        }
+    }
+    if (!$gfehler) {
+        $gv_tok_neu = false;
+        if ($gv_neu['VENTIL_SCHNITTSTELLE'] === '1' && (string) $gv_alt['VENTIL_TOKEN'] === '') {
+            $gv_t = gardena_ventil_token_neu($gv_alt['TOKEN']);
+            if ($gv_t === '') {
+                $gfehler[] = gardena_t('TOKEN.KEIN_ZUFALL');
+            } else {
+                $gv_neu['VENTIL_TOKEN'] = $gv_t;
+                $gv_tok_neu = true;
+            }
+        }
+        if (!$gfehler) {
+            if (gardena_cfg_write($gconfigfile, $gv_neu)) {
+                $gsaved = gardena_t('EINST.VENTIL_GESPEICHERT')
+                    . ($gv_tok_neu ? ' ' . gardena_t('EINST.VENTIL_TOKEN_ERZEUGT') : '');
+                gardena_log('INF', 'Schnittstelle fuer die Bewaesserung gespeichert: '
+                    . ($gv_neu['VENTIL_SCHNITTSTELLE'] === '1' ? 'an' : 'aus') . ', Hoechstdauer '
+                    . $gv_neu['VENTIL_MAX_MIN'] . ' min' . ($gv_tok_neu ? ', Ventil-Token erzeugt' : '') . '.');
+            } else {
+                $gfehler[] = sprintf(gardena_t('EINST.SCHREIBFEHLER'), $gconfigfile);
+            }
+        }
+    }
+}
+
+if ($gpost && isset($_POST['ventil_token_neu'])) {
+    $g_tab = 'tab-settings';
+    $gv_alt = gardena_cfg_read($gconfigfile);
+    $gv_t = gardena_ventil_token_neu($gv_alt['TOKEN']);
+    if ($gv_t === '') {
+        $gfehler[] = gardena_t('TOKEN.KEIN_ZUFALL');
+    } elseif (gardena_cfg_write($gconfigfile, array('VENTIL_TOKEN' => $gv_t))) {
+        $gsaved = gardena_t('EINST.VENTIL_TOKEN_NEU_OK');
+        gardena_log('INF', 'Neues Ventil-Token erzeugt (Oberflaeche) - die Bewaesserung braucht es neu.');
+    } else {
+        $gfehler[] = sprintf(gardena_t('EINST.SCHREIBFEHLER'), $gconfigfile);
+    }
+}
+
+/* ---------- Geraeteliste roh anzeigen (1.2.13, Gardena-a1) ----------
+ *
+ * Fragt die Wolke JETZT (Standortliste und je Standort die Geraete - zwei
+ * Abrufe wie ein Lauf) und zeigt die Antwort gekuerzt und ohne Kennungen des
+ * Kontos (gardena_roh_aufbereiten()). Damit laesst sich an einer echten
+ * Anlage messen, wie die Wolke ein Geraet mit mehreren Ventilen liefert
+ * (Entscheidung 10). Hoechstens einmal je Minute, nie waehrend einer
+ * Abrufsperre; die Antwort reist mit der Einmalmeldung (0600, 120 s).
+ */
+if ($gpost && isset($_POST['roh_anzeigen'])) {
+    $g_tab = 'tab-test';
+    $gr_c = gardena_cfg_read($gconfigfile);
+    $gr_geheim = array((string) $gr_c['CLIENT_ID'], (string) $gr_c['CLIENT_SECRET'],
+                       (string) $gr_c['TOKEN'], (string) $gr_c['VENTIL_TOKEN']);
+    $gr_merker = gardena_log_datei('gardena_roh.merker');
+    if ($gr_merker !== '') { clearstatcache(true, $gr_merker); }
+    $gr_seit = ($gr_merker !== '' && is_file($gr_merker)) ? time() - (int) filemtime($gr_merker) : -1;
+    $gr_sperre = gardena_sperre_bis($lbpconfigdir);
+    if ((string) $gr_c['CLIENT_ID'] === '' || (string) $gr_c['CLIENT_SECRET'] === '') {
+        $gfehler[] = gardena_t('ROH.KEIN_ZUGANG');
+    } elseif ($gr_merker === '') {
+        $gfehler[] = gardena_t('ROH.KEIN_MERKER');
+    } elseif ($gr_sperre > 0) {
+        $gfehler[] = sprintf(gardena_t('ROH.SPERRE'), date('H:i', $gr_sperre));
+    } elseif ($gr_seit >= 0 && $gr_seit < 60) {
+        $gfehler[] = sprintf(gardena_t('ROH.ZU_FRUEH'), 60 - $gr_seit);
+    } else {
+        @touch($gr_merker);
+        $gr_api = new gardena($gr_c['CLIENT_ID'], $gr_c['CLIENT_SECRET'], $lbpconfigdir);
+        $gr_daten = null;
+        if ($gr_api->authenticate()) {
+            $gr_locs = $gr_api->getLocations();
+            if (is_array($gr_locs) && $gr_locs) {
+                $gr_daten = array('locations' => $gr_locs, 'standorte' => array());
+                foreach (array_slice($gr_locs, 0, 3) as $gr_l) {
+                    if (!is_array($gr_l) || empty($gr_l['id'])) { continue; }
+                    $gr_r = $gr_api->getLocationRaw((string) $gr_l['id']);
+                    if (!is_array($gr_r)) { $gr_daten = null; break; }
+                    $gr_daten['standorte'][] = $gr_r;
+                }
+            }
+        }
+        if ($gr_daten === null) {
+            if ($gr_api->last_http === 429) { gardena_kontingent_vermerken($lbpconfigdir, $gr_api->retry_after); }
+            $gr_fehl = (string) $gr_api->last_error;
+            foreach ($gr_geheim as $gr_s) {
+                if (strlen($gr_s) >= 4) { $gr_fehl = str_replace($gr_s, '***', $gr_fehl); }
+            }
+            $gfehler[] = gardena_t('ROH.FEHLER') . ' ' . $gr_fehl;
+        } else {
+            list($groh, $gr_gek, $gr_n) = gardena_roh_aufbereiten($gr_daten, $gr_geheim);
+            $gsaved = $gr_gek ? sprintf(gardena_t('ROH.GEKUERZT'), strlen($groh), $gr_n)
+                              : sprintf(gardena_t('ROH.OK'), $gr_n);
+            gardena_log('INF', 'Geraeteliste roh abgerufen (' . $gr_n . ' Zeichen'
+                . ($gr_gek ? ', gekuerzt angezeigt' : '') . ').');
+        }
+    }
 }
 
 /**
@@ -1236,18 +1469,35 @@ if ($gpost && isset($_POST['mqtt_save'])) {
      * danach im MQTT-Gateway das Abo ein, das er getippt hatte, nicht das,
      * das gespeichert wurde. Am Miniserver kam nichts an.
      */
-    $gtopic_roh = trim((string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : ''));
+    $gneu_form = 'mqtt';
+    /* Ein Feld statt einer Zeichenkette ist unbrauchbar, nicht "Array"
+     * (1.2.13, Nr. 19): bis 1.2.12 machte (string) daraus das Thema "Array",
+     * und das bestand das Muster. */
+    $gtopic_feld = isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '';
+    $gtopic_roh = is_string($gtopic_feld) ? trim($gtopic_feld) : '';
     $gtopic_mq = $gtopic_roh;
-    if ($gtopic_roh === '') {
+    if (!is_string($gtopic_feld)) {
+        $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.PRUEF_FORM');
+        $gneu_mark[] = 'mqtt_topic';
+    } elseif ($gtopic_roh === '') {
         $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.MQTT_LEER');
+        $gneu_mark[] = 'mqtt_topic';
     } elseif (preg_match('#^[A-Za-z0-9_/\-]{1,120}$#', $gtopic_roh) !== 1) {
         // MQTT_ZEICHEN_FEHL, nicht MQTT_ZEICHEN: dieser Text geht durch
         // gardena_e() in die Beanstandungsliste, und ein Text mit
         // <span class='sm-mono'> stuende dort im Wortlaut auf dem Bildschirm.
         $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.MQTT_ZEICHEN_FEHL');
+        $gneu_mark[] = 'mqtt_topic';
+    }
+    /* Nr. 16/19 (1.2.13): ein Wert ausser 0 und 1 wird beanstandet - bis
+     * 1.2.12 wurde er still zu 0 (MQTT aus). */
+    $gmq_ein = (isset($_POST['mqtt_enabled']) && is_string($_POST['mqtt_enabled'])) ? trim($_POST['mqtt_enabled']) : '';
+    if ($gmq_ein !== '0' && $gmq_ein !== '1') {
+        $gfehler[] = gardena_t('EINST.MQTT_VERSAND') . ': ' . gardena_t('EINST.PRUEF_NUR01');
+        $gneu_mark[] = 'mqtt_enabled';
     }
     $gneu_mq = array(
-        'MQTT_ENABLED' => (isset($_POST['mqtt_enabled']) && $_POST['mqtt_enabled'] === '1') ? '1' : '0',
+        'MQTT_ENABLED' => $gmq_ein,
         'MQTT_TOPIC' => $gtopic_mq,
     );
     /*
@@ -1286,6 +1536,7 @@ if ($gpost && isset($_POST['mqtt_save'])) {
 }
 
 if ($gpost && isset($_POST['save'])) {
+    $gneu_form = 'save';
     // Fehler werden GESAMMELT und am Stueck gemeldet, nicht beim ersten
     // Stolpern abgebrochen - sonst arbeitet man sich Feld fuer Feld durch.
     $gcid = trim((string) (isset($_POST['client_id']) ? $_POST['client_id'] : ''));
@@ -1300,6 +1551,12 @@ if ($gpost && isset($_POST['save'])) {
      */
     $gsec_roh = trim((string) (isset($_POST['client_secret']) ? $_POST['client_secret'] : ''));
     $gsec_alt = (string) gardena_cfg_read($gconfigfile)['CLIENT_SECRET'];
+    /* Nr. 19 (1.2.13): ein Haken traegt 1 oder fehlt; alles andere wurde bis
+     * 1.2.12 still als "nicht loeschen" gelesen. */
+    if (isset($_POST['secret_loeschen']) && $_POST['secret_loeschen'] !== '1') {
+        $gfehler[] = gardena_t('EINST.SECRET_LOESCHEN') . ': ' . gardena_t('EINST.PRUEF_HAKEN');
+        $gneu_mark[] = 'secret_loeschen';
+    }
     if (isset($_POST['secret_loeschen']) && $_POST['secret_loeschen'] === '1') {
         $gsec = '';
     } elseif ($gsec_roh === '') {
@@ -1307,7 +1564,19 @@ if ($gpost && isset($_POST['save'])) {
     } else {
         $gsec = $gsec_roh;
     }
-    $genabled = (isset($_POST['enabled']) && $_POST['enabled'] === '1') ? '1' : '0';
+    /* Nr. 16/19 (1.2.13): die beiden Auswahlfelder kennen nur 0 und 1. Bis
+     * 1.2.12 wurde jeder andere Wert - auch ein fehlender - still zu 0
+     * ("Nein" bzw. "Aus") und gespeichert. */
+    $genabled = (isset($_POST['enabled']) && is_string($_POST['enabled'])) ? trim($_POST['enabled']) : '';
+    if ($genabled !== '0' && $genabled !== '1') {
+        $gfehler[] = gardena_t('EINST.PLUGIN_AKTIV') . ': ' . gardena_t('EINST.PRUEF_NUR01');
+        $gneu_mark[] = 'enabled';
+    }
+    $gudp = (isset($_POST['udp_enabled']) && is_string($_POST['udp_enabled'])) ? trim($_POST['udp_enabled']) : '';
+    if ($gudp !== '0' && $gudp !== '1') {
+        $gfehler[] = gardena_t('EINST.UDP_VERSAND') . ': ' . gardena_t('EINST.PRUEF_NUR01');
+        $gneu_mark[] = 'udp_enabled';
+    }
     /*
      * Eingaben abweisen statt still verbiegen (1.2.11, O3): das Formular prueft
      * mit derselben Positivliste wie die Sicherung - gardena_wert_taugt() und
@@ -1327,18 +1596,39 @@ if ($gpost && isset($_POST['save'])) {
     $gform_namen = array('UDPPORT' => 'EINST.UDPPORT', 'INTERVALL' => 'EINST.INTERVALL',
         'MESSER_INTERVALL' => 'EINST.MESSER_INTERVALL', 'MINISERVER' => 'EINST.MINISERVER',
         'CLIENT_ID' => 'EINST.CLIENT_ID', 'CLIENT_SECRET' => 'EINST.CLIENT_SECRET');
+    // Welches Feld markiert wird (X-2).
+    $gform_felder = array('UDPPORT' => 'udpport', 'INTERVALL' => 'intervall', 'MESSER_INTERVALL' => 'messer_intervall',
+        'MINISERVER' => 'miniserver', 'CLIENT_ID' => 'client_id', 'CLIENT_SECRET' => 'client_secret');
     foreach ($gform as $gk => $gv) {
         $ggrund = !gardena_wert_taugt($gv) ? gardena_t('EINST.PRUEF_FORM') : gardena_wert_pruefen($gk, (string) $gv);
-        if ($ggrund !== '') { $gfehler[] = gardena_t($gform_namen[$gk]) . ': ' . $ggrund; }
+        if ($ggrund !== '') {
+            $gfehler[] = gardena_t($gform_namen[$gk]) . ': ' . $ggrund;
+            $gneu_mark[] = $gform_felder[$gk];
+        }
+    }
+    /* b1 (1.2.13): der Abstand ist eine Auswahl 5/10/15/30/60. Ein
+     * gespeicherter Wert ausserhalb (etwa 20 aus einer Sicherung) bleibt
+     * waehlbar; jeder andere wird beanstandet. Die Sicherung nimmt weiterhin
+     * jedes Vielfache von 5 an (gardena_wert_pruefen). */
+    $gtakt_alt = trim((string) gardena_cfg_read($gconfigfile)['INTERVALL']);
+    if (gardena_wert_taugt($gform['INTERVALL'])
+        && gardena_wert_pruefen('INTERVALL', (string) $gform['INTERVALL']) === ''
+        && !in_array((string) $gform['INTERVALL'], gardena_takt_auswahl(), true)
+        && (string) $gform['INTERVALL'] !== $gtakt_alt) {
+        $gfehler[] = gardena_t('EINST.INTERVALL') . ': ' . gardena_t('EINST.PRUEF_TAKT_AUSWAHL');
+        $gneu_mark[] = 'intervall';
     }
     $gport = (int) $gform['UDPPORT'];
     $gtakt_neu = (int) $gform['INTERVALL'];
     $gmesser = (int) $gform['MESSER_INTERVALL'];
     if ($genabled === '1' && ($gcid === '' || $gsec === '')) {
         $gfehler[] = gardena_t('EINST.CLIENT_ID') . ' / ' . gardena_t('EINST.CLIENT_SECRET');
+        if ($gcid === '') { $gneu_mark[] = 'client_id'; }
+        if ($gsec === '') { $gneu_mark[] = 'client_secret'; }
     }
     if (gardena_wert_taugt($gform['MESSER_INTERVALL']) && $gmesser > 100000) {
         $gfehler[] = gardena_t('EINST.MESSER_INTERVALL') . ': 0 - 100000';
+        $gneu_mark[] = 'messer_intervall';
     }
     /*
      * Die Miniserver-Nummer gegen die WIRKLICH vorhandenen halten.
@@ -1356,6 +1646,7 @@ if ($gpost && isset($_POST['save'])) {
     } elseif ($gmsliste && !isset($gmsliste[$gmsnr])) {
         $gfehler[] = sprintf(gardena_t('EINST.MS_UNBEKANNT'), $gmsnr,
                              implode(', ', array_keys($gmsliste)));
+        $gneu_mark[] = 'miniserver';
     }
 
     // Das bestehende Token weiterverwenden - es darf beim Speichern der
@@ -1376,11 +1667,22 @@ if ($gpost && isset($_POST['save'])) {
     $gliste = null;
     if (isset($_POST['ausgenommen_da'])) {
         $gliste = array();
+        /* Nr. 19 (1.2.13): ein Eintrag, der keine Zeichenkette oder leer ist,
+         * und eine Liste, die keine Liste ist, werden beanstandet statt still
+         * verworfen. Aus dem eigenen Formular kommt beides nicht; gespeichert
+         * wird dann nichts. */
+        if (isset($_POST['ausgenommen']) && !is_array($_POST['ausgenommen'])) {
+            $gfehler[] = gardena_t('EINST.H_AUSWAHL') . ': ' . gardena_t('EINST.AUSG_LEER');
+            $gneu_mark[] = 'ausgenommen';
+        }
         if (isset($_POST['ausgenommen']) && is_array($_POST['ausgenommen'])) {
             foreach ($_POST['ausgenommen'] as $gn) {
-                if (!is_string($gn)) { continue; }
+                if (!is_string($gn) || trim($gn) === '') {
+                    $gfehler[] = gardena_t('EINST.H_AUSWAHL') . ': ' . gardena_t('EINST.AUSG_LEER');
+                    $gneu_mark[] = 'ausgenommen';
+                    continue;
+                }
                 $gn = trim($gn);
-                if ($gn === '') { continue; }
                 /*
                  * Ein Komma trennt die Liste in der Konfiguration - ein
                  * Geraetename mit Komma wuerde sie zerlegen. Bis 1.2.5
@@ -1392,6 +1694,7 @@ if ($gpost && isset($_POST['save'])) {
                 if (strpos($gn, ',') !== false) {
                     // Roh - maskiert wird einmal bei der Ausgabe.
                     $gfehler[] = sprintf(gardena_t('EINST.AUSG_KOMMA'), $gn);
+                    $gneu_mark[] = 'ausgenommen';
                     continue;
                 }
                 $gliste[] = $gn;
@@ -1422,7 +1725,7 @@ if ($gpost && isset($_POST['save'])) {
             'CLIENT_ID' => $gcid,
             'CLIENT_SECRET' => $gsec,
             'MINISERVER' => $gmsnr,
-            'UDP_ENABLED' => (isset($_POST['udp_enabled']) && $_POST['udp_enabled'] === '1') ? '1' : '0',
+            'UDP_ENABLED' => $gudp,
             'UDPPORT' => $gport,
             'INTERVALL' => $gtakt_neu,
             'MESSER_INTERVALL' => $gmesser,
@@ -1575,22 +1878,23 @@ if ($gpost && isset($_POST['gardena_sichern'])) {
      * Datei, die das Plugin beim Zurueckspielen ablehnt - und das merkt man
      * genau dann, wenn man sie braucht.
      */
-    $gardena_unrueck = array();
-    foreach ($gardena_stand as $gk => $gv) {
-        if (!gardena_wert_taugt($gv) || gardena_wert_pruefen($gk, (string) $gv) !== '') {
-            $gardena_unrueck[] = $gk;
-        }
-    }
+    /*
+     * X-3 (1.2.13; Regeln/04, Muster EVCC/AWM): gefragt wird DIESELBE
+     * Pruefung wie beim Zurueckspielen (gardena_rueckspiel_altwerte()). Die
+     * Datei kommt trotzdem vollstaendig; im Kopf steht "_warnung" mit den
+     * Namen, nie den Werten, und am Knopf steht die gelbe Warnung. Bis 1.2.12
+     * verweigerte der Knopf die Datei in diesem Fall ganz - wer seinen Stand
+     * vor einem Umbau sichern wollte, bekam nichts.
+     */
+    $gardena_unrueck = gardena_rueckspiel_altwerte();
     if ($gardena_unrueck) {
-        $gfehler[] = sprintf(gardena_t('EINST.SICH_NICHT_RUECK'),
-                             implode(', ', $gardena_unrueck));
-        gardena_log('ERR', 'Sicherung nicht erzeugt: diese Werte liessen sich nicht '
-            . 'zurueckspielen - ' . implode(', ', $gardena_unrueck));
-        $gardena_js = false;
-    } else {
-        $gardena_js = json_encode($gardena_stand,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $gardena_stand = array('_warnung' => sprintf(gardena_t('EINST.SICH_ALTWERT_KOPF'),
+                                                    implode(', ', $gardena_unrueck))) + $gardena_stand;
+        gardena_log('INF', 'Sicherung mit Warnung ausgeliefert: diese Werte bestuenden das Zurueckspielen '
+            . 'nicht - ' . implode(', ', $gardena_unrueck));
     }
+    $gardena_js = json_encode($gardena_stand,
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($gardena_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="gardenasmartsystem_einstellungen_'
@@ -1618,8 +1922,10 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
         // Der Stand VOR dem Zurueckspielen - fuer die Frage, ob sich die
         // Zugangsdaten oder das Token geaendert haben (siehe unten).
         $gardena_vorher = gardena_cfg_read($gconfigfile);
+        $gardena_namen = array();
+        $gardena_behalten = array();
         list($gardena_neu, $gardena_mangel, $gardena_n) = gardena_sicherung_lesen(
-            (string) @file_get_contents($_FILES['gardena_sicherung']['tmp_name']));
+            (string) @file_get_contents($_FILES['gardena_sicherung']['tmp_name']), $gardena_namen, $gardena_behalten);
         /*
          * MINISERVER gegen die eingerichteten Miniserver (1.2.11, O2) - wie das
          * Formular. Bis 1.2.10 nahm das Zurueckspielen "99" an, das Formular
@@ -1649,6 +1955,19 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
                 $gardena_tokentext = gardena_t('EINST.SICH_TOKEN_LEER');
             } elseif ($gtok_alt !== '' && (string) $gardena_neu['TOKEN'] !== $gtok_alt) {
                 $gardena_tokentext = gardena_t('EINST.SICH_TOKEN_ANDERS');
+            }
+            /* Das Ventil-Token (1.2.13, Gardena-1) wie das Aktionstoken: leer in
+             * der Sicherung heisst "keins gesichert", das geltende bleibt; ein
+             * anderes wird uebernommen und gemeldet. */
+            $gvt_alt = (string) $gardena_vorher['VENTIL_TOKEN'];
+            if ((string) $gardena_neu['VENTIL_TOKEN'] === '') {
+                $gardena_neu['VENTIL_TOKEN'] = $gvt_alt;
+            } elseif ($gvt_alt !== '' && (string) $gardena_neu['VENTIL_TOKEN'] !== $gvt_alt) {
+                $gardena_tokentext .= ($gardena_tokentext !== '' ? ' ' : '') . gardena_t('EINST.SICH_VTOKEN_ANDERS');
+            }
+            if ($gardena_behalten) {
+                $gardena_tokentext .= ($gardena_tokentext !== '' ? ' ' : '')
+                    . sprintf(gardena_t('EINST.SICH_BEHALTEN'), implode(', ', $gardena_behalten));
             }
         }
         if ($gardena_neu === null) {
@@ -1719,10 +2038,23 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
  * 1.2.10 unmittelbar gezeigt: eine verlorene Meldung waere schlimmer als ein
  * Neuladen, das fragt. */
 if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (gardena_meldung_schreiben(array('saved' => $gsaved, 'fehler' => array_values($gfehler),
-                                        'tokenmsg' => $gtokenmsg, 'test' => $gtest))) {
+    $gm_neu = array('saved' => $gsaved, 'fehler' => array_values($gfehler),
+                    'tokenmsg' => $gtokenmsg, 'test' => $gtest);
+    // X-2 (1.2.13): nur nach einer Beanstandung, nur das eine Formular, nie Geheimnisse.
+    if ($gfehler && $gneu_form !== '') {
+        $gm_neu['eingaben'] = array('form' => $gneu_form, 'felder' => gardena_eingaben_sammeln($gneu_form),
+                                    'markiert' => array_values(array_unique($gneu_mark)));
+    }
+    if ($groh !== '') { $gm_neu['roh'] = $groh; }
+    if (gardena_meldung_schreiben($gm_neu)) {
         header('Location: index.php?form=' . substr($g_tab, 4), true, 303);
         exit;
+    }
+    // Ohne Umleitung zeigt diese Seite selbst die Eingaben (X-2).
+    if ($gfehler && $gneu_form !== '') {
+        $geingaben_form = $gneu_form;
+        $geingaben = gardena_eingaben_sammeln($gneu_form);
+        $gmarkiert = array_values(array_unique($gneu_mark));
     }
     gardena_log_gebremst('einmalmeldung', 'ERR', 'Die Einmalmeldung liess sich nicht schreiben - '
         . 'das Ergebnis eines Formulars wird ohne Umleitung angezeigt.');
@@ -1861,6 +2193,10 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
     background-repeat: no-repeat; background-position: right 10px center;
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+/* Ergaenzung (1.2.13, X-2), nicht aus der Vorlage: das nach einer
+   Beanstandung rot umrandete Feld. */
+.sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet {
+    border: 2px solid #c62828 !important; background-color: #fff5f5; }
 
 </style>
 <div class="sm-wrap">
@@ -1917,14 +2253,15 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <div class="sm-row">
     <div>
         <label><?= gardena_t('EINST.PLUGIN_AKTIV') ?></label>
-        <select data-role="none" name="enabled">
-            <option value="0"<?= $gc['ENABLED'] != '1' ? ' selected' : '' ?>><?= gardena_t('ALLG.NEIN') ?></option>
-            <option value="1"<?= $gc['ENABLED'] == '1' ? ' selected' : '' ?>><?= gardena_t('EINST.PLUGIN_AKTIV_JA') ?></option>
+        <?php $g_w = gfeld('save', 'enabled', $gc['ENABLED'] == '1' ? '1' : '0'); ?>
+        <select data-role="none" name="enabled"<?= gmark('save', 'enabled') ?>>
+            <option value="0"<?= $g_w === '0' ? ' selected' : '' ?>><?= gardena_t('ALLG.NEIN') ?></option>
+            <option value="1"<?= $g_w === '1' ? ' selected' : '' ?>><?= gardena_t('EINST.PLUGIN_AKTIV_JA') ?></option>
         </select>
     </div>
     <div>
         <label><?= gardena_t('EINST.CLIENT_ID') ?></label>
-        <input data-role="none" type="text" name="client_id" value="<?= gardena_e($gc['CLIENT_ID']) ?>">
+        <input data-role="none" type="text" name="client_id" value="<?= gardena_e(gfeld('save', 'client_id', $gc['CLIENT_ID'])) ?>"<?= gmark('save', 'client_id') ?>>
     </div>
     <div>
         <label><?= gardena_t('EINST.CLIENT_SECRET') ?></label>
@@ -1934,10 +2271,10 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
                   heisst jetzt "unveraendert lassen", geloescht wird ueber den
                   Haken daneben - ein leeres Kennwortfeld darf nichts loeschen,
                   weil der Browser es nicht vorfuellt. */ ?>
-        <input data-role="none" type="password" name="client_secret" value=""
+        <input data-role="none" type="password" name="client_secret" value=""<?= gmark('save', 'client_secret') ?>
                placeholder="<?= gardena_e((string) $gc['CLIENT_SECRET'] !== ''
                    ? gardena_t('EINST.SECRET_GESETZT') : gardena_t('EINST.SECRET_LEER')) ?>">
-        <label class="sm-small"><input data-role="none" type="checkbox" name="secret_loeschen" value="1">
+        <label class="sm-small"><input data-role="none" type="checkbox" name="secret_loeschen" value="1"<?= ($geingaben_form === 'save' && isset($geingaben['secret_loeschen'])) ? ' checked' : '' ?><?= gmark('save', 'secret_loeschen') ?>>
             <?= gardena_t('EINST.SECRET_LOESCHEN') ?></label>
     </div>
 </div>
@@ -1947,24 +2284,26 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <div class="sm-row">
     <div>
         <label><?= gardena_t('EINST.UDP_VERSAND') ?></label>
-        <select data-role="none" name="udp_enabled">
-            <option value="1"<?= $gc['UDP_ENABLED'] != '0' ? ' selected' : '' ?>><?= gardena_t('ALLG.AKTIV') ?></option>
-            <option value="0"<?= $gc['UDP_ENABLED'] == '0' ? ' selected' : '' ?>><?= gardena_t('ALLG.AUS') ?></option>
+        <?php $g_w = gfeld('save', 'udp_enabled', $gc['UDP_ENABLED'] == '0' ? '0' : '1'); ?>
+        <select data-role="none" name="udp_enabled"<?= gmark('save', 'udp_enabled') ?>>
+            <option value="1"<?= $g_w === '1' ? ' selected' : '' ?>><?= gardena_t('ALLG.AKTIV') ?></option>
+            <option value="0"<?= $g_w === '0' ? ' selected' : '' ?>><?= gardena_t('ALLG.AUS') ?></option>
         </select>
     </div>
     <div>
         <label><?= gardena_t('EINST.MINISERVER') ?></label>
-        <select data-role="none" name="miniserver">
+        <?php $g_w = gfeld('save', 'miniserver', (string) (int) $gc['MINISERVER']); ?>
+        <select data-role="none" name="miniserver"<?= gmark('save', 'miniserver') ?>>
 <?php if (empty($gms)) { ?>
             <option value="1"><?= gardena_t('EINST.KEIN_MINISERVER') ?></option>
 <?php } foreach ($gms as $gnr => $gm) { ?>
-            <option value="<?= (int) $gnr ?>"<?= (int) $gc['MINISERVER'] === (int) $gnr ? ' selected' : '' ?>><?= gardena_e($gm['Name'] . ' (' . $gm['IPAddress'] . ')') ?></option>
+            <option value="<?= (int) $gnr ?>"<?= (string) (int) $gnr === $g_w ? ' selected' : '' ?>><?= gardena_e($gm['Name'] . ' (' . $gm['IPAddress'] . ')') ?></option>
 <?php } ?>
         </select>
     </div>
     <div>
         <label><?= gardena_t('EINST.UDPPORT') ?></label>
-        <input data-role="none" type="number" name="udpport" value="<?= (int) $gc['UDPPORT'] ?>" min="1" max="65535">
+        <input data-role="none" type="number" name="udpport" value="<?= gardena_e(gfeld('save', 'udpport', (int) $gc['UDPPORT'])) ?>" min="1" max="65535"<?= gmark('save', 'udpport') ?>>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('EINST.UDP_FORMAT') ?></div>
@@ -1973,7 +2312,26 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <div class="sm-row">
     <div>
         <label><?= gardena_t('EINST.INTERVALL') ?></label>
-        <input data-role="none" type="number" name="intervall" value="<?= (int) gardena_intervall($gc) ?>" min="5" max="1440" step="5">
+<?php
+/* b1 (1.2.13): eine Auswahl statt eines freien Feldes. Ein gespeicherter
+ * Wert ausserhalb der Auswahl (Altwert, etwa 20 aus einer Sicherung) steht
+ * als eigene, gekennzeichnete Zeile darin und bleibt waehlbar; nach einer
+ * Beanstandung (X-2) auch der eingetippte Wert. */
+$gtakt_gesp = trim((string) $gc['INTERVALL']);
+$gtakt_zeig = gfeld('save', 'intervall', $gtakt_gesp);
+$gtakt_opt = array();
+foreach (gardena_takt_auswahl() as $gto) { $gtakt_opt[$gto] = sprintf(gardena_t('EINST.INTERVALL_MIN'), $gto); }
+if (!isset($gtakt_opt[$gtakt_gesp])) { $gtakt_opt[$gtakt_gesp] = sprintf(gardena_t('EINST.INTERVALL_ALTWERT'), $gtakt_gesp); }
+if (!isset($gtakt_opt[$gtakt_zeig])) { $gtakt_opt[$gtakt_zeig] = sprintf(gardena_t('EINST.INTERVALL_EINGABE'), $gtakt_zeig); }
+?>
+        <select data-role="none" name="intervall"<?= gmark('save', 'intervall') ?>>
+<?php foreach ($gtakt_opt as $gtv => $gtt) { ?>
+            <option value="<?= gardena_e($gtv) ?>"<?= (string) $gtv === $gtakt_zeig ? ' selected' : '' ?>><?= gardena_e($gtt) ?></option>
+<?php } ?>
+        </select>
+<?php if (!in_array($gtakt_gesp, gardena_takt_auswahl(), true)) { ?>
+        <div class="sm-alert sm-warn"><?= gardena_e(sprintf(gardena_t('EINST.INTERVALL_ALT_HINWEIS'), $gtakt_gesp)) ?></div>
+<?php } ?>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('EINST.INTERVALL_HINWEIS') ?></div>
@@ -1994,7 +2352,8 @@ if (!empty($gcache['locations']) && is_array($gcache['locations'])) {
         }
     }
 }
-$gaus_jetzt = gardena_ausgenommen($gc);
+$gaus_jetzt = ($geingaben_form === 'save' && isset($geingaben['ausgenommen']) && is_array($geingaben['ausgenommen']))
+    ? $geingaben['ausgenommen'] : gardena_ausgenommen($gc);
 if (!$gnamen_alle) { ?>
 <div class="sm-alert sm-info"><?= gardena_t('EINST.AUSWAHL_KEIN_ABBILD') ?></div>
 <?php } else { ?>
@@ -2002,7 +2361,7 @@ if (!$gnamen_alle) { ?>
 <div class="sm-small"><?= gardena_t('EINST.AUSWAHL_HINWEIS') ?></div>
 <?php foreach ($gnamen_alle as $gn) { ?>
 <label style="font-weight:400;">
-  <input data-role="none" type="checkbox" name="ausgenommen[]" value="<?= gardena_e($gn) ?>"<?= in_array($gn, $gaus_jetzt, true) ? ' checked' : '' ?>>
+  <input data-role="none" type="checkbox" name="ausgenommen[]" value="<?= gardena_e($gn) ?>"<?= in_array($gn, $gaus_jetzt, true) ? ' checked' : '' ?><?= gmark('save', 'ausgenommen') ?>>
   <?= gardena_e($gn) ?>
 </label>
 <?php } ?>
@@ -2012,7 +2371,7 @@ if (!$gnamen_alle) { ?>
 <div class="sm-row">
     <div>
         <label><?= gardena_t('EINST.MESSER_INTERVALL') ?></label>
-        <input data-role="none" type="number" name="messer_intervall" value="<?= (int) $gc['MESSER_INTERVALL'] ?>" min="0" max="100000">
+        <input data-role="none" type="number" name="messer_intervall" value="<?= gardena_e(gfeld('save', 'messer_intervall', (int) $gc['MESSER_INTERVALL'])) ?>" min="0" max="100000"<?= gmark('save', 'messer_intervall') ?>>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('WARTUNG.HINWEIS') ?></div>
@@ -2061,9 +2420,58 @@ if ($gmesser_int > 0) {
 </form>
 </div>
 
+<h2><?= gardena_t('EINST.H_VENTIL') ?></h2>
+<?php /* Gardena-1 (1.2.13, D-Punkt): ab Werk aus. Das Plugin Bewaesserung
+   schaltet die Ventile darueber direkt, statt ueber Loxone. Die Adresse und
+   die Felder stehen hier, in der Hilfe und in der README. */ ?>
+<div class="sm-hinweis"><?= gardena_t('EINST.VENTIL_TEXT') ?></div>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+<input data-role="none" type="hidden" name="ventil_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-row">
+    <div>
+        <label><?= gardena_t('EINST.VENTIL_SCHALTER') ?></label>
+        <?php $g_w = gfeld('ventil', 'ventil_schnittstelle', (string) $gc['VENTIL_SCHNITTSTELLE'] === '1' ? '1' : '0'); ?>
+        <select data-role="none" name="ventil_schnittstelle"<?= gmark('ventil', 'ventil_schnittstelle') ?>>
+            <option value="0"<?= $g_w === '0' ? ' selected' : '' ?>><?= gardena_t('EINST.VENTIL_AUS') ?></option>
+            <option value="1"<?= $g_w === '1' ? ' selected' : '' ?>><?= gardena_t('EINST.VENTIL_EIN') ?></option>
+        </select>
+    </div>
+    <div>
+        <label><?= gardena_t('EINST.VENTIL_MAX') ?></label>
+        <input data-role="none" type="number" name="ventil_max_min" value="<?= gardena_e(gfeld('ventil', 'ventil_max_min', $gc['VENTIL_MAX_MIN'])) ?>" min="1" max="180"<?= gmark('ventil', 'ventil_max_min') ?>>
+    </div>
+</div>
+<div class="sm-small"><?= gardena_t('EINST.VENTIL_MAX_HINWEIS') ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gardena_t('ALLG.SPEICHERN_NUR') ?></button>
+</form>
+<?php if ((string) $gc['VENTIL_TOKEN'] !== '') { ?>
+<label><?= gardena_t('EINST.VENTIL_TOKEN_LABEL') ?></label>
+<input data-role="none" type="text" value="<?= gardena_e($gc['VENTIL_TOKEN']) ?>" readonly onclick="this.select();">
+<?php } else { ?>
+<div class="sm-small"><?= gardena_t('EINST.VENTIL_KEIN_TOKEN') ?></div>
+<?php } ?>
+<div class="sm-small"><?= gardena_t('EINST.VENTIL_AUFRUF') ?></div>
+<div class="sm-mono">POST http://127.0.0.1/plugins/<?= $gpl ?>/index.php &nbsp; action=ventil&amp;token=…&amp;ventil=NAME&amp;befehl=oeffnen&amp;minuten=10</div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ventil_token_neu" value="1"
+            onclick="return confirm(<?= json_encode(html_entity_decode(gardena_t('EINST.VENTIL_TOKEN_NEU_FRAGE'), ENT_QUOTES, 'UTF-8')) ?>);"><?= gardena_t('EINST.K_VENTIL_TOKEN_NEU') ?></button>
+</form>
+</div>
+
 <h2><?= gardena_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= gardena_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-alert sm-warn"><?= gardena_t('EINST.SICH_WARNUNG') ?></div>
+<?php /* X-3 (1.2.13): dieselbe Pruefung wie das Zurueckspielen; nur Namen,
+   nie Werte. Die Sicherung wird trotzdem vollstaendig geliefert. */
+$g_altwerte = gardena_rueckspiel_altwerte();
+if ($g_altwerte) { ?>
+<div class="sm-alert sm-warn"><b><?= gardena_e(sprintf(gardena_t('EINST.SICH_NICHT_RUECK'), implode(', ', $g_altwerte))) ?></b></div>
+<?php } ?>
 <?php /* Die Legende fuer diese Reihe steht oben im Reiter (1.2.11, O9). */ ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
@@ -2095,14 +2503,15 @@ if ($gmesser_int > 0) {
 <div class="sm-row">
     <div>
         <label><?= gardena_t('EINST.MQTT_VERSAND') ?></label>
-        <select data-role="none" name="mqtt_enabled">
-            <option value="1"<?= $gc['MQTT_ENABLED'] == '1' ? ' selected' : '' ?>><?= gardena_t('EINST.MQTT_EMPFOHLEN') ?></option>
-            <option value="0"<?= $gc['MQTT_ENABLED'] != '1' ? ' selected' : '' ?>><?= gardena_t('ALLG.AUS') ?></option>
+        <?php $g_w = gfeld('mqtt', 'mqtt_enabled', $gc['MQTT_ENABLED'] == '1' ? '1' : '0'); ?>
+        <select data-role="none" name="mqtt_enabled"<?= gmark('mqtt', 'mqtt_enabled') ?>>
+            <option value="1"<?= $g_w === '1' ? ' selected' : '' ?>><?= gardena_t('EINST.MQTT_EMPFOHLEN') ?></option>
+            <option value="0"<?= $g_w === '0' ? ' selected' : '' ?>><?= gardena_t('ALLG.AUS') ?></option>
         </select>
     </div>
     <div>
         <label><?= gardena_t('EINST.MQTT_TOPIC') ?></label>
-        <input data-role="none" type="text" name="mqtt_topic" value="<?= gardena_e($gc['MQTT_TOPIC']) ?>" placeholder="gardena">
+        <input data-role="none" type="text" name="mqtt_topic" value="<?= gardena_e(gfeld('mqtt', 'mqtt_topic', $gc['MQTT_TOPIC'])) ?>" placeholder="gardena"<?= gmark('mqtt', 'mqtt_topic') ?>>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('EINST.MQTT_FORMAT') ?><br><?= gardena_t('EINST.MQTT_ZEICHEN') ?></div>
@@ -2402,8 +2811,18 @@ $gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $gbind
 <a class="sm-btn sm-b-lesen" href="/plugins/<?= $gpl ?>/index.php?selftest=1<?= $gtokenurl ?>" target="_blank"><?= gardena_t('TEST.K_SELFTEST') ?></a>
 <a class="sm-btn sm-b-lesen" href="/plugins/<?= $gpl ?>/index.php?action=list<?= $gtokenurl ?>" target="_blank"><?= gardena_t('TEST.K_LISTE') ?></a>
 <a class="sm-btn sm-b-lesen" href="/plugins/<?= $gpl ?>/index.php" target="_blank"><?= gardena_t('TEST.K_UEBERSICHT') ?></a>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="roh_anzeigen" value="1"><?= gardena_t('TEST.K_ROH') ?></button>
+</form>
 </div>
 <div class="sm-small"><?= gardena_t('TEST.SELFTEST_HINWEIS') ?></div>
+<div class="sm-small"><?= gardena_t('TEST.ROH_HINWEIS') ?></div>
+<?php if ($groh !== '') { ?>
+<h3 class="sm-h3"><?= gardena_t('TEST.H_ROH') ?></h3>
+<pre class="sm-pre"><?= gardena_e($groh) ?></pre>
+<?php } ?>
 
 <h3 class="sm-h3"><?= gardena_t('TEST.H_TECHNIK') ?></h3>
 <div class="sm-knopfreihe">

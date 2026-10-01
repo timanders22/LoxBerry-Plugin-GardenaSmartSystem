@@ -1499,6 +1499,12 @@ function gardena_vorgaben()
         // ausgenommen, der Wartungszaehler aus.
         'INTERVALL' => '5', 'AUSGENOMMEN' => '', 'MESSER_INTERVALL' => '0',
         'MESSER_BASIS' => '0',
+        // Ab 1.2.13: Schnittstelle fuer die Bewaesserung (Gardena-1). Ab Werk
+        // AUS - eine eingerichtete Anlage aendert sich durch das Update nicht.
+        // Das Ventil-Token ist ein eigenes Geheimnis, getrennt vom Token der
+        // Loxone-Adressen. Die Hoechstdauer gilt je Oeffnen, 1 bis 180 Minuten
+        // (Entscheidung 10: hoechstens 3 Stunden je Ventilbefehl).
+        'VENTIL_SCHNITTSTELLE' => '0', 'VENTIL_TOKEN' => '', 'VENTIL_MAX_MIN' => '60',
     );
 }
 
@@ -2347,6 +2353,346 @@ function gardena_bremse_befehl()
     return $zu_viele ? count($jung) : 0;
 }
 
+/* ==================================================================
+ * Gleichwert-Unterdrueckung fuer Ventil-Sollwerte (1.2.13, X-7;
+ * Entscheidung 19 vom 01.10.2026; Vorbild EVCC 0.9.37 und Marstek 1.1.19)
+ *
+ * Loxone sendet nach einem Neustart und aus Formelgliedern oft denselben
+ * Befehl in Serie, und eine Bewaesserung, die eine Antwort verliert, fragt
+ * nach. Bis 1.2.12 ging jeder davon an die Husqvarna-Wolke und zaehlte gegen
+ * deren Kontingent und gegen die 30 Befehle je Stunde. Jetzt gilt fuer die
+ * Ventilbefehle (VALVE_CONTROL - ueber ?action=command ebenso wie ueber die
+ * Schnittstelle der Bewaesserung): derselbe Befehl mit derselben Dauer an
+ * dasselbe Ventil innerhalb von 60 s geht nicht erneut hinaus, die Antwort
+ * sagt UNVERAENDERT=1. Ein anderer Befehl geht sofort hinaus - kein
+ * zusaetzliches 429. Maeher und Steckdose sind nicht betroffen.
+ *
+ * Der Merker liegt im Protokollordner (RAM-Scheibe), wird unter flock
+ * gefuehrt und faellt GESCHLOSSEN aus: laesst er sich nicht oeffnen, wird
+ * der Ventilbefehl mit 503 abgewiesen. Gemerkt wird nur ein Befehl, den die
+ * Wolke angenommen hat. Die Sperre bleibt bis zum Ende des Befehls gehalten;
+ * zwei gleichzeitige Befehle laufen nacheinander, und der zweite sieht den
+ * ersten.
+ * ================================================================== */
+
+/** Fenster der Gleichwert-Unterdrueckung in Sekunden. */
+function gardena_gleichwert_s() { return 60; }
+
+/** Der Wert, unter dem ein Ventilbefehl gemerkt wird: Befehl und Dauer. */
+function gardena_gleichwert_wert($cmd, $seconds)
+{
+    return (string) $cmd . ($seconds !== null ? '|' . (int) $seconds : '');
+}
+
+/**
+ * Den Merker oeffnen und sperren. Rueckgabe: array('fh' => Zeiger,
+ * 'daten' => Feld) oder null (nicht nutzbar - der Befehl wird abgewiesen).
+ */
+function gardena_gleichwert_oeffnen()
+{
+    $f = gardena_log_datei('gardena_gleichwert.merker');
+    if ($f === '') { return null; }
+    clearstatcache(true, $f);
+    if (file_exists($f) && !is_file($f)) { return null; }
+    $fh = @fopen($f, 'c+');
+    if ($fh === false) { return null; }
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return null; }
+    $d = json_decode((string) stream_get_contents($fh), true);
+    if (!is_array($d)) { $d = array(); }
+    // Eintraege aelter als eine Stunde fallen weg, einer aus der Zukunft
+    // (Uhrsprung) ebenso - er sagt nichts.
+    $jetzt = time();
+    foreach ($d as $k => $e) {
+        if (!is_array($e) || !isset($e['t'], $e['w']) || (int) $e['t'] < $jetzt - 3600 || (int) $e['t'] > $jetzt + 5) {
+            unset($d[$k]);
+        }
+    }
+    return array('fh' => $fh, 'daten' => $d);
+}
+
+/** Sekunden seit demselben Befehl an denselben Dienst, oder -1 (anderer Befehl oder laenger her). */
+function gardena_gleichwert_seit($m, $dienst, $wert)
+{
+    $dienst = (string) $dienst;
+    if (!is_array($m) || !isset($m['daten'][$dienst]) || !is_array($m['daten'][$dienst])) { return -1; }
+    $e = $m['daten'][$dienst];
+    if (!isset($e['w']) || (string) $e['w'] !== (string) $wert) { return -1; }
+    $seit = time() - (int) $e['t'];
+    return ($seit >= 0 && $seit < gardena_gleichwert_s()) ? $seit : -1;
+}
+
+/**
+ * Die Sperre freigeben; mit $dienst vorher den angenommenen Befehl merken.
+ * Scheitert das Schreiben, wirkt der Befehl trotzdem - die Protokollzeile
+ * sagt es.
+ */
+function gardena_gleichwert_schliessen($m, $dienst = null, $wert = null)
+{
+    if (!is_array($m) || !isset($m['fh']) || !is_resource($m['fh'])) { return false; }
+    $ok = true;
+    if ($dienst !== null) {
+        $m['daten'][(string) $dienst] = array('w' => (string) $wert, 't' => time());
+        $js = (string) json_encode($m['daten']);
+        $ok = ftruncate($m['fh'], 0) && rewind($m['fh']) && @fwrite($m['fh'], $js) === strlen($js)
+            && fflush($m['fh']);
+        if (!$ok) {
+            gardena_log_gebremst('gleichwert_schreiben', 'ERR', 'Der Merker der Gleichwert-Unterdrueckung ('
+                . gardena_log_datei('gardena_gleichwert.merker') . ') liess sich nicht schreiben - derselbe '
+                . 'Ventilbefehl geht beim naechsten Mal erneut hinaus.');
+        }
+    }
+    flock($m['fh'], LOCK_UN);
+    fclose($m['fh']);
+    return $ok;
+}
+
+/**
+ * Nur lesen: der zuletzt angenommene Befehl an einen Dienst -
+ * array('w' => Wert, 't' => Zeit), array('w' => 'BELEGT') waehrend ein Befehl
+ * laeuft, oder null (keiner in der letzten Stunde).
+ */
+function gardena_gleichwert_lesen($dienst)
+{
+    $dienst = (string) $dienst;
+    $f = gardena_log_datei('gardena_gleichwert.merker');
+    if ($f === '' || !is_file($f)) { return null; }
+    $fh = @fopen($f, 'r');
+    if ($fh === false) { return null; }
+    if (!flock($fh, LOCK_SH | LOCK_NB)) {
+        fclose($fh);
+        return array('w' => 'BELEGT', 't' => time());
+    }
+    $d = json_decode((string) stream_get_contents($fh), true);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    if (!is_array($d) || !isset($d[$dienst]) || !is_array($d[$dienst]) || !isset($d[$dienst]['w'], $d[$dienst]['t'])) {
+        return null;
+    }
+    $t = (int) $d[$dienst]['t'];
+    if ($t > time() + 5 || $t < time() - 3600) { return null; }
+    return array('w' => (string) $d[$dienst]['w'], 't' => $t);
+}
+
+/* ==================================================================
+ * Schnittstelle fuer die Bewaesserung (1.2.13, Gardena-1; ab Werk aus)
+ *
+ * Das Plugin Bewaesserung soll die GARDENA-Ventile direkt ansprechen
+ * koennen statt ueber Loxone. Der Befehlsweg steht im Endpunkt
+ * (webfrontend/html/index.php, POST action=ventil), beschrieben in der README
+ * und in Pruefung-Durchgang-2026-09-29/GARDENA1_SCHNITTSTELLE.md.
+ * ================================================================== */
+
+/** Die zulaessige Hoechstdauer je Oeffnen in Minuten; 0 = die Einstellung ist unbrauchbar. */
+function gardena_ventil_max_min($cfg)
+{
+    $v = (is_array($cfg) && isset($cfg['VENTIL_MAX_MIN']) && !is_array($cfg['VENTIL_MAX_MIN']))
+        ? trim((string) $cfg['VENTIL_MAX_MIN']) : '';
+    return gardena_wert_pruefen('VENTIL_MAX_MIN', $v) === '' ? (int) $v : 0;
+}
+
+/**
+ * Ein Ventil im Geraete-Abbild suchen - Geraetename ohne Ruecksicht auf
+ * Gross-/Kleinschreibung oder Geraetekennung, wie ?action=command.
+ * Rueckgabe: array('grund' => '' | 'UNBEKANNT' | 'KEIN_VENTIL' | 'MEHRVENTIL',
+ * 'dienst' => Dienstkennung, 'attr' => Attribute des VALVE-Dienstes,
+ * 'mehrfach' => Zahl der VALVE-Dienste am Geraet).
+ */
+function gardena_ventil_suchen($cache, $frage)
+{
+    $erg = array('grund' => 'UNBEKANNT', 'dienst' => '', 'attr' => array(), 'mehrfach' => 1);
+    if (!is_array($cache) || empty($cache['locations']) || !is_array($cache['locations'])) { return $erg; }
+    foreach ($cache['locations'] as $loc) {
+        if (!is_array($loc) || !isset($loc['devices']) || !is_array($loc['devices'])) { continue; }
+        foreach ($loc['devices'] as $id => $dev) {
+            if (!is_array($dev)) { continue; }
+            $name = isset($dev['name']) ? (string) $dev['name'] : '';
+            if (strcasecmp($name, (string) $frage) !== 0 && strcasecmp((string) $id, (string) $frage) !== 0) { continue; }
+            if (!isset($dev['services']['VALVE']['_service_id']['value'])) {
+                $erg['grund'] = 'KEIN_VENTIL';
+                continue;
+            }
+            $n = (isset($dev['mehrfach']['VALVE']) && is_numeric($dev['mehrfach']['VALVE']))
+                ? (int) $dev['mehrfach']['VALVE'] : 1;
+            return array('grund' => ($n > 1) ? 'MEHRVENTIL' : '',
+                'dienst' => (string) $dev['services']['VALVE']['_service_id']['value'],
+                'attr' => $dev['services']['VALVE'], 'mehrfach' => $n);
+        }
+    }
+    return $erg;
+}
+
+/** Wie viele Geraete mit einem VALVE-Dienst stehen im Abbild? */
+function gardena_ventile_zahl($cache)
+{
+    $n = 0;
+    if (!is_array($cache) || empty($cache['locations']) || !is_array($cache['locations'])) { return 0; }
+    foreach ($cache['locations'] as $loc) {
+        if (!is_array($loc) || !isset($loc['devices']) || !is_array($loc['devices'])) { continue; }
+        foreach ($loc['devices'] as $dev) {
+            if (is_array($dev) && isset($dev['services']['VALVE']['_service_id']['value'])) { $n++; }
+        }
+    }
+    return $n;
+}
+
+/** Den letzten angemeldeten Aufruf der Schnittstelle merken (fuer den Reiter Test, ohne Token). */
+function gardena_ventil_letzter_merken($befehl, $code)
+{
+    $f = gardena_log_datei('gardena_ventil_letzter.merker');
+    if ($f === '') { return false; }
+    $js = json_encode(array('t' => time(), 'befehl' => (string) $befehl, 'code' => (int) $code));
+    return @file_put_contents($f, (string) $js, LOCK_EX) !== false;
+}
+
+/** Der letzte angemeldete Aufruf: array('t', 'befehl', 'code') oder null. */
+function gardena_ventil_letzter_lesen()
+{
+    $f = gardena_log_datei('gardena_ventil_letzter.merker');
+    if ($f === '' || !is_file($f)) { return null; }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d) || !isset($d['t'], $d['befehl'], $d['code'])) { return null; }
+    return array('t' => (int) $d['t'], 'befehl' => (string) $d['befehl'], 'code' => (int) $d['code']);
+}
+
+/* ==================================================================
+ * Geraeteliste roh (1.2.13, Gardena-a1)
+ *
+ * Wie die Wolke ein Geraet mit mehreren Ventilen liefert, ist nicht
+ * gemessen (Entscheidung 10). Der Knopf im Reiter Test zeigt die Antwort der
+ * Wolke, wie sie kommt - gekuerzt und ohne Kennungen des Kontos: jede
+ * Kennung (id) wird durch einen Platzhalter ersetzt, der Teil hinter dem
+ * Doppelpunkt bleibt stehen (an ihm haengt die Frage "welches Ventil"),
+ * Seriennummern werden geschwaerzt, und kein Geheimnis des Plugins
+ * (Application Key und Secret, beide Tokens) steht darin.
+ * ================================================================== */
+
+/** Hoechstlaenge der angezeigten Rohantwort in Bytes. */
+function gardena_roh_grenze() { return 20000; }
+
+/** Schluessel, deren Wert geschwaerzt wird. */
+function gardena_roh_schwarz()
+{
+    return array('serial', 'serialnumber', 'serial_number', 'userid', 'user_id', 'email', 'username');
+}
+
+/** Erster Gang: alle Kennungen einsammeln (Teil vor dem Doppelpunkt). */
+function gardena_roh_sammeln($x, $schluessel, &$karte)
+{
+    if (is_array($x)) {
+        foreach ($x as $k => $v) { gardena_roh_sammeln($v, (string) $k, $karte); }
+        return;
+    }
+    if (strtolower((string) $schluessel) === 'id' && is_string($x) && $x !== '') {
+        $teile = explode(':', $x, 2);
+        if (!isset($karte[$teile[0]])) { $karte[$teile[0]] = 'KENNUNG_' . (count($karte) + 1); }
+    }
+}
+
+/** Zweiter Gang: Kennungen ersetzen, Schwarzliste und Geheimnisse schwaerzen. */
+function gardena_roh_gang(&$x, $schluessel, $karte, $geheim)
+{
+    $sl = strtolower((string) $schluessel);
+    $schwarz = in_array($sl, gardena_roh_schwarz(), true);
+    if (is_array($x)) {
+        foreach ($x as $k => &$v) {
+            if ($schwarz && (string) $k === 'value' && !is_array($v)) { $v = '***'; continue; }
+            gardena_roh_gang($v, (string) $k, $karte, $geheim);
+        }
+        unset($v);
+        return;
+    }
+    if (!is_string($x)) { return; }
+    if ($schwarz) { $x = '***'; return; }
+    if ($sl === 'id') {
+        $teile = explode(':', $x, 2);
+        if (isset($karte[$teile[0]])) { $x = $karte[$teile[0]] . (isset($teile[1]) ? ':' . $teile[1] : ''); }
+        return;
+    }
+    foreach ($karte as $alt => $neu) {
+        if (strlen((string) $alt) >= 6 && strpos($x, (string) $alt) !== false) { $x = str_replace((string) $alt, $neu, $x); }
+    }
+    foreach ($geheim as $g) {
+        if (strpos($x, $g) !== false) { $x = str_replace($g, '***', $x); }
+    }
+}
+
+/**
+ * Die Rohantwort fuer die Anzeige aufbereiten.
+ * Rueckgabe: array(Text, gekuerzt?, Laenge vor dem Kuerzen in Bytes).
+ */
+function gardena_roh_aufbereiten($daten, array $geheim)
+{
+    $g = array();
+    foreach ($geheim as $s) {
+        if (is_string($s) && strlen($s) >= 4) { $g[] = $s; }
+    }
+    $karte = array();
+    gardena_roh_sammeln($daten, '', $karte);
+    gardena_roh_gang($daten, '', $karte, $g);
+    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        | JSON_PARTIAL_OUTPUT_ON_ERROR);
+    if (!is_string($js)) { $js = ''; }
+    // Zum Schluss noch einmal ueber den fertigen Text - ein Geheimnis darf auch
+    // nicht ueber eine Maskierung des Kodierers hindurchschluepfen.
+    foreach ($g as $s) { $js = str_replace($s, '***', $js); }
+    $n = strlen($js);
+    $gekuerzt = false;
+    if ($n > gardena_roh_grenze()) {
+        $js = substr($js, 0, gardena_roh_grenze());
+        // Keine halbe UTF-8-Folge am Ende (hoechstens drei Bytes).
+        $rest = 4;
+        while ($js !== '' && $rest-- > 0 && preg_match('//u', $js) !== 1) { $js = substr($js, 0, -1); }
+        $gekuerzt = true;
+    }
+    return array($js, $gekuerzt, $n);
+}
+
+/* ==================================================================
+ * "Einstellungen sichern" warnt (1.2.13, X-3; Regeln/04)
+ * ================================================================== */
+
+/**
+ * Schluessel, die eine aeltere Sicherung noch nicht kennt (seit 1.2.13:
+ * Schnittstelle fuer die Bewaesserung). Fehlen sie beim Zurueckspielen,
+ * bleibt der laufende Wert, und die Meldung nennt sie.
+ */
+function gardena_spaete_schluessel()
+{
+    return array('VENTIL_SCHNITTSTELLE', 'VENTIL_TOKEN', 'VENTIL_MAX_MIN');
+}
+
+/**
+ * Wuerde die eigene Sicherung das eigene Zurueckspielen bestehen?
+ *
+ * Geprueft mit DERSELBEN Funktion wie das Zurueckspielen
+ * (gardena_sicherung_lesen()), dazu die Miniserver-Nummer wie dort im
+ * Handler. Rueckgabe: die Namen der beanstandeten Einstellungen, nie ihre
+ * Werte. Der Funktionsname traegt bewusst kein "sicherung": das
+ * Kettenwerkzeug sicherung_pruefen sucht nach diesem Wort (Lehre aus vb_hk).
+ * Bis 1.2.12 verweigerte der Knopf die Datei in diesem Fall ganz (rot); jetzt
+ * kommt sie vollstaendig, mit der Kopfzeile _warnung und einer gelben
+ * Warnung am Knopf.
+ */
+function gardena_rueckspiel_altwerte()
+{
+    $stand = gardena_sicherung_stand();
+    $js = json_encode($stand);
+    if (!is_string($js)) {
+        $namen = array();
+        foreach ($stand as $k => $v) {
+            if (!is_string(json_encode($v))) { $namen[] = (string) $k; }
+        }
+        return $namen ? $namen : array_keys($stand);
+    }
+    $namen = array();
+    list($neu) = gardena_sicherung_lesen($js, $namen);
+    if ($neu !== null && class_exists('LBSystem', false) && method_exists('LBSystem', 'get_miniservers')) {
+        $ms = LBSystem::get_miniservers();
+        if (is_array($ms) && $ms && !isset($ms[(int) $neu['MINISERVER']])) { $namen[] = 'MINISERVER'; }
+    }
+    return array_values(array_unique($namen));
+}
+
 /**
  * Der Ort der gardena.cfg - an EINER Stelle.
  *
@@ -2488,7 +2834,7 @@ function gardena_wert_taugt($v)
  */
 function gardena_wert_pruefen($k, $v)
 {
-    $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED');
+    $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED', 'VENTIL_SCHNITTSTELLE');
     if (in_array($k, $ja_nein, true)) {
         return ($v === '0' || $v === '1') ? '' : gardena_t('EINST.PRUEF_NUR01');
     }
@@ -2519,6 +2865,20 @@ function gardena_wert_pruefen($k, $v)
         return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', $v) === 1
             ? '' : gardena_t('EINST.PRUEF_TOKEN');
     }
+    if ($k === 'VENTIL_MAX_MIN') {
+        // Hoechstdauer je Oeffnen ueber die Schnittstelle der Bewaesserung
+        // (1.2.13, Gardena-1): 1 bis 180 Minuten - Entscheidung 10 erlaubt
+        // hoechstens 3 Stunden je Ventilbefehl.
+        return (preg_match('/^[0-9]{1,3}$/', $v) === 1 && (int) $v >= 1 && (int) $v <= 180)
+            ? '' : gardena_t('EINST.PRUEF_VENTIL_MAX');
+    }
+    if ($k === 'VENTIL_TOKEN') {
+        // Wie TOKEN: leer heisst in einer Sicherung "keins gesichert", und
+        // "Array" ist ein verrutschtes Feld.
+        if (strcasecmp($v, 'Array') === 0) { return gardena_t('EINST.PRUEF_TOKEN'); }
+        return preg_match('/^[A-Za-z0-9_.\-]{0,64}$/', $v) === 1
+            ? '' : gardena_t('EINST.PRUEF_TOKEN');
+    }
     if ($k === 'MQTT_TOPIC') {
         return preg_match('#^[A-Za-z0-9_/\-]{1,120}$#', $v) === 1
             ? '' : gardena_t('EINST.PRUEF_THEMA');
@@ -2536,8 +2896,17 @@ function gardena_wert_pruefen($k, $v)
     return (strlen($v) <= 512) ? '' : gardena_t('EINST.PRUEF_LANG');
 }
 
-function gardena_sicherung_lesen($roh)
+/*
+ * $namen (1.2.13, X-3): die Namen der beanstandeten Einstellungen - nie ihre
+ * Werte. "Einstellungen sichern" fragt damit dieselbe Pruefung wie das
+ * Zurueckspielen (gardena_rueckspiel_altwerte()).
+ * $behalten (1.2.13): Schluessel, die eine aeltere Sicherung noch nicht
+ * kannte; fuer sie bleibt der laufende Wert (gardena_spaete_schluessel()).
+ */
+function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
 {
+    $namen = array();
+    $behalten = array();
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
@@ -2547,11 +2916,16 @@ function gardena_sicherung_lesen($roh)
     $bekannt = array_keys($neu);
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        /* Kopfzeilen einer Sicherung (1.2.13, X-3; Regeln/04): "_warnung" setzt
+         * "Einstellungen sichern" selbst, wenn ein Wert das Zurueckspielen nicht
+         * bestuende. Sie tragen keine Einstellung und werden uebergangen. */
+        if (in_array((string) $k, array('_warnung', '_hinweis', '_stand'), true)) { continue; }
         if (!in_array($k, $bekannt, true)) {
             // NICHT maskieren: die Bibliothek liefert Daten, die Oberflaeche
             // maskiert. Bis 1.2.5 lief der Name durch beide Stellen und der
             // Anwender las "A&amp;B" statt "A&B" - ausgerechnet dort, wo er
             // erkennen soll, WELCHER Schluessel stoert.
+            $namen[] = (string) $k;
             $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), (string) $k);
             continue;
         }
@@ -2561,11 +2935,13 @@ function gardena_sicherung_lesen($roh)
         // Aktionstoken setzen. Jetzt zwei Tore: taugt der Wert ueberhaupt fuer
         // eine Zeile dieser Datei, und ist er fuer DIESE Einstellung zulaessig.
         if (!gardena_wert_taugt($w)) {
+            $namen[] = (string) $k;
             $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_FORM'), (string) $k);
             continue;
         }
         $grund = gardena_wert_pruefen($k, (string) $w);
         if ($grund !== '') {
+            $namen[] = (string) $k;
             $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_UNZULAESSIG'), (string) $k, $grund);
             continue;
         }
@@ -2593,12 +2969,24 @@ function gardena_sicherung_lesen($roh)
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
+    $jetzt = null;
     foreach (array_keys(gardena_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
+            /* Ein Schluessel, den die Fassung der Sicherung noch nicht kannte
+             * (1.2.13): der LAUFENDE Wert bleibt, und die Meldung nennt ihn.
+             * Ohne diese Ausnahme wiese das Plugin jede Sicherung aus 1.2.12
+             * und frueher als unvollstaendig ab. */
+            if (in_array($fk, gardena_spaete_schluessel(), true)) {
+                if ($jetzt === null) { $jetzt = gardena_config(); }
+                if (isset($jetzt[$fk]) && !is_array($jetzt[$fk])) { $neu[$fk] = (string) $jetzt[$fk]; }
+                $behalten[] = $fk;
+                continue;
+            }
             $fehlend[] = $fk;
         }
     }
     if ($fehlend) {
+        $namen = array_merge($namen, $fehlend);
         // Roh: die Oberflaeche maskiert die Beanstandungsliste bei der Ausgabe
         // EINMAL. Bis 1.2.7 stand hier htmlspecialchars() - doppelt maskiert.
         $mangel[] = sprintf(gardena_t('EINST.SICH_FEHLEND'), count($fehlend),

@@ -313,12 +313,23 @@ class gardena
     }
 
     /**
+     * Die Antwort zu einem Standort, wie die Wolke sie liefert (decodiert) -
+     * Grundlage von getDevices() und des Knopfs "Geraeteliste roh anzeigen"
+     * im Reiter Test (1.2.13, Gardena-a1). null bei einem Fehler; Grund in
+     * last_error und last_http.
+     */
+    public function getLocationRaw($locationId)
+    {
+        return $this->apiGet('/v2/locations/' . rawurlencode($locationId));
+    }
+
+    /**
      * Location-Detail: liefert Geraete mit allen Services/Attributen.
      * Rueckgabe: Array deviceId => [ 'name' => ..., 'services' => [type => [attribute => ['value'=>..,'timestamp'=>..]]] ]
      */
     public function getDevices($locationId)
     {
-        $data = $this->apiGet('/v2/locations/' . rawurlencode($locationId));
+        $data = $this->getLocationRaw($locationId);
         if (!is_array($data) || empty($data['included'])) { return array(); }
 
         $devices = array();
