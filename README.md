@@ -1,5 +1,18 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.14
+
+Nachzug aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 19).
+Gemessen an einer Gardena-Attrappe unter PHP 7.4, 8.3 und 8.5; nicht an der echten Wolke.
+
+* **Befehlsbremse auch für die Steckdose:** Derselbe Steckdosenbefehl mit
+  derselben Dauer innerhalb von 60 s geht nur einmal hinaus (200
+  `UNVERAENDERT=1`), wie schon beim Ventil. „Aus“ nach „Ein“ geht sofort hinaus.
+  Unterdrückte Befehle zählen nicht gegen die 30 je Stunde. Mäherbefehle gehen
+  weiter jedes Mal hinaus.
+* Ist der Merker der Bremse nicht nutzbar, werden Ventil- und Steckdosenbefehle
+  mit 503 abgewiesen.
+
 ## Neu in 1.2.13
 
 Welle 4 und Abschnitt D der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidungen 10, 16, 19 und 25).
@@ -733,12 +746,15 @@ dem Zerlegen nur ganze Zeilen, deren erstes sichtbares Zeichen `#` ist; ein
   - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
 - Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list&token=…`
   (rein lesend, aber **mit** Token — seit 1.1.0 verlangen es alle Endpunkte)
-- **Gleicher Ventilbefehl nur einmal:** Derselbe Befehl mit derselben Dauer an dasselbe
-  Ventil (`type=VALVE_CONTROL`) innerhalb von 60 Sekunden geht nicht erneut an die Wolke.
+- **Gleicher Ventil- oder Steckdosenbefehl nur einmal:** Derselbe Befehl mit derselben
+  Dauer an dasselbe Ventil (`type=VALVE_CONTROL`) oder dieselbe Steckdose
+  (`type=POWER_SOCKET_CONTROL`) innerhalb von 60 Sekunden geht nicht erneut an die Wolke.
   Der Endpunkt antwortet dann mit HTTP 200 und `UNVERAENDERT=1`, und der Befehl zählt
-  nicht gegen die 30 Befehle je Stunde. Ein anderer Befehl geht sofort hinaus. Mäher und
-  Steckdose sind nicht betroffen. Lässt sich der Merker im Protokollordner nicht führen,
-  werden Ventilbefehle mit HTTP 503 abgewiesen.
+  nicht gegen die 30 Befehle je Stunde. Ein anderer Befehl geht sofort hinaus (etwa „aus“
+  nach „ein“). Mäherbefehle gehen jedes Mal hinaus: der Mäher wechselt seinen Zustand
+  selbst (Laden, Regen, Zeitplan), ein zweites Start ist dort ein neuer Auftrag. Lässt
+  sich der Merker im Protokollordner nicht führen, werden Ventil- und Steckdosenbefehle
+  mit HTTP 503 abgewiesen; Mäherbefehle laufen weiter.
 - **Geräteliste roh** (Reiter *Test*): fragt die Wolke einmal (höchstens einmal je Minute,
   nie während einer Abrufsperre) und zeigt ihre Antwort, wie sie kommt — gekürzt auf
   20 000 Zeichen, jede Kennung durch einen Platzhalter ersetzt (der Teil hinter dem

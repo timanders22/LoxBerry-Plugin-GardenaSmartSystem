@@ -2354,29 +2354,46 @@ function gardena_bremse_befehl()
 }
 
 /* ==================================================================
- * Gleichwert-Unterdrueckung fuer Ventil-Sollwerte (1.2.13, X-7;
- * Entscheidung 19 vom 01.10.2026; Vorbild EVCC 0.9.37 und Marstek 1.1.19)
+ * Gleichwert-Unterdrueckung fuer Ventil- und Steckdosen-Sollwerte (1.2.13,
+ * X-7; Entscheidung 19 vom 01.10.2026; Vorbild EVCC 0.9.37 und Marstek
+ * 1.1.19; Steckdose seit 1.2.14, Gardena-x7s)
  *
  * Loxone sendet nach einem Neustart und aus Formelgliedern oft denselben
  * Befehl in Serie, und eine Bewaesserung, die eine Antwort verliert, fragt
  * nach. Bis 1.2.12 ging jeder davon an die Husqvarna-Wolke und zaehlte gegen
  * deren Kontingent und gegen die 30 Befehle je Stunde. Jetzt gilt fuer die
  * Ventilbefehle (VALVE_CONTROL - ueber ?action=command ebenso wie ueber die
- * Schnittstelle der Bewaesserung): derselbe Befehl mit derselben Dauer an
- * dasselbe Ventil innerhalb von 60 s geht nicht erneut hinaus, die Antwort
- * sagt UNVERAENDERT=1. Ein anderer Befehl geht sofort hinaus - kein
- * zusaetzliches 429. Maeher und Steckdose sind nicht betroffen.
+ * Schnittstelle der Bewaesserung) und die Steckdose (POWER_SOCKET_CONTROL,
+ * ueber ?action=command): derselbe Befehl mit derselben Dauer an denselben
+ * Dienst innerhalb von 60 s geht nicht erneut hinaus, die Antwort sagt
+ * UNVERAENDERT=1. Ein anderer Befehl geht sofort hinaus - kein
+ * zusaetzliches 429. Der Maeher ist nicht betroffen: seine Befehle sind
+ * Auftraege an ein Geraet, das seinen Zustand selbst wechselt (es parkt
+ * zum Laden, bei Regen, nach dem Zeitplan) - ein zweites START binnen
+ * 60 s ist dort kein Echo, sondern oft genau der gewollte neue Auftrag.
  *
  * Der Merker liegt im Protokollordner (RAM-Scheibe), wird unter flock
  * gefuehrt und faellt GESCHLOSSEN aus: laesst er sich nicht oeffnen, wird
- * der Ventilbefehl mit 503 abgewiesen. Gemerkt wird nur ein Befehl, den die
+ * der Befehl mit 503 abgewiesen. Gemerkt wird nur ein Befehl, den die
  * Wolke angenommen hat. Die Sperre bleibt bis zum Ende des Befehls gehalten;
  * zwei gleichzeitige Befehle laufen nacheinander, und der zweite sieht den
- * ersten.
+ * ersten. Geoeffnet wird mit close-on-exec (Modus 'e', seit 1.2.14): ein
+ * Kindprozess erbt den gesperrten Zeiger nicht und kann die Sperre nicht
+ * ueber das Ende des Befehls hinaus halten (unter Windows wirkungslos und
+ * unschaedlich).
  * ================================================================== */
 
 /** Fenster der Gleichwert-Unterdrueckung in Sekunden. */
 function gardena_gleichwert_s() { return 60; }
+
+/**
+ * Gilt die Gleichwert-Unterdrueckung fuer diesen Befehlstyp? Ventil und
+ * Steckdose (Sollwerte nach Entscheidung 19), nicht der Maeher.
+ */
+function gardena_gleichwert_gilt($type)
+{
+    return in_array((string) $type, array('VALVE_CONTROL', 'POWER_SOCKET_CONTROL'), true);
+}
 
 /** Der Wert, unter dem ein Ventilbefehl gemerkt wird: Befehl und Dauer. */
 function gardena_gleichwert_wert($cmd, $seconds)
@@ -2394,7 +2411,7 @@ function gardena_gleichwert_oeffnen()
     if ($f === '') { return null; }
     clearstatcache(true, $f);
     if (file_exists($f) && !is_file($f)) { return null; }
-    $fh = @fopen($f, 'c+');
+    $fh = @fopen($f, 'c+e');
     if ($fh === false) { return null; }
     if (!flock($fh, LOCK_EX)) { fclose($fh); return null; }
     $d = json_decode((string) stream_get_contents($fh), true);
@@ -2438,7 +2455,7 @@ function gardena_gleichwert_schliessen($m, $dienst = null, $wert = null)
         if (!$ok) {
             gardena_log_gebremst('gleichwert_schreiben', 'ERR', 'Der Merker der Gleichwert-Unterdrueckung ('
                 . gardena_log_datei('gardena_gleichwert.merker') . ') liess sich nicht schreiben - derselbe '
-                . 'Ventilbefehl geht beim naechsten Mal erneut hinaus.');
+                . 'Befehl geht beim naechsten Mal erneut hinaus.');
         }
     }
     flock($m['fh'], LOCK_UN);

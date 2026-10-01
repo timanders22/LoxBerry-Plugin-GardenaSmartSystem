@@ -761,23 +761,25 @@ if ($action === 'command') {
     }
 
     /*
-     * Gleichwert-Unterdrueckung fuer Ventilbefehle (1.2.13, X-7; Entscheidung
-     * 19 vom 01.10.2026): derselbe Befehl mit derselben Dauer an dasselbe
-     * Ventil innerhalb von 60 s geht nicht erneut hinaus - Antwort 200 mit
+     * Gleichwert-Unterdrueckung fuer Ventil- und Steckdosenbefehle (1.2.13,
+     * X-7; Entscheidung 19 vom 01.10.2026; Steckdose seit 1.2.14): derselbe
+     * Befehl mit derselben Dauer an dasselbe Ventil bzw. dieselbe Steckdose
+     * innerhalb von 60 s geht nicht erneut hinaus - Antwort 200 mit
      * UNVERAENDERT=1. Sie steht VOR der Abrufsperre und der Stundengrenze:
      * ein unterdrueckter Befehl zaehlt nicht mit. Derselbe Merker gilt fuer
-     * die Schnittstelle der Bewaesserung. Maeher und Steckdose sind nicht
-     * betroffen. Bis 1.2.12 ging jede Wiederholung an die Wolke.
+     * die Schnittstelle der Bewaesserung. Der Maeher ist nicht betroffen
+     * (gardena_gleichwert_gilt()). Bis 1.2.12 ging jede Wiederholung an die
+     * Wolke, bis 1.2.13 jede Wiederholung an eine Steckdose.
      */
     $ggw = null;
     $gw_wert = '';
-    if ($type === 'VALVE_CONTROL') {
+    if (gardena_gleichwert_gilt($type)) {
         $gw_wert = gardena_gleichwert_wert($cmd, $seconds);
         $ggw = gardena_gleichwert_oeffnen();
         if ($ggw === null) {
             gardena_log_gebremst('gleichwert_merker', 'ERR', 'Der Merker der Gleichwert-Unterdrueckung ('
-                . gardena_log_datei('gardena_gleichwert.merker') . ') laesst sich nicht oeffnen - Ventilbefehle '
-                . 'werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
+                . gardena_log_datei('gardena_gleichwert.merker') . ') laesst sich nicht oeffnen - Ventil- und '
+                . 'Steckdosenbefehle werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
             gardena_ende(503, "FEHLER: Der Merker der Gleichwert-Unterdrueckung ist nicht nutzbar (Merkerdatei im "
                 . "Protokollordner) - der Befehl wurde NICHT gesendet.\n",
                 'command abgewiesen: Merker der Gleichwert-Unterdrueckung nicht nutzbar');
