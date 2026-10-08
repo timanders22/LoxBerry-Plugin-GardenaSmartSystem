@@ -1,5 +1,15 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.17
+
+Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
+
+* **Statusübersicht über den Reitern** als Tabelle: Dienst (ohne – der Abruf läuft per Cron), Abruf ein/aus
+  mit Abstand, Zugang eingetragen, letzter Abruf, Zahl der Geräte im Abbild. Nur Werte, die die Seite schon
+  liest; keine Abfrage der GARDENA-Wolke beim Seitenaufbau.
+* **Zusammenfassung** des Plugins in einem grünen Kasten oben im Reiter Einstellungen.
+* Nur Oberfläche; gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.2.16
 
 Eigene Sprachausgabe bei drei GARDENA-Ereignissen, ab Werk aus (Entscheidung 36/40), dazu ein eigener Satz

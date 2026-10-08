@@ -2358,6 +2358,36 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <div class="sm-alert sm-warn"><?= gardena_e($ghinweis) ?></div>
 <?php } ?>
 
+<?php
+/* Kopf (Entscheidung Nr. 43, seit 1.2.17): Statusuebersicht ueber den Reitern,
+   immer sichtbar. Nur Werte, die oben schon gelesen sind ($gc, $gcache). */
+$g_kopf_geraete = 0;
+if (!empty($gcache['locations']) && is_array($gcache['locations'])) {
+    foreach ($gcache['locations'] as $g_kl) {
+        if (is_array($g_kl) && !empty($g_kl['devices']) && is_array($g_kl['devices'])) {
+            $g_kopf_geraete += count($g_kl['devices']);
+        }
+    }
+}
+$g_kopf_ein = ((string) $gc['ENABLED'] === '1');
+$g_kopf_zugang = ((string) $gc['CLIENT_ID'] !== '' && (string) $gc['CLIENT_SECRET'] !== '');
+?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= gardena_t('EINST.KOPF_EIGENSCHAFT') ?></th><th><?= gardena_t('EINST.KOPF_WERT') ?></th></tr>
+<tr><td><?= gardena_t('EINST.KOPF_DIENST') ?></td>
+    <td><?= gardena_t('EINST.KOPF_OHNE_DIENST') ?></td></tr>
+<tr><td><?= gardena_t('EINST.KOPF_ABRUF') ?></td>
+    <td class="<?= $g_kopf_ein ? 'sm-an' : 'sm-aus' ?>"><?= $g_kopf_ein
+        ? sprintf(gardena_t('EINST.KOPF_ABRUF_EIN'), gardena_e(trim((string) $gc['INTERVALL'])))
+        : gardena_t('EINST.KOPF_ABRUF_AUS') ?></td></tr>
+<tr><td><?= gardena_t('EINST.KOPF_ZUGANG') ?></td>
+    <td class="<?= $g_kopf_zugang ? 'sm-an' : 'sm-aus' ?>"><?= $g_kopf_zugang ? gardena_t('EINST.KOPF_ZUGANG_JA') : gardena_t('EINST.KOPF_ZUGANG_NEIN') ?></td></tr>
+<tr><td><?= gardena_t('EINST.KOPF_LETZTER_ABRUF') ?></td>
+    <td><?= !empty($gcache['updated']) ? gardena_e($gcache['updated']) : gardena_t('EINST.KOPF_NIE') ?></td></tr>
+<tr><td><?= gardena_t('EINST.KOPF_GERAETE') ?></td>
+    <td><?= (int) $g_kopf_geraete ?></td></tr>
+</table>
+
 <div class="sm-tabs">
     <a class="sm-tab<?= gaktiv('tab-settings') ?>" data-pane="tab-settings" href="index.php?form=settings"><?= gardena_t('REITER.EINSTELLUNGEN') ?></a>
     <a class="sm-tab<?= gaktiv('tab-mqtt') ?>" data-pane="tab-mqtt" href="index.php?form=mqtt"><?= gardena_t('REITER.MQTT') ?></a>
@@ -2369,6 +2399,7 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= gaktiv('tab-settings') ?>" id="tab-settings">
+<div class="sm-hinweis"><?= gardena_t('EINST.WAS_IST_DAS') ?></div>
 <?php /* EINE gesammelte Legende oben im Reiter (1.2.11, O9; Regeln/04). Sie
    nennt genau die Farben der Knoepfe dieses Reiters: gruen (Einstellungen
    sichern) und orange (Speichern, Quittieren, Neues Token, Zurueckspielen).
