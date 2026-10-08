@@ -1505,6 +1505,11 @@ function gardena_vorgaben()
         // Loxone-Adressen. Die Hoechstdauer gilt je Oeffnen, 1 bis 180 Minuten
         // (Entscheidung 10: hoechstens 3 Stunden je Ventilbefehl).
         'VENTIL_SCHNITTSTELLE' => '0', 'VENTIL_TOKEN' => '', 'VENTIL_MAX_MIN' => '60',
+        // Ab 1.2.15: Sprachausgabe (Nr. 36 b). Die Haken je Anlass sind ab Werk
+        // gesetzt; gesprochen wird erst, wenn eine Ausgabeart gewaehlt ist - der
+        // Block TTS (nicht in dieser Liste, siehe gardena_cfg_vervollstaendigen())
+        // steht ab Werk auf 'aus' (D-Regel).
+        'ANSAGE_BEENDET' => '1', 'ANSAGE_STOERUNG' => '1', 'ANSAGE_BATTERIE' => '1',
     );
 }
 
@@ -2675,7 +2680,8 @@ function gardena_roh_aufbereiten($daten, array $geheim)
  */
 function gardena_spaete_schluessel()
 {
-    return array('VENTIL_SCHNITTSTELLE', 'VENTIL_TOKEN', 'VENTIL_MAX_MIN');
+    return array('VENTIL_SCHNITTSTELLE', 'VENTIL_TOKEN', 'VENTIL_MAX_MIN',
+                 'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE');      // seit 1.2.15
 }
 
 /**
@@ -2743,7 +2749,13 @@ function gardena_config()
  */
 function gardena_sicherung_stand()
 {
-    return array_intersect_key(gardena_config(), gardena_vorgaben());
+    $s = array_intersect_key(gardena_config(), gardena_vorgaben());
+    /* Seit 1.2.15 (Nr. 36 b): die Sprachausgabe als Block 'tts' wie in den
+     * anderen Linien - OHNE Sprechtoken (ansage_sicherung_bereinigen()). Der
+     * INI-Schluessel TTS traegt sie und geht deshalb nie hinaus. */
+    unset($s['TTS']);
+    if (function_exists('ansage_sicherung_bereinigen')) { $s['tts'] = ansage_sicherung_bereinigen(gardena_tts()); }
+    return $s;
 }
 
 /**
@@ -2794,6 +2806,13 @@ function gardena_cfg_vervollstaendigen($cfgfile)
     $fehlt = array();
     foreach (gardena_vorgaben() as $k => $v) {
         if (!in_array($k, $da, true)) { $fehlt[$k] = $v; }
+    }
+    /* Nr. 36 b (1.2.15): der Block der Sprachausgabe steht nicht in den
+     * Vorgaben (sie sind die Schluesselliste der Sicherung); fehlt er, kommt
+     * seine Vorgabe 'aus' hinzu - nur mit geladener Abschrift, sonst kein
+     * leerer Schluessel. */
+    if (!in_array('TTS', $da, true) && function_exists('ansage_vorgaben')) {
+        $fehlt['TTS'] = gardena_tts_kodieren(ansage_vorgaben('aus'));
     }
     if (!$fehlt) { return array(); }
     if (!gardena_cfg_write($cfgfile, $fehlt)) { return array(); }
@@ -2851,7 +2870,8 @@ function gardena_wert_taugt($v)
  */
 function gardena_wert_pruefen($k, $v)
 {
-    $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED', 'VENTIL_SCHNITTSTELLE');
+    $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED', 'VENTIL_SCHNITTSTELLE',
+                     'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE');
     if (in_array($k, $ja_nein, true)) {
         return ($v === '0' || $v === '1') ? '' : gardena_t('EINST.PRUEF_NUR01');
     }
@@ -2937,6 +2957,42 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
          * "Einstellungen sichern" selbst, wenn ein Wert das Zurueckspielen nicht
          * bestuende. Sie tragen keine Einstellung und werden uebergangen. */
         if (in_array((string) $k, array('_warnung', '_hinweis', '_stand'), true)) { continue; }
+        if ((string) $k === 'tts') {
+            /* Nr. 36 b (1.2.15): eine Sicherung dieses Plugins traegt nie ein
+             * Sprechtoken - traegt die Datei eines (auch als Liste, Zahl oder null),
+             * stammt sie nicht aus "Einstellungen sichern" und wird abgewiesen.
+             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft
+             * (Heimnetz); die geltenden Sprechtoken bleiben. */
+            if (!function_exists('ansage_wert_pruefen')) {
+                $namen[] = 'tts';
+                $mangel[] = gardena_t('EINST.SICH_TTS_OHNE_MODUL');
+                continue;
+            }
+            $tm = ansage_sicherung_mangel($w);
+            if ($tm) {
+                $namen = array_merge($namen, $tm);
+                $mangel[] = sprintf(gardena_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm));
+                continue;
+            }
+            $tg = '';
+            $tp = ansage_wert_pruefen($w, $tg, gardena_ansage_modi());
+            if ($tp === null) {
+                $namen[] = 'tts';
+                $mangel[] = sprintf(gardena_t('EINST.SICH_TTS'), ansage_kennung_text($tg, gardena_ansage_k()));
+                continue;
+            }
+            $tj = gardena_tts();
+            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            $neu['TTS'] = gardena_tts_kodieren(ansage_sicherung_tokens_behalten($tv, $tj));
+            $anzahl++;
+            continue;
+        }
+        if ((string) $k === 'TTS') {
+            // Der INI-Schluessel gehoert in keine Sicherung (er traegt die Sprechtoken).
+            $namen[] = 'TTS';
+            $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), 'TTS');
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             // NICHT maskieren: die Bibliothek liefert Daten, die Oberflaeche
             // maskiert. Bis 1.2.5 lief der Name durch beide Stellen und der
@@ -2985,6 +3041,10 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
      * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    /* Nr. 36 b (1.2.15): ohne Block 'tts' (Sicherung vor 1.2.15) bleibt die
+     * geltende Sprachausgabe samt Sprechtoken - $neu traegt keinen Schluessel
+     * TTS, und gardena_cfg_write() laesst ihn in der Datei stehen. */
+    if (function_exists('ansage_vorgaben') && !array_key_exists('tts', $daten)) { $behalten[] = 'tts'; }
     $fehlend = array();
     $jetzt = null;
     foreach (array_keys(gardena_vorgaben()) as $fk) {
@@ -3010,4 +3070,354 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
             implode(', ', $fehlend));
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+
+/* ==================================================================
+ * Sprachausgabe (1.2.15, Nr. 36 b Stufe 2; ab Werk aus)
+ * ==================================================================
+ *
+ * Das Plugin sagt selbst an, ueber die gemeinsame Sprachausgabe der Plugins
+ * dieses Hauses (sprachausgabe.php, byte-gleiche Abschrift neben der
+ * Oberflaeche in webfrontend/htmlauth/). Drei Anlaesse, je ein Haken:
+ * Bewaesserung beendet, Ventilstoerung, Batterie schwach/leer. Erkannt wird im
+ * Abruf (gardenaMain.php) als FLANKE gegen den vorigen Abruf - eine anhaltende
+ * Stoerung spricht einmal, nicht bei jedem Lauf.
+ *
+ * Ablage: der Block tts steht als EIN Schluessel TTS in der gardena.cfg (JSON).
+ * Der INI-Zerleger schneidet einen Wert am Semikolon ab und nimmt
+ * Anfuehrungszeichen am Rand weg (gemessen unter 7.4 und 8.5, BAUBERICHT);
+ * JSON beginnt mit '{' und endet mit '}', und ';' wird als \u003b geschrieben.
+ * Damit reisen Konfiguration, Zweitschrift und Upgrade-Sicherung den Block
+ * ohne eigenen Weg mit. Die Sprechtoken stehen dort wie Secret und Token (0600);
+ * in die Sicherungsdatei kommen sie nie (gardena_sicherung_stand()).
+ */
+
+/** Wo die Abschrift gesucht wird - in dieser Reihenfolge (Regeln/03, Abschnitt 2). */
+function gardena_ansage_kandidaten()
+{
+    $k = array();
+    $home = isset($GLOBALS['lbhomedir']) ? (string) $GLOBALS['lbhomedir'] : '';
+    if ($home === '' && defined('LBHOMEDIR')) { $home = (string) LBHOMEDIR; }
+    $ordner = isset($GLOBALS['lbpplugindir']) ? (string) $GLOBALS['lbpplugindir'] : '';
+    if ($ordner === '' && defined('LBPPLUGINDIR')) { $ordner = (string) LBPPLUGINDIR; }
+    if (rtrim($home, '/') !== '' && $ordner !== '') {
+        $k[] = rtrim($home, '/') . '/webfrontend/htmlauth/plugins/' . $ordner . '/sprachausgabe.php';
+    }
+    // installiert: <Wurzel>/bin/plugins/<ordner> -> <Wurzel>/webfrontend/htmlauth/plugins/<ordner>
+    $k[] = dirname(dirname(dirname(__DIR__))) . '/webfrontend/htmlauth/plugins/' . basename(__DIR__) . '/sprachausgabe.php';
+    // ausgepacktes Archiv: <archiv>/bin -> <archiv>/webfrontend/htmlauth
+    $k[] = dirname(__DIR__) . '/webfrontend/htmlauth/sprachausgabe.php';
+    return array_values(array_unique($k));
+}
+
+/** Die Orte, an denen vergeblich gesucht wurde (leer, wenn die Abschrift geladen ist). */
+function gardena_ansage_gesucht()
+{
+    return function_exists('ansage_sprechen') ? array() : gardena_ansage_kandidaten();
+}
+
+/** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg, auf dem Loxone den Text abholt). */
+function gardena_ansage_modi()
+{
+    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+}
+
+/** Optionen fuer Formular-Baustein und Formular-Lesen. */
+function gardena_ansage_opt()
+{
+    return array('modi' => gardena_ansage_modi());
+}
+
+/** Die Anlaesse: Formularfeld => Schluessel der gardena.cfg. */
+function gardena_ansage_anlaesse()
+{
+    return array('ansage_beendet' => 'ANSAGE_BEENDET', 'ansage_stoerung' => 'ANSAGE_STOERUNG',
+                 'ansage_batterie' => 'ANSAGE_BATTERIE');
+}
+
+/** Den Block tts fuer die gardena.cfg kodieren: JSON, ohne Semikolon (siehe oben). */
+function gardena_tts_kodieren($tts)
+{
+    $js = json_encode(is_array($tts) ? $tts : array(), JSON_UNESCAPED_SLASHES);
+    return is_string($js) ? str_replace(';', '\u003b', $js) : '';
+}
+
+/**
+ * Den Block tts aus einer gelesenen Konfiguration, vervollstaendigt (ab Werk
+ * 'aus'). $kaputt: der Schluessel TTS ist da, aber kein JSON-Objekt - dann gilt
+ * 'aus' (ein Schutz faellt geschlossen aus), und der Reiter Test sagt es.
+ */
+function gardena_tts_aus_cfg($cfg, &$kaputt = null)
+{
+    $kaputt = false;
+    $roh = (is_array($cfg) && isset($cfg['TTS']) && !is_array($cfg['TTS'])) ? trim((string) $cfg['TTS']) : '';
+    $d = array();
+    if ($roh !== '') {
+        $d = json_decode($roh, true);
+        if (!is_array($d)) { $d = array(); $kaputt = true; }
+    }
+    if (!function_exists('ansage_vervollstaendigen')) { return $d; }
+    list($t) = ansage_vervollstaendigen($d, 'aus');
+    return $t;
+}
+
+/** Der Block tts der geltenden Konfiguration. */
+function gardena_tts()
+{
+    return gardena_tts_aus_cfg(gardena_config());
+}
+
+/** Ist eine Ausgabeart gewaehlt? */
+function gardena_ansage_an($tts)
+{
+    return is_array($tts) && isset($tts['mode']) && is_string($tts['mode']) && $tts['mode'] !== 'aus'
+        && in_array($tts['mode'], gardena_ansage_modi(), true);
+}
+
+/** Der Kontext des Moduls: Webport, Kopfzeile, Ordner fuer <art>_letzte.json, Texte aus der Sprachdatei. */
+function gardena_ansage_k()
+{
+    $home = gardena_lbhome();
+    $d = isset($GLOBALS['lbpdatadir']) ? (string) $GLOBALS['lbpdatadir'] : '';
+    return array(
+        'port' => ansage_webport($home !== '' ? $home . '/config/system/general.json' : ''),
+        'kopf' => array('User-Agent: LoxBerry GardenaSmartSystem'),
+        'ordner' => ($d !== '' && gardena_lage() !== '' && @is_dir($d)) ? $d : '',
+        't' => function ($s) { return gardena_t($s); },
+        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz in [ANSAGE]; ohne ihn stuende sie roh in der
+         * Sicherungsmeldung. Linieneigener Schluessel wie Intercom 2.2.18, bis der Modulschluessel kommt. */
+        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG'),
+    );
+}
+
+/** Der Merker der Anlaesse im Datenordner; '' = nicht installiert oder kein Datenordner bekannt. */
+function gardena_ansage_merker_datei()
+{
+    $d = isset($GLOBALS['lbpdatadir']) ? (string) $GLOBALS['lbpdatadir'] : '';
+    if ($d === '' || gardena_lage() === '') { return ''; }
+    return rtrim($d, '/') . '/ansage_ereignisse.json';
+}
+
+/** Den Merker lesen: array('t', 'geraete' => id => Zustand, 'gesagt' => "anlass|id" => Zeit, 'letzte'). */
+function gardena_ansage_merker_lesen()
+{
+    $f = gardena_ansage_merker_datei();
+    $m = ($f !== '' && is_file($f)) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($m)) { $m = array(); }
+    $m += array('t' => 0, 'geraete' => array(), 'gesagt' => array(), 'letzte' => array());
+    foreach (array('geraete', 'gesagt', 'letzte') as $s) { if (!is_array($m[$s])) { $m[$s] = array(); } }
+    return $m;
+}
+
+/** Ein Wert eines Dienstes in Grossbuchstaben, sonst ''. */
+function gardena_ansage_wert($dev, $dienst, $attr)
+{
+    return (is_array($dev) && isset($dev['services'][$dienst][$attr]['value'])
+            && is_scalar($dev['services'][$dienst][$attr]['value']))
+        ? strtoupper(trim((string) $dev['services'][$dienst][$attr]['value'])) : '';
+}
+
+/**
+ * Die Anlaesse eines Abrufs erkennen und ansagen. Gerufen von gardenaMain.php
+ * nach dem Senden, mit dem frischen Abbild ($cache wie devices_cache.json) und
+ * der Konfiguration $g. Ab Werk (Ausgabeart aus) kehrt die Funktion sofort
+ * zurueck: kein Merker, keine Anfrage, keine Protokollzeile.
+ *
+ *   beendet   VALVE.activity war MANUAL_WATERING/SCHEDULED_WATERING, ist CLOSED.
+ *             Der Vorzustand muss aus dem letzten Lauf stammen (hoechstens
+ *             3 x Takt, mindestens 30 min alt) - nach einer Abrufsperre waere
+ *             "beendet" Stunden spaeter keine Nachricht mehr.
+ *   stoerung  VALVE.state wird ERROR (vorher nicht ERROR oder unbekannt).
+ *   batterie  COMMON.batteryState wird LOW oder REPLACE_NOW, nicht am Maeher;
+ *             hoechstens einmal je 24 h und Geraet.
+ * Geraete mit mehreren Ventilen (Entscheidung 10) sagen kein Ventilereignis an:
+ * welches Ventil der Wert meint, ist nicht gemessen. Ausgenommene Geraete sagen
+ * nichts an. Alle Saetze eines Laufs gehen als EINE Ansage hinaus; ins
+ * Protokoll kommen nur die Zahlen und das Ergebnis, nie Text oder Geraetename.
+ */
+function gardena_ansage_lauf($cache, $g)
+{
+    if (!function_exists('ansage_sprechen')) { return; }       // beim Laden gemeldet
+    $tts = gardena_tts_aus_cfg($g);
+    if (!gardena_ansage_an($tts)) { return; }
+    $datei = gardena_ansage_merker_datei();
+    if ($datei === '') {
+        gardena_log_gebremst('ansage_merker', 'ERR', 'Sprachausgabe: kein Datenordner bekannt - ohne Merker '
+            . 'keine Flankenerkennung, es wird nichts angesagt.');
+        return;
+    }
+    $alt = gardena_ansage_merker_lesen();
+    $neu = $alt;
+    $jetzt = time();
+    $frisch = ((int) $alt['t'] > 0 && $jetzt - (int) $alt['t'] <= max(1800, 3 * 60 * gardena_intervall($g)));
+    $aus = gardena_ausgenommen($g);
+    $haken = array();
+    foreach (gardena_ansage_anlaesse() as $feld => $schl) {
+        $haken[substr($feld, 7)] = (isset($g[$schl]) && (string) $g[$schl] === '1');
+    }
+    $saetze = array();
+    $zahl = array('beendet' => 0, 'stoerung' => 0, 'batterie' => 0);
+    $abgewaehlt = 0;
+    $gesperrt = 0;
+    $von_bewaesserung = 0;
+    $quellen = gardena_ansage_quelle_lesen();
+    $locs = (is_array($cache) && isset($cache['locations']) && is_array($cache['locations'])) ? $cache['locations'] : array();
+    foreach ($locs as $loc) {
+        if (!is_array($loc) || !isset($loc['devices']) || !is_array($loc['devices'])) { continue; }
+        foreach ($loc['devices'] as $id => $dev) {
+            if (!is_array($dev)) { continue; }
+            $id = (string) $id;
+            $name = (isset($dev['name']) && is_scalar($dev['name']) && (string) $dev['name'] !== '') ? (string) $dev['name'] : $id;
+            if (in_array($name, $aus, true) || in_array($id, $aus, true)) { continue; }
+            $sprech = trim((string) preg_replace('/[\x00-\x1F\x7F<>]+/', ' ', $name));
+            if ($sprech === '' || preg_match('//u', $sprech) !== 1) { $sprech = $id; }
+            $mehr = (isset($dev['mehrfach']['VALVE']) && is_numeric($dev['mehrfach']['VALVE']) && (int) $dev['mehrfach']['VALVE'] > 1);
+            $akt = gardena_ansage_wert($dev, 'VALVE', 'activity');
+            $stoer = (gardena_ansage_wert($dev, 'VALVE', 'state') === 'ERROR') ? 1 : 0;
+            $bs = gardena_ansage_wert($dev, 'COMMON', 'batteryState');
+            $batt = (!isset($dev['services']['MOWER']) && in_array($bs, array('LOW', 'REPLACE_NOW'), true)) ? $bs : '';
+            $v = (isset($alt['geraete'][$id]) && is_array($alt['geraete'][$id])) ? $alt['geraete'][$id] : null;
+            $v_akt = ($v !== null && isset($v['akt'])) ? (string) $v['akt'] : '';
+            $v_stoer = ($v !== null && !empty($v['stoer'])) ? 1 : 0;
+            $v_batt = ($v !== null && isset($v['batt'])) ? (string) $v['batt'] : '';
+            $flanken = array();
+            if (!$mehr && $frisch && $akt === 'CLOSED'
+                && in_array($v_akt, array('MANUAL_WATERING', 'SCHEDULED_WATERING'), true)) {
+                /* 1.2.16 (Doppelansage, Frage 1 des Baus): ein Lauf, den das Plugin
+                 * Bewaesserung ueber die Ventil-Schnittstelle geoeffnet oder
+                 * geschlossen hat (quelle=bewaesserung), sagt hier nicht "beendet" -
+                 * das sagt die Bewaesserung selbst. Erkannt am Merker des Endpunkts
+                 * je Ventil-Dienst: Befehl der Bewaesserung, dessen Dauer zuzueglich
+                 * der Abrufspanne noch nicht verstrichen ist. */
+                $dienst = (isset($dev['services']['VALVE']['_service_id']['value'])
+                           && is_scalar($dev['services']['VALVE']['_service_id']['value']))
+                    ? (string) $dev['services']['VALVE']['_service_id']['value'] : '';
+                $q = ($dienst !== '' && isset($quellen[$dienst])) ? $quellen[$dienst] : null;
+                if ($q !== null && (int) $q['t'] <= $jetzt
+                    && $jetzt - (int) $q['t'] <= (int) $q['sek'] + max(1800, 3 * 60 * gardena_intervall($g))) {
+                    $von_bewaesserung++;
+                } else {
+                    $flanken['beendet'] = sprintf(gardena_t('ANSAGETEXT.BEENDET'), $sprech);
+                }
+            }
+            if (!$mehr && $stoer === 1 && $v_stoer === 0) {
+                $flanken['stoerung'] = sprintf(gardena_t('ANSAGETEXT.STOERUNG'), $sprech);
+            }
+            if ($batt !== '' && $v_batt === '') {
+                $b_zuletzt = isset($alt['gesagt']['batterie|' . $id]) ? (int) $alt['gesagt']['batterie|' . $id] : 0;
+                if ($b_zuletzt > 0 && $jetzt - $b_zuletzt < 86400 && $b_zuletzt <= $jetzt) {
+                    $gesperrt++;
+                } else {
+                    $flanken['batterie'] = sprintf(gardena_t($batt === 'LOW' ? 'ANSAGETEXT.BATTERIE'
+                                                                             : 'ANSAGETEXT.BATTERIE_LEER'), $sprech);
+                }
+            }
+            foreach ($flanken as $anlass => $satz) {
+                if (!$haken[$anlass]) { $abgewaehlt++; continue; }
+                $saetze[] = $satz;
+                $zahl[$anlass]++;
+                $neu['gesagt'][$anlass . '|' . $id] = $jetzt;
+            }
+            $neu['geraete'][$id] = array('akt' => $akt, 'stoer' => $stoer, 'batt' => $batt);
+        }
+    }
+    $neu['t'] = $jetzt;
+    $text = '';
+    $weg = 0;
+    foreach ($saetze as $satz) {
+        $probe = ($text === '') ? $satz : $text . ' ' . $satz;
+        if (ansage_zeichen($probe) > ANSAGE_TEXT_MAX) { $weg++; continue; }
+        $text = $probe;
+    }
+    $r = null;
+    if ($text !== '') {
+        $r = ansage_sprechen($text, $tts, gardena_ansage_k());
+        $neu['letzte'] = array('t' => $jetzt, 'stand' => (int) $r['stand'],
+                               'anlaesse' => implode(',', array_keys(array_filter($zahl))));
+    }
+    if (!gardena_json_write($datei, $neu, 0600)) {
+        gardena_log_gebremst('ansage_merker_schreiben', 'ERR', 'Sprachausgabe: der Merker ' . $datei
+            . ' liess sich nicht schreiben - dieselben Ereignisse koennen erneut angesagt werden.');
+    }
+    if ($r !== null) {
+        gardena_log($r['stand'] === 0 ? 'ERR' : 'INF', 'Ansage (beendet ' . $zahl['beendet'] . ', Stoerung '
+            . $zahl['stoerung'] . ', Batterie ' . $zahl['batterie'] . ($weg > 0 ? ', ' . $weg . ' Saetze ueber 1000 Zeichen entfallen' : '')
+            . '): ' . ansage_kurz($r));
+    }
+    if ($abgewaehlt > 0 || $gesperrt > 0) {
+        gardena_log('INF', 'Sprachausgabe: ' . $abgewaehlt . ' Ereignis(se) mit abgewaehltem Haken, ' . $gesperrt
+            . ' Batteriemeldung(en) innerhalb von 24 h - nicht angesagt.');
+    }
+    if ($von_bewaesserung > 0) {
+        gardena_log('INF', 'Sprachausgabe: ' . $von_bewaesserung . ' Bewaesserungsende(n) aus einem Lauf des Plugins '
+            . 'Bewaesserung (quelle=bewaesserung) - hier nicht angesagt, das sagt die Bewaesserung selbst.');
+    }
+}
+
+/* ------------------------------------------------------------------
+ * Doppelansage mit dem Plugin Bewaesserung (1.2.16)
+ * ------------------------------------------------------------------
+ * Der Endpunkt (POST action=ventil) merkt sich je Ventil-Dienst den letzten
+ * angenommenen Befehl mit quelle=bewaesserung: Zeit, Befehl, Dauer in Sekunden.
+ * gardena_ansage_lauf() sagt "Bewaesserung beendet" fuer einen solchen Lauf
+ * nicht an. Merker im Protokollordner (RAM-Scheibe; nach einem Neustart leer -
+ * dann kommt hoechstens eine Ansage zu viel), Eintraege aelter als 24 h fallen weg.
+ */
+function gardena_ansage_quelle_datei()
+{
+    return gardena_log_datei('gardena_ansage_quelle.merker');
+}
+
+/** Einen angenommenen Befehl der Bewaesserung merken. Rueckgabe: geschrieben? */
+function gardena_ansage_quelle_merken($dienst, $befehl, $sek)
+{
+    $f = gardena_ansage_quelle_datei();
+    if ($f === '' || (string) $dienst === '') { return false; }
+    $fh = @fopen($f, 'c+');
+    if ($fh === false) { return false; }
+    if (!flock($fh, LOCK_EX)) { fclose($fh); return false; }
+    $d = json_decode((string) stream_get_contents($fh), true);
+    if (!is_array($d)) { $d = array(); }
+    $jetzt = time();
+    foreach ($d as $k => $e) {
+        if (!is_array($e) || !isset($e['t']) || (int) $e['t'] < $jetzt - 86400 || (int) $e['t'] > $jetzt + 5) { unset($d[$k]); }
+    }
+    $d[(string) $dienst] = array('t' => $jetzt, 'befehl' => (string) $befehl, 'sek' => max(0, (int) $sek));
+    $js = (string) json_encode($d);
+    $ok = ftruncate($fh, 0) && rewind($fh) && @fwrite($fh, $js) === strlen($js) && fflush($fh);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
+/** Die gemerkten Befehle der Bewaesserung: Dienst => array('t', 'befehl', 'sek'). */
+function gardena_ansage_quelle_lesen()
+{
+    $f = gardena_ansage_quelle_datei();
+    if ($f === '' || !is_file($f)) { return array(); }
+    $d = json_decode((string) @file_get_contents($f), true);
+    $aus = array();
+    foreach (is_array($d) ? $d : array() as $k => $e) {
+        if (is_array($e) && isset($e['t'], $e['sek'])) {
+            $aus[(string) $k] = array('t' => (int) $e['t'], 'befehl' => isset($e['befehl']) ? (string) $e['befehl'] : '',
+                                      'sek' => (int) $e['sek']);
+        }
+    }
+    return $aus;
+}
+
+/* Die Abschrift laden. Fehlt sie, laeuft alles andere unveraendert weiter;
+ * die Zeile steht einmal je Stunde im Protokoll, Oberflaeche und Reiter Test
+ * nennen die gesuchten Orte. */
+if (!function_exists('ansage_sprechen')) {
+    foreach (gardena_ansage_kandidaten() as $gak) {
+        if (is_file($gak)) { require_once $gak; break; }
+    }
+    unset($gak);
+    if (!function_exists('ansage_sprechen')) {
+        gardena_log_gebremst('ansage_fehlt', 'ERR', 'Die gemeinsame Sprachausgabe (sprachausgabe.php) wurde nicht '
+            . 'gefunden, gesucht in: ' . implode(', ', gardena_ansage_kandidaten()) . ' - es gibt keine Ansage, '
+            . 'alles andere laeuft weiter.');
+    }
 }

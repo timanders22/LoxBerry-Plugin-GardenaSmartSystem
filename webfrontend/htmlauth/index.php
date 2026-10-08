@@ -257,6 +257,63 @@ function gardena_endpunkt_probe($ordner, $token)
     return array($code, $rumpf);
 }
 
+/**
+ * Sprachausgabe im Reiter Test (1.2.15, Nr. 36 b): die Zeile des Moduls und die
+ * Zeile der Anlaesse. Alexa-NG/Chromecast werden nur bei geoeffnetem Reiter Test
+ * gefragt (selftest=1, spricht nicht); der Music Server nie.
+ * Stand des Moduls 1 Haken, 0 Kreuz, -1 Hinweis, -2 grau -> hier 1, -1, 0, 0.
+ */
+function gardena_ansage_pruefzeilen($cfg, $netz)
+{
+    $z = array();
+    if (!function_exists('ansage_pruefzeile')) {
+        $z[] = gardena_pruefzeile(-1, gardena_t('TEST.F_ANSAGE'),
+            sprintf(gardena_t('TEST.A_ANSAGE_FEHLT'), implode(', ', gardena_ansage_gesucht())));
+        return $z;
+    }
+    $kaputt = false;
+    $tts = gardena_tts_aus_cfg($cfg, $kaputt);
+    $k = gardena_ansage_k();
+    $k['e'] = function ($s) { return (string) $s; };      // die Tabelle maskiert selbst
+    list($st, $text) = ansage_pruefzeile($tts, (bool) $netz, $k);
+    $stand = ($st === 1) ? 1 : (($st === 0) ? -1 : 0);
+    if ($kaputt) {
+        $stand = -1;
+        $text = gardena_t('TEST.A_ANSAGE_KAPUTT') . ' ' . $text;
+    }
+    $z[] = gardena_pruefzeile($stand, gardena_t('TEST.F_ANSAGE'), $text);
+    if (!gardena_ansage_an($tts)) {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_ANSAGE_ANLAESSE'), gardena_t('TEST.A_ANSAGE_ANLAESSE_AUS'));
+        return $z;
+    }
+    $gewaehlt = array();
+    foreach (gardena_ansage_anlaesse() as $feld => $schl) {
+        if (isset($cfg[$schl]) && (string) $cfg[$schl] === '1') {
+            $gewaehlt[] = gardena_t('EINST.ANSAGE_' . strtoupper(substr($feld, 7)));
+        }
+    }
+    $m = gardena_ansage_merker_lesen();
+    $l = $m['letzte'];
+    $letzte = (isset($l['t']) && (int) $l['t'] > 0)
+        ? sprintf(gardena_t('TEST.A_ANSAGE_LETZTE'), gardena_alter_text(max(0, time() - (int) $l['t'])),
+                  (isset($l['stand']) && (int) $l['stand'] === 1) ? gardena_t('TEST.A_ANSAGE_GESENDET')
+                                                                  : gardena_t('TEST.A_ANSAGE_NICHT_GESENDET'))
+        : gardena_t('TEST.A_ANSAGE_NIE');
+    if (!$gewaehlt) {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_ANSAGE_ANLAESSE'), gardena_t('TEST.A_ANSAGE_KEINER'));
+    } elseif ((string) $cfg['ENABLED'] !== '1') {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_ANSAGE_ANLAESSE'), gardena_t('TEST.A_ANSAGE_PLUGIN_AUS'));
+    } else {
+        $t = sprintf(gardena_t('TEST.A_ANSAGE_ANLAESSE'), implode(', ', $gewaehlt)) . ' ' . $letzte;
+        $s = 1;
+        if ((string) $cfg['VENTIL_SCHNITTSTELLE'] === '1' && (string) $cfg['ANSAGE_BEENDET'] === '1') {
+            $t .= ' ' . gardena_t('TEST.A_ANSAGE_DOPPELT');
+        }
+        $z[] = gardena_pruefzeile($s, gardena_t('TEST.F_ANSAGE_ANLAESSE'), $t);
+    }
+    return $z;
+}
+
 function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $cfgdir, $ordner, $netz = false)
 {
     $z = array();
@@ -602,6 +659,9 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
         }
     }
 
+    /* ---- Sprachausgabe (1.2.15, Nr. 36 b) ---- */
+    foreach (gardena_ansage_pruefzeilen($cfg, $netz) as $ga_z) { $z[] = $ga_z; }
+
     /* ---- Ist jede benutzte CSS-Klasse auch definiert? ----
      * Die Klasse sm-warnung stand seit jeher im HTML und in keiner Regel des
      * Stilblocks - der Warnhinweis an der Sicherungsdatei war dadurch
@@ -867,6 +927,7 @@ function gardena_vorlage($cachefile, $topic, $ausgenommen = array())
  * ================================================================== */
 $gsaved = false;
 $gtest = '';
+$ghinweis = '';      // 1.2.15: gelber Hinweis (Testansage ohne Ausgabe)
 $gtokenmsg = '';
 $gfehler = array();
 
@@ -915,6 +976,10 @@ function gardena_eingaben_sammeln($form)
         'mqtt' => array('mqtt_enabled', 'mqtt_topic'),
         'ventil' => array('ventil_schnittstelle', 'ventil_max_min'),
     );
+    if (function_exists('ansage_x2_felder')) {
+        // Nr. 36 b: nie die Sprechtoken (ansage_x2_felder()).
+        $felder['ansage'] = array_merge(ansage_x2_felder(gardena_ansage_opt()), array_keys(gardena_ansage_anlaesse()));
+    }
     if (!isset($felder[$form])) { return array(); }
     $aus = array();
     foreach ($felder[$form] as $f) {
@@ -989,6 +1054,7 @@ if (!$gpost) {
         }
         if (isset($gm['tokenmsg']) && is_string($gm['tokenmsg'])) { $gtokenmsg = $gm['tokenmsg']; }
         if (isset($gm['test']) && is_string($gm['test'])) { $gtest = $gm['test']; }
+        if (isset($gm['hinweis']) && is_string($gm['hinweis'])) { $ghinweis = $gm['hinweis']; }
         if (isset($gm['eingaben']['form'], $gm['eingaben']['felder']) && is_string($gm['eingaben']['form'])
             && is_array($gm['eingaben']['felder'])) {
             $geingaben_form = $gm['eingaben']['form'];
@@ -1171,6 +1237,70 @@ if ($gpost && isset($_POST['ventil_save'])) {
             } else {
                 $gfehler[] = sprintf(gardena_t('EINST.SCHREIBFEHLER'), $gconfigfile);
             }
+        }
+    }
+}
+
+/* ---------- Sprachausgabe (1.2.15, Nr. 36 b; ab Werk aus) ----------
+ *
+ * Eigenes Formular mit eigenem Handler. Jede Beanstandung verhindert das
+ * Speichern (Nr. 16); kein Sprechtoken steht in einer Meldung, ein leeres
+ * Tokenfeld heisst "behalten", der Haken loescht, beides zugleich ist ein
+ * Widerspruch (ansage_formular_lesen()).
+ */
+if ($gpost && isset($_POST['ansage_save'])) {
+    $gneu_form = 'ansage';
+    $g_tab = 'tab-settings';
+    if (!function_exists('ansage_formular_lesen')) {
+        $gfehler[] = gardena_t('EINST.ANSAGE_FEHLT');
+    } else {
+        $ga_mangel = array();
+        $ga_bean = array();
+        $ga_tts = ansage_formular_lesen($_POST, gardena_tts(), $ga_mangel, $ga_bean, gardena_ansage_opt(),
+                                        gardena_ansage_k());
+        foreach ($ga_mangel as $ga_m) { $gfehler[] = gardena_t('EINST.H_ANSAGE_KURZ') . ': ' . $ga_m['text']; }
+        foreach ($ga_bean as $ga_b) { $gneu_mark[] = $ga_b; }
+        $ga_neu = array();
+        foreach (gardena_ansage_anlaesse() as $ga_feld => $ga_schl) {
+            // Nr. 19: ein Haken traegt 1 oder fehlt.
+            $ga_w = isset($_POST[$ga_feld]) ? $_POST[$ga_feld] : '0';
+            if ($ga_w !== '0' && $ga_w !== '1') {
+                $gfehler[] = gardena_t('EINST.ANSAGE_' . strtoupper(substr($ga_feld, 7))) . ': ' . gardena_t('EINST.PRUEF_HAKEN');
+                $gneu_mark[] = $ga_feld;
+            } else {
+                $ga_neu[$ga_schl] = $ga_w;
+            }
+        }
+        if (!$gfehler) {
+            $ga_neu['TTS'] = gardena_tts_kodieren($ga_tts);
+            if (gardena_cfg_write($gconfigfile, $ga_neu)) {
+                $gsaved = gardena_t('EINST.ANSAGE_GESPEICHERT');
+                gardena_log('INF', 'Sprachausgabe gespeichert (Oberflaeche): Ausgabeart ' . $ga_tts['mode']
+                    . ', Anlaesse beendet=' . $ga_neu['ANSAGE_BEENDET'] . ' stoerung=' . $ga_neu['ANSAGE_STOERUNG']
+                    . ' batterie=' . $ga_neu['ANSAGE_BATTERIE'] . '.');
+            } else {
+                $gfehler[] = sprintf(gardena_t('EINST.SCHREIBFEHLER'), $gconfigfile);
+            }
+        }
+    }
+}
+
+/* Testansage (POST, Ergebnis als Einmalmeldung, dann 303). Ins Protokoll nur die
+ * Kurzform ohne Text und Token. */
+if ($gpost && isset($_POST['ansage_test'])) {
+    $g_tab = 'tab-test';
+    if (!function_exists('ansage_testansage')) {
+        $gfehler[] = gardena_t('EINST.ANSAGE_FEHLT');
+    } else {
+        $ga_k = gardena_ansage_k();
+        $ga_r = ansage_testansage(gardena_tts(), $ga_k);
+        gardena_log('INF', 'Testansage (Oberflaeche): ' . ansage_kurz($ga_r));
+        if ($ga_r['stand'] === 1) {
+            $gsaved = gardena_t('TEST.ANSAGE_TEST_OK');
+        } elseif ($ga_r['stand'] === -1) {
+            $ghinweis = sprintf(gardena_t('TEST.ANSAGE_TEST_NICHTS'), ansage_kennung_text($ga_r['kennung'], $ga_k));
+        } else {
+            $gfehler[] = sprintf(gardena_t('TEST.ANSAGE_TEST_FEHL'), ansage_kennung_text($ga_r['kennung'], $ga_k));
         }
     }
 }
@@ -2039,7 +2169,7 @@ if ($gpost && isset($_POST['gardena_zurueck'])) {
  * Neuladen, das fragt. */
 if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $gm_neu = array('saved' => $gsaved, 'fehler' => array_values($gfehler),
-                    'tokenmsg' => $gtokenmsg, 'test' => $gtest);
+                    'tokenmsg' => $gtokenmsg, 'test' => $gtest, 'hinweis' => $ghinweis);
     // X-2 (1.2.13): nur nach einer Beanstandung, nur das eine Formular, nie Geheimnisse.
     if ($gfehler && $gneu_form !== '') {
         $gm_neu['eingaben'] = array('form' => $gneu_form, 'felder' => gardena_eingaben_sammeln($gneu_form),
@@ -2152,6 +2282,9 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 .sm-wrap label { display: block; font-weight: 600; font-size: 0.88em; color: #555; margin: 10px 0 4px; }
 .sm-wrap input[type=text], .sm-wrap input[type=password], .sm-wrap input[type=number], .sm-wrap select {
   width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
+/* 1.2.15 (Nr. 36 b): das Textfeld der Adressvorlage der Sprachausgabe wie die Eingabefelder. */
+.sm-wrap textarea { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 0.95em; box-sizing: border-box; }
+.sm-wrap textarea.sm-beanstandet { border: 2px solid #c62828 !important; background-color: #fff5f5; }
 .sm-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sm-row > div { flex: 1; min-width: 160px; }
 .sm-btn { background: #6dac20; color: #fff !important; border: 0; border-radius: 6px; padding: 10px 22px; font-size: 1em; cursor: pointer; font-weight: 600; }
@@ -2220,6 +2353,9 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
 <?php } ?>
 <?php if ($gtest !== '') { ?>
 <div class="sm-alert <?= strpos($gtest, 'OK') === 0 ? 'sm-ok' : 'sm-err' ?>"><?= gardena_e($gtest) ?></div>
+<?php } ?>
+<?php if ($ghinweis !== '') { ?>
+<div class="sm-alert sm-warn"><?= gardena_e($ghinweis) ?></div>
 <?php } ?>
 
 <div class="sm-tabs">
@@ -2463,9 +2599,39 @@ if ($gmesser_int > 0) {
 </form>
 </div>
 
+<h2><?= gardena_t('EINST.H_ANSAGE') ?></h2>
+<?php /* Nr. 36 b (1.2.15): Sprachausgabe ueber die gemeinsame Abschrift, ab Werk aus. */ ?>
+<div class="sm-hinweis"><?= gardena_t('EINST.ANSAGE_TEXT') ?></div>
+<?php if (!function_exists('ansage_formular_html')) { ?>
+<div class="sm-alert sm-err"><?= gardena_e(sprintf(gardena_t('EINST.ANSAGE_FEHLT_ORT'), implode(', ', gardena_ansage_gesucht()))) ?></div>
+<?php } else { ?>
+<?php if ((string) $gc['VENTIL_SCHNITTSTELLE'] === '1') { ?>
+<div class="sm-hinweis"><?= gardena_t('EINST.ANSAGE_DOPPELT') ?></div>
+<?php } ?>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+<input data-role="none" type="hidden" name="ansage_save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<?= ansage_formular_html(gardena_tts_aus_cfg($gc), array(
+    'w' => function ($n, $g) { return gfeld('ansage', $n, $g); },
+    'm' => function ($n) { return gmark('ansage', $n); },
+    'c' => function ($n, $g) { global $geingaben, $geingaben_form; return $geingaben_form === 'ansage' && isset($geingaben[$n]); },
+    'modi' => gardena_ansage_modi()), gardena_ansage_k()) ?>
+<label><?= gardena_t('EINST.ANSAGE_ANLAESSE') ?></label>
+<?php foreach (gardena_ansage_anlaesse() as $ga_feld => $ga_schl) {
+    $ga_an = ($geingaben_form === 'ansage') ? isset($geingaben[$ga_feld]) : ((string) $gc[$ga_schl] === '1'); ?>
+<label style="font-weight:400;"><input data-role="none" type="checkbox" name="<?= $ga_feld ?>" value="1"<?= $ga_an ? ' checked' : '' ?><?= gmark('ansage', $ga_feld) ?>> <?= gardena_t('EINST.ANSAGE_' . strtoupper(substr($ga_feld, 7))) ?></label>
+<?php } ?>
+<div class="sm-small"><?= gardena_t('EINST.ANSAGE_ANLAESSE_HINWEIS') ?></div>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gardena_t('ALLG.SPEICHERN_NUR') ?></button>
+</form>
+<div class="sm-small"><?= gardena_t('EINST.ANSAGE_TEST_HINWEIS') ?></div>
+<?php } ?>
+
 <h2><?= gardena_t('EINST.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= gardena_t('EINST.SICH_ERKLAERUNG') ?></div>
 <div class="sm-alert sm-warn"><?= gardena_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-small"><?= gardena_t('EINST.SICH_TTS_HINWEIS') ?></div>
 <?php /* X-3 (1.2.13): dieselbe Pruefung wie das Zurueckspielen; nur Namen,
    nie Werte. Die Sicherung wird trotzdem vollstaendig geliefert. */
 $g_altwerte = gardena_rueckspiel_altwerte();
@@ -2746,11 +2912,11 @@ $gb_name = function ($geraet, $dienst, $attr) use ($gb_topic, $gb_geraet) {
 <tr><td>3</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('', 'MOWER', 'operatingHours') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt; h</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
 <tr><td>4</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('Plugin', 'STATUS', 'ok') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt;</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
 <tr><td>5</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('Plugin', 'STATUS', 'ts') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt;</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>6</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Akku_niedrig</td><td><?= gardena_t('LOX.P_SCHWELLE') ?></td><td><?= gardena_t('LOX.S_EINGANG') ?> &larr; #1</td></tr>
+<tr><td>6</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Akku_niedrig</td><td><?= gardena_t('LOX.P_SCHWELLE') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #1</td></tr>
 <tr><td>7</td><td><?= gardena_t('LOX.B_FORMEL') ?></td><td>Gardena_Abruf_Alter</td><td><span class="sm-mono">I1-I2</span></td><td><?= gardena_t('LOX.P_ALTER_EINGAENGE') ?></td></tr>
-<tr><td>8</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Abruf_haengt</td><td><?= gardena_t('LOX.P_SCHWELLE_ALTER') ?></td><td><?= gardena_t('LOX.S_EINGANG') ?> &larr; #7</td></tr>
-<tr><td>9</td><td><?= gardena_t('LOX.B_ODER') ?></td><td>Gardena_Meldungen</td><td>–</td><td><?= gardena_t('LOX.S_EINGAENGE') ?> #6, #8</td></tr>
-<tr><td>10</td><td><?= gardena_t('LOX.B_BENACHRICHTIGUNG') ?></td><td>Gardena_Melder</td><td><?= gardena_t('LOX.P_TEXT_FREI') ?></td><td><?= gardena_t('LOX.S_EINGANG') ?> &larr; #9</td></tr>
+<tr><td>8</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Abruf_haengt</td><td><?= gardena_t('LOX.P_SCHWELLE_ALTER') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #7</td></tr>
+<tr><td>9</td><td><?= gardena_t('LOX.B_ODER') ?></td><td>Gardena_Meldungen</td><td>–</td><td>I1 = #6, I2 = #8</td></tr>
+<tr><td>10</td><td><?= gardena_t('LOX.B_BENACHRICHTIGUNG') ?></td><td>Gardena_Melder</td><td><?= gardena_t('LOX.P_TEXT_FREI') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #9</td></tr>
 <tr><td>11</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_maehen</td><td><span class="sm-mono">…&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
 <tr><td>12</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_parken</td><td><span class="sm-mono">…&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
 <tr><td>13</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_bewaessern</td><td><span class="sm-mono">…&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
@@ -2760,6 +2926,7 @@ $gb_name = function ($geraet, $dienst, $attr) use ($gb_topic, $gb_geraet) {
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_NAMEN') ?></b> <?= gardena_t('LOX.ZU_NAMEN_TEXT') ?></div>
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_7') ?></b> <?= gardena_t('LOX.ZU_7_TEXT') ?></div>
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_9') ?></b> <?= gardena_t('LOX.ZU_9_TEXT') ?></div>
+<div class="sm-small"><b><?= gardena_t('LOX.ZU_ANSAGE') ?></b> <?= gardena_t('LOX.ZU_ANSAGE_TEXT') ?></div>
 </div>
 
 <div class="sm-step"><b><?= gardena_t('LOX.H_LEERE_WERTE') ?></b><br>
@@ -2832,8 +2999,14 @@ $gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $gbind
 <h3 class="sm-h3"><?= gardena_t('TEST.H_AKTION') ?></h3>
 <div class="sm-knopfreihe">
 <a class="sm-btn sm-b-aktion" href="/plugins/<?= $gpl ?>/index.php?action=refresh<?= $gtokenurl ?>" target="_blank"><?= gardena_t('TEST.K_ABRUF') ?></a>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1"><?= gardena_t('TEST.K_ANSAGE_TEST') ?></button>
+</form>
 </div>
 <div class="sm-small"><?= gardena_t('TEST.ABRUF_HINWEIS') ?></div>
+<div class="sm-small"><?= gardena_t('TEST.ANSAGE_TEST_HINWEIS') ?></div>
 </div>
 
 <!-- ================= Reiter: Protokoll ================= -->

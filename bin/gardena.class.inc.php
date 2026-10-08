@@ -36,6 +36,8 @@ class gardena
     public  $last_http = 0;
     /** Sekunden aus der Kopfzeile Retry-After; 0, wenn sie fehlt. */
     public  $retry_after = 0;
+    /** 1.2.16 (Gardena-k2): die Wolke meldet zu diesem Konto keinen Standort (HTTP 404). */
+    public  $keine_geraete = false;
 
     public function __construct($client_id, $client_secret, $tokendir = '/tmp')
     {
@@ -289,6 +291,16 @@ class gardena
             $this->last_error = 'GET ' . $path . ': HTTP ' . $http . ' - ' . substr((string) $result, 0, 300);
             if ($http === 403) {
                 $this->last_error .= ' (Hinweis: Ist im Developer Portal die GARDENA smart system API mit der Application verbunden?)';
+            }
+            if ($http === 404 && $path === '/v2/locations'
+                && stripos((string) $result, 'No locations found') !== false) {
+                /* Gardena-k2 (1.2.16; am Geraet 02.10.2026): Anmeldung gelingt, das
+                 * Konto hat aber keine Geraete. Die Antwort traegt die Benutzerkennung
+                 * des Kontos ("No locations found for user: <kennung>") - sie gehoert
+                 * weder ins Protokoll noch in die Oberflaeche. Ein eigener Satz. */
+                $this->keine_geraete = true;
+                $this->last_error = function_exists('gardena_t') ? gardena_t('ALLG.KEINE_GERAETE')
+                    : 'Das Konto hat keine GARDENA-Geraete (die Wolke meldet keinen Standort).';
             }
             if ($http === 429) {
                 // Das Abrufkontingent ist erschoepft. Wer jetzt im gleichen

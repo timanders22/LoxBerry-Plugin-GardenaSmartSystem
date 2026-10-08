@@ -1,5 +1,34 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.16
+
+Eigene Sprachausgabe bei drei GARDENA-Ereignissen, ab Werk aus (Entscheidung 36/40), dazu ein eigener Satz
+für ein Konto ohne Geräte.
+Gemessen unter
+PHP 7.4 und 8.5 gegen Attrappen (Music Server, Alexa-NG, Chromecast 4 Lox NG, GARDENA-Wolke); nicht an einer echten
+GARDENA-Anlage, nicht an einem echten Lautsprecher. 1.2.15 wurde nie veröffentlicht.
+
+* **Neu: das Plugin sagt selbst an (ab Werk aus).** Reiter Einstellungen, Abschnitt „Sprachausgabe“: Loxone
+  Music Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder Google-Lautsprecher (Chromecast 4 Lox
+  NG). Drei Anlässe, jeder mit eigenem Haken: Bewässerung beendet, Ventilstörung, Batterie schwach oder leer
+  (höchstens einmal am Tag je Gerät, nicht am Mäher). Die Haken sind ab Werk gesetzt; gesprochen wird erst, wenn
+  eine Ausgabeart gewählt ist.
+* Jedes Ereignis spricht einmal, wenn es eintritt – eine anhaltende Störung nicht bei jedem Abruf. Erkannt wird
+  beim Abruf, also bis zu einem Abrufabstand später.
+* Läufe, die das Plugin Bewässerung über die Ventil-Schnittstelle öffnet oder schließt, sagt dieses Plugin nicht
+  als „Bewässerung beendet“ an – das tut die Bewässerung selbst. Störung und Batterie sagt es weiter an.
+* Adresse des Music Servers und Adressvorlage müssen im Heimnetz liegen.
+* Testansage per Knopf im Reiter Test; zwei neue Prüfzeilen.
+* Die Sprechtoken stehen nie in der Seite, im Protokoll oder in einer Sicherung; eine Sicherungsdatei, die eines
+  trägt, wird abgewiesen, das gespeicherte bleibt. Sicherungen aus 1.2.14 lassen sich weiter zurückspielen.
+* **Konto ohne GARDENA-Geräte:** Meldet die Wolke nach erfolgreicher Anmeldung keinen Standort, steht jetzt
+  „Das Konto hat keine GARDENA-Geräte“ in Protokoll, Reiter Test und Verbindungstest – statt der Rohantwort mit
+  der Benutzerkennung des Kontos.
+* Baustein-Liste: die Spalte „Eingänge verbinden mit“ nennt die Verbindungen jetzt in fester Form („Ausgang von
+  #1“, „I1 = #6, I2 = #8“).
+
+**In Loxone:** nichts zu tun; wer die Ansage will, schaltet sie im Reiter Einstellungen ein.
+
 ## Neu in 1.2.14
 
 Nachzug aus der Verbesserungsliste (`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`, Entscheidung 19).
@@ -438,6 +467,16 @@ Holt zyklisch (alle 5 Minuten) die Daten aller GARDENA-smart-system-Geräte
 sendet sie an den Loxone Miniserver – per **UDP** und/oder **MQTT**
 (LoxBerry MQTT Gateway; Zustände retained, Messwerte und Lebenszeichen nicht). Kommandos (Mähen starten, Parken,
 Bewässerung starten/stoppen …) können über einen Virtuellen Ausgang gesendet werden.
+
+- Sprachausgabe (seit 1.2.15, ab Werk aus): das Plugin sagt selbst an, wenn ein Ventil nach einer
+  Bewässerung schließt, wenn ein Ventil eine Störung meldet und wenn die Batterie eines Geräts schwach
+  oder leer ist (höchstens einmal am Tag je Gerät) – über die gemeinsame Sprachausgabe der Plugins
+  dieses Hauses an den Loxone Music Server, MusicServer4Home, eine eigene Adressvorlage, Alexa-NG oder
+  Google-Lautsprecher (Chromecast 4 Lox NG). Jedes Ereignis spricht einmal, wenn es eintritt; jedes
+  lässt sich einzeln abwählen. Adresse und Vorlage müssen im Heimnetz liegen; die Sprechtoken stehen
+  in keiner Sicherung. Testansage und Prüfzeilen im Reiter Test. Läufe, die das Plugin Bewässerung
+  über die Ventil-Schnittstelle schaltet, sagt dieses Plugin nicht als „beendet“ an – das tut die
+  Bewässerung selbst.
 
 ## Neu in 1.2.0
 

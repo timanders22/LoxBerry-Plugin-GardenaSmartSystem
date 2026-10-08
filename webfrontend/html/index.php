@@ -341,6 +341,15 @@ if (isset($_POST['action']) && $_POST['action'] === 'ventil') {
     if ($gardena->sendCommand($gv_v['dienst'], 'VALVE_CONTROL', $gv_cmd, $gv_sek)) {
         gardena_gleichwert_schliessen($ggw, $gv_v['dienst'], $gv_wert);
         $ggw = null;
+        /* 1.2.16: ein angenommener Befehl der Bewaesserung wird je Ventil-Dienst
+         * gemerkt - die Sprachausgabe sagt das Ende eines solchen Laufs nicht an,
+         * das tut die Bewaesserung selbst (Doppelansage). Scheitert der Merker,
+         * wirkt der Befehl trotzdem; es kann dann eine Ansage zu viel kommen. */
+        if ($gv['quelle'] === 'bewaesserung' && function_exists('gardena_ansage_quelle_merken')
+            && !gardena_ansage_quelle_merken($gv_v['dienst'], $gv_befehl, $gv_sek === null ? 0 : $gv_sek)) {
+            gardena_log_gebremst('ansage_quelle', 'ERR', 'Der Merker ' . gardena_ansage_quelle_datei()
+                . ' liess sich nicht schreiben - die Sprachausgabe kann das Ende dieses Laufs zusaetzlich ansagen.');
+        }
         $gv_antwort['GESENDET'] = 1;
         if ($gv_sek !== null) { $gv_antwort['BIS'] = time() + $gv_sek; }
         gardena_ventil_ende(200, $gv_antwort,

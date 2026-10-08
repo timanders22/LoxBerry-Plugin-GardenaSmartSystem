@@ -779,5 +779,13 @@ if ($vollstaendig && !$gvoll) {
     gardena_log('ERR', $verloren . ' von ' . $versucht . ' Sendeversuchen gescheitert; '
         . $sent . ' Werte vollstaendig abgeschickt. Ursache steht in den Zeilen darueber.');
 }
+/*
+ * Sprachausgabe (1.2.15, Nr. 36 b; ab Werk aus): die Anlaesse dieses Laufs -
+ * Bewaesserung beendet, Ventilstoerung, Batterie - als Flanke gegen den
+ * vorigen Lauf, nach dem Senden und unter derselben Sperre. Ab Werk kehrt
+ * die Funktion sofort zurueck. Die Meldewege oben bleiben davon unberuehrt.
+ */
+gardena_ansage_lauf($statuscache, $g);
+
 flock($sperre, LOCK_UN);
 fclose($sperre);
