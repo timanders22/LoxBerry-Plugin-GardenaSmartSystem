@@ -327,7 +327,8 @@ if (!$locations) {
     $gloc_frisch = true;
     if (empty($locations)) {
         if ($gardena->last_http === 429) { gardena_kontingent($gardena); }
-        gardena_log('CRIT', 'Keine Locations gefunden: ' . $gardena->last_error);
+        // 1.2.18 (Gardena-k2): ein Konto ohne Geraete ist ein Hinweis, kein Ausfall des Plugins.
+        gardena_log($gardena->keine_geraete ? 'INF' : 'CRIT', 'Keine Locations gefunden: ' . $gardena->last_error);
         gardena_abbruch('Keine Location gefunden: ' . $gardena->last_error);
     }
 }

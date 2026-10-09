@@ -1890,6 +1890,9 @@ if ($gpost && isset($_POST['save'])) {
                                   : (isset($gl['id']) ? $gl['id'] : '?');
                     }
                     $gtest = sprintf(gardena_t('TESTMELD.OK'), implode(', ', $gnamen));
+                } elseif ($gapi->keine_geraete) {
+                    // 1.2.18 (Gardena-k2): Anmeldung gelungen, das Konto hat keine Geraete - ein Hinweis.
+                    $gtest = gardena_t('TESTMELD.KEINE_GERAETE');
                 } else {
                     $gtest = sprintf(gardena_t('TESTMELD.KEINE_LOCATION'), $gapi->last_error);
                 }
@@ -2352,7 +2355,8 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
     : ($gtokenmsg === gardena_t('TOKEN.LEER_ERSETZT') ? 'sm-warn' : 'sm-ok') ?>"><?= gardena_e($gtokenmsg) ?></div>
 <?php } ?>
 <?php if ($gtest !== '') { ?>
-<div class="sm-alert <?= strpos($gtest, 'OK') === 0 ? 'sm-ok' : 'sm-err' ?>"><?= gardena_e($gtest) ?></div>
+<div class="sm-alert <?= strpos($gtest, 'OK') === 0 ? 'sm-ok'
+    : ($gtest === gardena_t('TESTMELD.KEINE_GERAETE') ? 'sm-info' : 'sm-err') ?>"><?= gardena_e($gtest) ?></div>
 <?php } ?>
 <?php if ($ghinweis !== '') { ?>
 <div class="sm-alert sm-warn"><?= gardena_e($ghinweis) ?></div>

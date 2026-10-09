@@ -288,6 +288,7 @@ class gardena
         }
         if ($result === false) { return null; }
         if ($http < 200 || $http >= 300) {
+            $stufe = 'ERR';
             $this->last_error = 'GET ' . $path . ': HTTP ' . $http . ' - ' . substr((string) $result, 0, 300);
             if ($http === 403) {
                 $this->last_error .= ' (Hinweis: Ist im Developer Portal die GARDENA smart system API mit der Application verbunden?)';
@@ -299,6 +300,7 @@ class gardena
                  * des Kontos ("No locations found for user: <kennung>") - sie gehoert
                  * weder ins Protokoll noch in die Oberflaeche. Ein eigener Satz. */
                 $this->keine_geraete = true;
+                $stufe = 'INF';   // 1.2.18: ein Hinweis, kein Fehler (Gardena-k2)
                 $this->last_error = function_exists('gardena_t') ? gardena_t('ALLG.KEINE_GERAETE')
                     : 'Das Konto hat keine GARDENA-Geraete (die Wolke meldet keinen Standort).';
             }
@@ -310,7 +312,7 @@ class gardena
                     . ($this->retry_after > 0 ? ' (Retry-After: ' . $this->retry_after . ' s)' : '')
                     . '.';
             }
-            $this->log('ERR', $this->last_error);
+            $this->log($stufe, $this->last_error);
             return null;
         }
         return json_decode($result, true);

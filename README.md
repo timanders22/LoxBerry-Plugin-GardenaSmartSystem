@@ -1,5 +1,24 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.18
+
+Konto ohne Geräte als Hinweis, Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame
+Sprachausgabe 1.1.2.
+
+* **Konto ohne GARDENA-Geräte ist ein Hinweis, kein Fehler.** Gelingt die Anmeldung, meldet die Wolke aber
+  keinen Standort, sagt der Verbindungstest beim Speichern jetzt in einem blauen Hinweiskasten „Das Konto hat
+  keine GARDENA-Geräte“ statt „WARNUNG: … keine Location gefunden“ in Rot. Das Protokoll führt den Fall als
+  INF statt ERR/CRIT. Die Benutzerkennung aus der Antwort der Wolke erscheint weiter nirgends.
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Die virtuellen Eingänge #1–#5 und #15 tragen in der Spalte
+  „Eingänge verbinden mit“ die Bemerkungsform „– (legt das MQTT-Gateway beim ersten Empfang an)“, wie die
+  anderen Plugins „– (MQTT-Gateway)“. Gleiche Bausteine, gleiche Verbindungen.
+* **Sprachausgabe 1.1.2:** gemeinsames Modul und Abschnitt [ANSAGE] mit 157 Sätzen. Den Satz zu einem
+  unbekannten Eintrag im Block der Sprachausgabe bringt jetzt das Modul mit; die eigene Umlenkung ist
+  gestrichen (gleicher Wortlaut). Dazu aus dem Modul: Zeichenzahl bei kaputtem UTF-8 in Zeichen, die
+  Meldung „Port abgewiesen“ nennt das Feld nicht mehr doppelt.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, den Hinweis gegen eine Attrappe der GARDENA-Wolke gemessen; nicht am
+  Gerät angesehen.
+
 ## Neu in 1.2.17
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.

@@ -3185,9 +3185,8 @@ function gardena_ansage_k()
         'kopf' => array('User-Agent: LoxBerry GardenaSmartSystem'),
         'ordner' => ($d !== '' && gardena_lage() !== '' && @is_dir($d)) ? $d : '',
         't' => function ($s) { return gardena_t($s); },
-        /* Zu dieser Kennung hat das Modul (1.0.2) keinen Satz in [ANSAGE]; ohne ihn stuende sie roh in der
-         * Sicherungsmeldung. Linieneigener Schluessel wie Intercom 2.2.18, bis der Modulschluessel kommt. */
-        'schluessel' => array('K_TTS_EINTRAG' => 'EINST.SICH_TTS_EINTRAG'),
+        /* K_TTS_EINTRAG: den Satz bringt das Modul seit 1.1.2 selbst mit; die Umlenkung auf
+         * EINST.SICH_TTS_EINTRAG ist seit 1.2.18 gestrichen (X-10). Ab Werk aus - kein 'werk'. */
     );
 }
 
