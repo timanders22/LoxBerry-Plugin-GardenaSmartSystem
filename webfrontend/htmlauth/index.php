@@ -563,6 +563,10 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
      * geprueft, ob der Suchtext der Vorlage darin vorkommt. Bis 1.2.5 bauten
      * beide Seiten sie getrennt zusammen, und bei einem Geraetenamen mit zwei
      * Leerzeichen traf der Suchtext nie - der Eingang blieb auf DefVal="0".
+     * Seit 1.2.20 zaehlen die abgeleiteten Zahlenfelder (online, maeht,
+     * station, offen, an, stoerung; seit 1.2.19) mit: gelesen ueber
+     * gardena_mit_zahlen(), wie die UDP-Vorlage sie anlegt. Ein Feld ohne
+     * Wert ist nicht numerisch und zaehlt nicht - es geht auch nicht hinaus.
      */
     $u_ges = 0;
     $u_fehl = array();
@@ -574,7 +578,7 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
                 if (empty($u_dev['services']) || !is_array($u_dev['services'])) { continue; }
                 foreach ($u_dev['services'] as $u_typ => $u_attrs) {
                     if (!is_array($u_attrs)) { continue; }
-                    foreach ($u_attrs as $u_a => $u_v) {
+                    foreach (gardena_mit_zahlen($u_typ, $u_attrs) as $u_a => $u_v) {
                         if ($u_a === '_service_id' || !is_array($u_v)
                             || !array_key_exists('value', $u_v)) { continue; }
                         if (!is_numeric($u_v['value'])) { continue; }

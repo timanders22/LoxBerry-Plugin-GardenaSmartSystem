@@ -1,5 +1,16 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.20
+
+Pflege: Die Selbstprüfung im Reiter Test zählt die Zahlenfelder mit. Kein Neuimport nötig.
+
+* **Reiter Test, Zeile „Bauen Vorlage und Sender die UDP-Zeile gleich?“:** Sie prüft jetzt auch die Zahlenfelder aus
+  1.2.19 (`online`, `maeht`, `station`, `offen`, `an`, `stoerung`). Wie bei allen Werten wird die Zeile gebildet, die
+  der Dienst senden würde, und mit dem Suchtext der UDP-Vorlage verglichen. Die Zahl „alle n Werte“ wird deshalb
+  größer. Ein Feld ohne Wert (etwa `online`, wenn GARDENA keinen Funkstatus meldet) zählt nicht mit, weil es über UDP
+  nicht hinausgeht.
+* Vorlagen, Themen, Dienst, Endpunkt, Befehle und Texte unverändert.
+
 ## Neu in 1.2.19
 
 Einbindung in Loxone in Vollausstattung: vier Seiten aus dem gemeinsamen Musterprojekt mit Bildern und
