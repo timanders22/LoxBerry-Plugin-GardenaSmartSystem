@@ -967,7 +967,8 @@ function gardena_mqtt_abschalten($cfgdir, $g)
  *
  *   retained      activity, state, lastErrorCode, batteryState, rfLinkState,
  *                 operatingHours (ein Zaehlerstand ist ein Zustand), name,
- *                 serial, modelType
+ *                 serial, modelType; seit 1.2.19 die Zahlenfelder online,
+ *                 maeht, station, offen, an, stoerung
  *   nicht         batteryLevel, rfLinkLevel, soilHumidity, soilTemperature,
  *                 ambientTemperature, lightIntensity - Messwerte, die die
  *                 Wolke laufend nachliefert; der volle Satz geht ohnehin
@@ -976,8 +977,10 @@ function gardena_mqtt_abschalten($cfgdir, $g)
  */
 function gardena_retain_zustaende()
 {
-    return array('activity', 'state', 'lastErrorCode', 'batteryState', 'rfLinkState',
-                 'operatingHours', 'name', 'serial', 'modelType');
+    /* Seit 1.2.19 (Welle Bild 20, E4) dazu die abgeleiteten Zahlenfelder -
+     * Zustaende wie die Texte, aus denen sie gebildet werden. */
+    return array_merge(array('activity', 'state', 'lastErrorCode', 'batteryState', 'rfLinkState',
+                             'operatingHours', 'name', 'serial', 'modelType'), gardena_zahlen_felder());
 }
 
 function gardena_retain($geraet, $dienst, $attribut)
@@ -2264,6 +2267,472 @@ function gardena_befehl_texte()
         ),
     );
 }
+
+/* ==================================================================
+ * Zustaende als Zahl (seit 1.2.19, Welle Bild 20, Entwurf ga E4 - vom
+ * Hausherrn am 18.10.2026 bestaetigt)
+ *
+ * Die Wolke liefert activity, state und rfLinkState als TEXT. Ein
+ * Analogeingang in Loxone liest daraus 0 - ob der Maeher maeht, das Ventil
+ * giesst oder die Steckdose an ist, liess sich in Loxone nicht auswerten.
+ * Bis 1.2.18 stellte die README "Zustaende als Zahl" zurueck, weil die
+ * vollstaendige Werteliste nicht gemessen ist. Deshalb NUR zweiwertige
+ * Felder nach der Regel "1 bei bekanntem Wert, sonst 0": eine unbekannte
+ * Taetigkeit kann nie faelschlich "maeht" oder "an" sagen.
+ *
+ *   COMMON.online          1 = rfLinkState ONLINE
+ *   MOWER.maeht            1 = activity OK_CUTTING, OK_CUTTING_TIMER_OVERRIDDEN
+ *   MOWER.station          1 = activity beginnt mit PARKED_ oder ist OK_CHARGING
+ *   VALVE.offen            1 = activity MANUAL_WATERING, SCHEDULED_WATERING
+ *                              (dieselbe Zuordnung wie OFFEN der Ventil-Schnittstelle)
+ *   POWER_SOCKET.an        1 = activity FOREVER_ON, TIME_LIMITED_ON, SCHEDULED_ON
+ *   <MOWER|VALVE|POWER_SOCKET>.stoerung   1 = state ERROR (wie die Ansage)
+ *
+ * Belegt im Code sind die VALVE- und die state-Zuordnung; die Werte von
+ * rfLinkState und der MOWER-/POWER_SOCKET-activity stammen aus der
+ * Schnittstellenbeschreibung, NICHT aus einer Messung. Gross/klein und
+ * Leerraum zaehlen nicht (wie gardena_ansage_wert()).
+ *
+ * Fehlt der Quelltext in der Antwort, fehlt auch das Feld. Ist er ohne Wert
+ * (null), ist das Feld ohne Wert - es geht hinaus wie jeder fehlende Wert
+ * (MQTT "-", UDP nichts, gardena_wert_senden()). Liefert die Wolke selbst
+ * ein Attribut gleichen Namens, bleibt es ihres: bestehende Themen aendern
+ * sich nie. Gebildet beim Sammeln in gardenaMain.php; aus derselben Funktion
+ * lesen die Vorlagen und die Themenliste im Reiter MQTT.
+ * ================================================================== */
+
+/** Die Namen der abgeleiteten Zahlenfelder (fuer Retain-Tabelle und Vorlagengrenzen). */
+function gardena_zahlen_felder()
+{
+    return array('online', 'maeht', 'station', 'offen', 'an', 'stoerung');
+}
+
+/**
+ * Die Zahlenfelder eines Dienstes: array(Feld => 1|0|null). $attrs wie im
+ * Abbild (Attribut => array('value' => ...)).
+ */
+function gardena_zahlen_ableiten($dienst, $attrs)
+{
+    // Feld => array(Quellattribut, Werte fuer 1, Praefix fuer 1)
+    $regeln = array(
+        'COMMON'       => array('online'   => array('rfLinkState', array('ONLINE'), '')),
+        'MOWER'        => array('maeht'    => array('activity', array('OK_CUTTING', 'OK_CUTTING_TIMER_OVERRIDDEN'), ''),
+                                'station'  => array('activity', array('OK_CHARGING'), 'PARKED_'),
+                                'stoerung' => array('state', array('ERROR'), '')),
+        'VALVE'        => array('offen'    => array('activity', array('MANUAL_WATERING', 'SCHEDULED_WATERING'), ''),
+                                'stoerung' => array('state', array('ERROR'), '')),
+        'POWER_SOCKET' => array('an'       => array('activity', array('FOREVER_ON', 'TIME_LIMITED_ON', 'SCHEDULED_ON'), ''),
+                                'stoerung' => array('state', array('ERROR'), '')),
+    );
+    $aus = array();
+    if (!is_array($attrs) || !isset($regeln[(string) $dienst])) { return $aus; }
+    foreach ($regeln[(string) $dienst] as $feld => $r) {
+        // Ein eigenes Attribut der Wolke gleichen Namens bleibt unangetastet.
+        if (array_key_exists($feld, $attrs)) { continue; }
+        if (!isset($attrs[$r[0]]) || !is_array($attrs[$r[0]]) || !array_key_exists('value', $attrs[$r[0]])) {
+            continue;
+        }
+        $v = $attrs[$r[0]]['value'];
+        if (gardena_wert_fehlt($v)) { $aus[$feld] = null; continue; }
+        $t = is_scalar($v) ? strtoupper(trim((string) $v)) : '';
+        $aus[$feld] = (in_array($t, $r[1], true) || ($r[2] !== '' && strpos($t, $r[2]) === 0)) ? 1 : 0;
+    }
+    return $aus;
+}
+
+/** Die Attribute eines Dienstes samt Zahlenfeldern dahinter (fuer Vorlagen und Themenliste). */
+function gardena_mit_zahlen($dienst, $attrs)
+{
+    if (!is_array($attrs)) { return $attrs; }
+    foreach (gardena_zahlen_ableiten($dienst, $attrs) as $feld => $wert) {
+        $attrs[$feld] = array('value' => $wert, 'timestamp' => '');
+    }
+    return $attrs;
+}
+
+/**
+ * Feste deutsche Titel der Steuervorlage je type und cmd (seit 1.2.19, E11;
+ * Sprachregel 13.10.2026). Wortgleich mit dem deutschen [LOX] VO_*, das weiter
+ * den Kommentar je Befehl liefert. Die Baustein-Seiten im Reiter Einbindung
+ * rechnen ihre Befehlsnamen aus derselben Tabelle.
+ */
+function gardena_vo_titel()
+{
+    return array(
+        'MOWER_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => "m\u{e4}hen (1 h)",
+            'START_DONT_OVERRIDE' => "Zeitplan folgen",
+            'PARK_UNTIL_NEXT_TASK' => "parken bis n\u{e4}chste Zeit",
+            'PARK_UNTIL_FURTHER_NOTICE' => "parken bis auf Widerruf",
+        ),
+        'VALVE_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => "bew\u{e4}ssern (30 min)",
+            'STOP_UNTIL_NEXT_TASK' => "stoppen bis n\u{e4}chste Zeit",
+            'PAUSE' => "Pause",
+            'UNPAUSE' => "Pause beenden",
+        ),
+        'POWER_SOCKET_CONTROL' => array(
+            'START_SECONDS_TO_OVERRIDE' => "einschalten (1 h)",
+            'START_OVERRIDE' => "einschalten (dauerhaft)",
+            'STOP_UNTIL_NEXT_TASK' => "ausschalten",
+        ),
+    );
+}
+
+/** Der Behaelter der Steuervorlage - fest deutsch (seit 1.2.19, E11; bis 1.2.18 [LOX] VO_TITEL). */
+function gardena_vo_behaelter()
+{
+    return 'Gardena steuern (LoxBerry-Plugin)';
+}
+
+/**
+ * Grenzen und Einheiten der Eingangsvorlagen (MQTT und UDP): Attribut =>
+ * array(MinVal, MaxVal, Einheit). Seit 1.2.19 (E12) auch fuer Bodenfeuchte,
+ * Temperaturen, Helligkeit, Betriebsstunden und die Zahlenfelder; bis 1.2.18
+ * nur Batterie und Funk, alles andere -1000000...1000000 mit <v.1>
+ * (Betriebsstunden zeigten eine Nachkommastelle). MaxVal ist in Loxone eine
+ * Pruefgrenze - ein Wert darueber wird 0 (Regeln/07) -, die Grenzen sind
+ * deshalb weit. Nur neu eingelesene Vorlagen.
+ */
+function gardena_vorlage_grenzen()
+{
+    $g = array(
+        'batteryLevel'       => array('0', '100', '<v.0> %'),
+        'rfLinkLevel'        => array('0', '100', '<v.0> %'),
+        'soilHumidity'       => array('0', '100', '<v.0> %'),
+        'soilTemperature'    => array('-50', '80', "<v.1> \u{b0}C"),
+        'ambientTemperature' => array('-50', '80', "<v.1> \u{b0}C"),
+        'lightIntensity'     => array('0', '200000', '<v.0> lx'),
+        'operatingHours'     => array('0', '1000000', '<v.0> h'),
+    );
+    foreach (gardena_zahlen_felder() as $f) { $g[$f] = array('0', '1', '<v.0>'); }
+    return $g;
+}
+
+/* ==================================================================
+ * Die Loxone-Vorlagen (seit 1.2.19 hier, Welle Bild 20 E10; bis 1.2.18 in
+ * webfrontend/htmlauth/index.php). Verhalten gleich bis auf E4/E11/E12.
+ * ================================================================== */
+
+/**
+ * Die Zahlenwerte des Lebenszeichens fuer BEIDE Eingangsvorlagen - Name =>
+ * array(MinVal, MaxVal, Einheit). Eine Liste, damit MQTT- und UDP-Vorlage
+ * nicht auseinanderlaufen. 'fehler' ist Text und fehlt deshalb.
+ *
+ * MaxVal ist in Loxone eine Pruefgrenze: ein Wert darueber wird zu 0
+ * (Regeln/07). 'ts' ist Unix-Zeit (heute rund 1,79 Milliarden), die Grenze
+ * 4 Milliarden reicht bis ins Jahr 2096.
+ */
+function gardena_lz_vorlage()
+{
+    return array(
+        'ok'          => array('0', '1', '<v.0>'),
+        'zeitstempel' => array('0', '2000000000', '<v.0>'),
+        'werte'       => array('0', '100000', '<v.0>'),
+        'ts'          => array('0', '4000000000', '<v.0>'),
+        'zaehler'     => array('0', '999', '<v.0>'),
+    );
+}
+
+/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
+ *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
+ *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
+ *  vom MQTT-Gateway. Die Namen stammen aus dem Geraete-Zwischenspeicher
+ *  (devices_cache.json), also aus der letzten echten Gardena-Antwort -
+ *  nichts ist geraten. Nur Zahlenwerte; Textwerte legt das Gateway beim
+ *  ersten Empfang selbst an. Dazu seit 1.2.19 (Welle Bild 20, E4) je Dienst
+ *  die abgeleiteten Zahlenfelder (gardena_mit_zahlen()).
+ *  Seit 1.2.19 (E10) in bin/functions.inc.php - bis 1.2.18 stand die Funktion
+ *  in webfrontend/htmlauth/index.php, deren Hauptteil eine ganze Seite
+ *  ausgibt; ein Pruefstand erreichte sie nur ueber einen Seitenaufruf. */
+/**
+ * Ein Kommentar einer Vorlage wird in Loxone Config zum Kachelnamen - hoechstens
+ * 40 Zeichen (1.2.11, O7; Regeln/07). Zuerst "attribut Geraet (TYP)", passt das
+ * nicht, "attribut Geraet", sonst auf 39 Zeichen und ein Auslassungszeichen.
+ * UTF-8-sicher ohne mbstring (die Erweiterung ist nicht zugesichert).
+ */
+function gardena_kurz($attr, $geraet, $typ)
+{
+    $zeichen = function ($s) { return preg_match_all('/./us', (string) $s); };
+    $voll = $attr . ' ' . $geraet . ' (' . $typ . ')';
+    if ($zeichen($voll) <= 40) { return $voll; }
+    $kurz = $attr . ' ' . $geraet;
+    if ($zeichen($kurz) <= 40) { return $kurz; }
+    preg_match('/^.{0,39}/us', $kurz, $m);
+    return (isset($m[0]) ? $m[0] : '') . "\u{2026}";
+}
+
+function gardena_vorlage($cachefile, $topic, $ausgenommen = array())
+{
+    $cache = json_decode((string) @file_get_contents($cachefile), true);
+    $crlf = "\r\n";
+    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    // Wortlaut ueber Sprachschluessel (1.2.11, O7): bis 1.2.10 stand er fest
+    // deutsch und in Umschrift im Code (oberflaeche Befund B11). Seit 1.2.19
+    // (Welle Bild 20, E12) ohne Erzeugungsdatum: zwei Erzeugungen derselben
+    // Anlage sind jetzt gleich, und die Datei passt bytegleich ins Musterprojekt.
+    $o .= '<VirtualInHttp HintText="" Title="Gardena smart system" Comment="'
+        . htmlspecialchars(sprintf(gardena_t('LOX.VI_KOMMENTAR'), $topic), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
+        . '" Address="http://localhost" PollingTime="604800">' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
+    // Bekannte Wertebereiche; alles andere bekommt weite, aber endliche Grenzen.
+    // Seit 1.2.19 aus gardena_vorlage_grenzen() - EINE Liste fuer MQTT- und UDP-Vorlage.
+    $grenzen = gardena_vorlage_grenzen();
+    if (is_array($cache) && !empty($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+            foreach ($loc['devices'] as $devId => $dev) {
+                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
+                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
+                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
+                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
+                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
+                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
+                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
+                if (in_array((string) $devName, $ausgenommen, true)
+                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
+                if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
+                foreach ($dev['services'] as $type => $attrs) {
+                    if (!is_array($attrs)) { continue; }
+                    // Seit 1.2.19 (E4) mit den abgeleiteten Zahlenfeldern hinter den Werten des Dienstes.
+                    foreach (gardena_mit_zahlen($type, $attrs) as $attrName => $attr) {
+                        if ($attrName === '_service_id' || !is_array($attr) || !array_key_exists('value', $attr)) { continue; }
+                        $value = $attr['value'];
+                        if (is_bool($value)) { $value = $value ? 1 : 0; }
+                        if (!is_numeric($value)) { continue; } // Textwerte legt das Gateway selbst an
+                        $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
+                        /* Der Titel MUSS derselbe Name sein, unter dem das
+                         * Gateway den Eingang anlegt - also aus dem Thema,
+                         * das wirklich gesendet wird, nicht aus dem rohen
+                         * Geraetenamen. Bis 1.1.9 stand hier
+                         *
+                         *     str_replace('/', '_', $topic . '/' . $devName . ...)
+                         *
+                         * auf dem ROHEN Namen. Gesendet wurde aber ein ueber
+                         * gardena_mqtt_thema() umgeschriebenes Thema. Sobald
+                         * ein Geraetename ein Leerzeichen, einen Umlaut oder
+                         * ein Sonderzeichen trug - der Normalfall -, legte
+                         * die Vorlage Eingaenge an, die nie einen Wert
+                         * bekamen und auf DefVal="0" stehenblieben.
+                         * gardena_wert_eingang() ist jetzt die gemeinsame
+                         * Quelle mit dem Sender in gardenaMain.php. */
+                        $titel = gardena_wert_eingang($topic, $devName, $type, $attrName);
+                        $o .= "\t" . '<VirtualInHttpCmd Title="' . htmlspecialchars($titel, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
+                        $o .= 'Comment="' . htmlspecialchars(gardena_kurz($attrName, $devName, $type), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Check=" " ';
+                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . htmlspecialchars($g[2], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" HintText=""/>' . $crlf;
+                    }
+                }
+            }
+        }
+    }
+    /* Die Werte des Lebenszeichens gehen bei JEDEM Lauf hinaus und tragen
+     * die Ausfallerkennung aus der Baustein-Liste. Bis 1.2.5 kamen sie in
+     * keiner Vorlage vor - ausgerechnet die Eingaenge, ohne die ein toter
+     * Dienst unbemerkt bleibt, musste der Anwender von Hand anlegen und ihre
+     * Namen abtippen. 'fehler' bleibt draussen: ein Textwert bekommt keinen
+     * virtuellen Eingang, den legt das Gateway beim ersten Empfang selbst an. */
+    foreach (gardena_lz_vorlage() as $gl_name => $gl_g) {
+        $gl_titel = gardena_wert_eingang($topic, 'Plugin', 'STATUS', $gl_name);
+        $gl_x = function ($t) {
+            return htmlspecialchars((string) $t, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
+        };
+        $o .= "\t" . '<VirtualInHttpCmd Title="' . $gl_x($gl_titel) . '" ';
+        // Kurzschluessel (<= 40 Zeichen, 1.2.11 O7): der Kommentar wird zum
+        // Kachelnamen; die langen Saetze bleiben in der Tabelle des Reiters MQTT.
+        $o .= 'Comment="' . $gl_x(gardena_t('LOX.LZK_' . strtoupper($gl_name))) . '" Check=" " ';
+        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" '
+            . 'SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $gl_g[0]
+            . '" MaxVal="' . $gl_g[1] . '" Unit="' . $gl_x($gl_g[2]) . '" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualInHttp>' . $crlf;
+    return array('VI_gardena.xml', $o);
+}
+
+/**
+ * Vorlage fuer den UDP-Weg (VirtualInUdp).
+ *
+ * Bis 1.2.0 gab es sie nicht: das Plugin bot UDP als gleichwertigen Weg an,
+ * die Vorlage erzeugte aber nur die MQTT-Fassung. Wer UDP waehlte, legte
+ * weiterhin jeden Eingang von Hand an.
+ *
+ * Aufbau, Attributreihenfolge und Zeilenenden sind gegen die massgebliche
+ * Ausfuhr aus Loxone Config vom 12.08.2026 gemessen
+ * ("VIU_Wetter Loxberry W4L ..._Test.xml"): Wurzel VirtualInUdp mit
+ * HintText, Title, Comment, Address, Port; als erstes Kindelement
+ * <Info templateType="1" .../> - templateType 1 ist der UDP-Eingang, 2 der
+ * HTTP-Eingang, 3 der Ausgang. Je Kindelement die Reihenfolge Title,
+ * Comment, Address, Check, Signed, Analog, SourceValLow, DestValLow,
+ * SourceValHigh, DestValHigh, DefVal, MinVal, MaxVal, Unit, HintText.
+ *
+ * Der Check-Ausdruck muss zu dem passen, was gardena_wert_senden() wirklich
+ * schickt: SERVICE.Geraetename.attribut:wert - und zwar mit dem ROHEN
+ * Geraetenamen, denn anders als beim MQTT-Thema wird er fuer UDP nicht
+ * umgeschrieben.
+ *
+ * Seit 1.2.19 (E10) in bin/functions.inc.php; Kommentar ohne Erzeugungsdatum,
+ * Grenzen aus gardena_vorlage_grenzen() (E12), die Zahlenfelder mit (E4).
+ */
+function gardena_vorlage_udp($cachefile, $port, $eigene_ip, $ausgenommen = array())
+{
+    $cache = json_decode((string) @file_get_contents($cachefile), true);
+    $crlf = "\r\n";
+    $x = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8'); };
+    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualInUdp HintText="" Title="' . $x(gardena_t('LOX.VIU_TITEL')) . '" Comment="'
+        . $x(gardena_t('LOX.VIU_KOMMENTAR')) . '" Address="'
+        . $x($eigene_ip) . '" Port="' . (int) $port . '">' . $crlf;
+    $o .= "\t" . '<Info templateType="1" minVersion="17010727"/>' . $crlf;
+    // Seit 1.2.19 dieselben Grenzen wie die MQTT-Vorlage (gardena_vorlage_grenzen(), E12).
+    $grenzen = gardena_vorlage_grenzen();
+    if (is_array($cache) && !empty($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+            foreach ($loc['devices'] as $devId => $dev) {
+                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
+                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
+                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
+                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
+                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
+                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
+                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
+                if (in_array((string) $devName, $ausgenommen, true)
+                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
+                if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
+                foreach ($dev['services'] as $type => $attrs) {
+                    if (!is_array($attrs)) { continue; }
+                    // Seit 1.2.19 (E4) mit den abgeleiteten Zahlenfeldern hinter den Werten des Dienstes.
+                    foreach (gardena_mit_zahlen($type, $attrs) as $attrName => $attr) {
+                        if ($attrName === '_service_id' || !is_array($attr) || !array_key_exists('value', $attr)) { continue; }
+                        $value = $attr['value'];
+                        if (is_bool($value)) { $value = $value ? 1 : 0; }
+                        if (!is_numeric($value)) { continue; }
+                        $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
+                        $o .= "\t" . '<VirtualInUdpCmd Title="' . $x($devName . ' ' . $attrName) . '" ';
+                        $o .= 'Comment="' . $x(gardena_kurz($attrName, $devName, $type)) . '" Address="" ';
+                        /* Der Suchtext kommt aus DERSELBEN Funktion wie die
+                         * gesendete Zeile (bin/functions.inc.php). Bis 1.2.5
+                         * baute die Vorlage ihn selbst zusammen und liess dabei
+                         * Mehrfachleerzeichen und Tabulatoren stehen, die der
+                         * Sender zusammenfallen laesst - bei einem
+                         * Geraetenamen mit zwei Leerzeichen traf der Suchtext
+                         * nie, und der Eingang blieb auf DefVal="0" stehen. */
+                        $o .= 'Check="' . $x(gardena_udp_zeile($type, $devName, $attrName)) . '" ';
+                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="'
+                            . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . $x($g[2]) . '" HintText=""/>' . $crlf;
+                    }
+                }
+            }
+        }
+    }
+    /* Das Lebenszeichen auch hier. Bis 1.2.7 stand es nur in der MQTT-Vorlage
+     * (seit 1.2.6); wer den UDP-Weg nahm, musste die Eingaenge der
+     * Ausfallerkennung weiter von Hand anlegen. Suchtext aus derselben
+     * Funktion wie die gesendete Zeile. 'fehler' bleibt draussen: Text. */
+    foreach (gardena_lz_vorlage() as $gl_name => $gl_g) {
+        $o .= "	" . '<VirtualInUdpCmd Title="' . $x('Gardena ' . $gl_name) . '" ';
+        $o .= 'Comment="' . $x(gardena_t('LOX.LZK_' . strtoupper($gl_name))) . '" Address="" ';
+        $o .= 'Check="' . $x(gardena_udp_zeile('STATUS', 'Plugin', $gl_name)) . '" ';
+        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="'
+            . $gl_g[0] . '" MaxVal="' . $gl_g[1] . '" Unit="' . $x($gl_g[2]) . '" HintText=""/>' . $crlf;
+    }
+    $o .= '</VirtualInUdp>' . $crlf;
+    return array('VI_gardena_udp.xml', $o);
+}
+
+/** VO-Vorlage (Steuerbefehle) nach dem Heimkino/Robonect-Muster:
+ *  templateType 3, Token eingesetzt. Geraete und ihre Art stammen aus dem
+ *  Abbild (devices_cache.json), die Befehle aus der Tabelle im
+ *  Einbindungs-Reiter - nichts ist geraten.
+ *
+ *  Seit 1.2.19 (Welle Bild 20, E11; Sprachregel 13.10.2026, Regeln/07 "Sprache
+ *  einer Loxone-Vorlage"): Behaelter- und Befehlstitel fest deutsch
+ *  (gardena_vo_behaelter(), gardena_vo_titel()), der Kommentar je Befehl
+ *  traegt den Text aus [LOX] VO_* in der Sprache der Oberflaeche. Bis 1.2.18
+ *  kamen die Titel aus der Sprachdatei: eine englische Oberflaeche legte
+ *  "Gardena control (LoxBerry plugin)" und "Maehroboter mow (1 h)" an, und
+ *  Baustein-Liste, Bild und Musterprojekt passten nicht mehr. Config benennt
+ *  Importiertes nicht um: bestehende Projekte behalten ihre Namen. In
+ *  bin/functions.inc.php seit 1.2.19 (E10). */
+function gardena_vorlage_vo($cachefile, $token, $ordner)
+{
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    /* Der Ordnername kommt vom Aufrufer, nicht aus einem Rueckfallwert.
+     *
+     * Bis 1.2.0 stand hier
+     *
+     *     $ordner = getenv('LBPPLUGINDIR') ?: 'gardena';
+     *
+     * Der Rueckfall konnte NIE stimmen: die plugin.cfg legt
+     * FOLDER=gardenasmartsystem fest. Griff er - ob LBPPLUGINDIR im
+     * Apache-Prozess gesetzt ist, war nie gemessen -, trugen alle Befehle
+     * der heruntergeladenen Vorlage /plugins/gardena/index.php und liefen
+     * auf 404, waehrend die Oberflaeche daneben die richtige Adresse
+     * anzeigte. Ein Virtueller Ausgang wertet die Antwort nicht aus; der
+     * Ausfall waere still geblieben.
+     *
+     * Jetzt gibt es fuer die Angabe genau eine Quelle ($gordner weiter
+     * unten), und Anzeige wie Vorlage benutzen sie gemeinsam. */
+    $ordner = (string) $ordner;
+    $basis = '/plugins/' . $ordner . '/index.php?action=command&token=' . rawurlencode((string) $token);
+    $cache = json_decode((string) @file_get_contents($cachefile), true);
+    $crlf = "\r\n";
+    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
+    $o .= '<VirtualOut HintText="" Title="' . htmlspecialchars(gardena_vo_behaelter(), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
+        . '" Comment="' . htmlspecialchars(sprintf(gardena_t('LOX.VO_KOMMENTAR'), $ordner), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
+        . '" Address="http://' . htmlspecialchars($host, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
+    /*
+     * Die Befehle kommen aus gardena_befehle() - derselben Liste, gegen die
+     * der Endpunkt prueft (1.2.11, O6). Bis 1.2.10 stand hier eine eigene
+     * Liste, und die Steckdose liess sich nur einschalten, nicht aus
+     * (oberflaeche Befund B10). Die Titel kommen seit 1.2.19 aus der festen
+     * deutschen Tabelle gardena_vo_titel() (E11), der Kommentar aus den
+     * Sprachdateien (O7): ein geaenderter Titel legt bei einem erneuten
+     * Import neue Bausteine an.
+     */
+    $dienst_zu = array('MOWER_CONTROL' => 'MOWER', 'VALVE_CONTROL' => 'VALVE', 'POWER_SOCKET_CONTROL' => 'POWER_SOCKET');
+    $sek = array('MOWER_CONTROL' => 3600, 'VALVE_CONTROL' => 1800, 'POWER_SOCKET_CONTROL' => 3600);
+    $texte = gardena_befehl_texte();
+    $titel_de = gardena_vo_titel();
+    $befehle = array();
+    foreach (gardena_befehle() as $typ => $cmds) {
+        if (!isset($dienst_zu[$typ])) { continue; }
+        foreach ($cmds as $cmd) {
+            $schl = isset($texte[$typ][$cmd]) ? 'LOX.VO_' . substr($texte[$typ][$cmd], 2) : '';
+            $titel = isset($titel_de[$typ][$cmd]) ? $titel_de[$typ][$cmd] : $cmd;
+            $kommentar = ($schl !== '') ? gardena_t($schl) : '';
+            $teil = ($cmd === 'START_SECONDS_TO_OVERRIDE') ? $cmd . '&seconds=' . $sek[$typ] : $cmd;
+            $befehle[$dienst_zu[$typ]][] = array($titel, $typ, $teil, $kommentar);
+        }
+    }
+    if (is_array($cache) && !empty($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+            foreach ($loc['devices'] as $devId => $dev) {
+                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
+                $dienste = isset($dev['services']) && is_array($dev['services']) ? array_keys($dev['services']) : array();
+                foreach ($befehle as $dienst => $liste) {
+                    // VALVE trifft auch VALVE_SET nicht - nur echte Ventile.
+                    if (!in_array($dienst, $dienste, true)) { continue; }
+                    foreach ($liste as $b) {
+                        $adr = $basis . '&device=' . rawurlencode($devName) . '&type=' . $b[1] . '&cmd=' . $b[2];
+                        $o .= "\t" . '<VirtualOutCmd Title="' . htmlspecialchars($devName . ' ' . $b[0], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
+                            . '" Comment="' . htmlspecialchars($b[3], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
+                            . '" CmdOnMethod="GET" CmdOffMethod="GET" ';
+                        $o .= 'CmdOn="' . htmlspecialchars($adr, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
+                        $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
+                        $o .= 'Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
+                    }
+                }
+            }
+        }
+    }
+    $o .= '</VirtualOut>' . $crlf;
+    return array('VQ_gardena_steuern.xml', $o);
+}
+
 
 /* ==================================================================
  * Bremsen fuer Ausloeser aus Loxone (seit 1.2.8)

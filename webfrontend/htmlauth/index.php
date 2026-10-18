@@ -793,134 +793,8 @@ if (isset($_GET['form'])) {
 }
 function gaktiv($id) { global $g_tab; return $g_tab === $id ? ' sm-active' : ''; }
 
-/**
- * Die Zahlenwerte des Lebenszeichens fuer BEIDE Eingangsvorlagen - Name =>
- * array(MinVal, MaxVal, Einheit). Eine Liste, damit MQTT- und UDP-Vorlage
- * nicht auseinanderlaufen. 'fehler' ist Text und fehlt deshalb.
- *
- * MaxVal ist in Loxone eine Pruefgrenze: ein Wert darueber wird zu 0
- * (Regeln/07). 'ts' ist Unix-Zeit (heute rund 1,79 Milliarden), die Grenze
- * 4 Milliarden reicht bis ins Jahr 2096.
- */
-function gardena_lz_vorlage()
-{
-    return array(
-        'ok'          => array('0', '1', '<v.0>'),
-        'zeitstempel' => array('0', '2000000000', '<v.0>'),
-        'werte'       => array('0', '100000', '<v.0>'),
-        'ts'          => array('0', '4000000000', '<v.0>'),
-        'zaehler'     => array('0', '999', '<v.0>'),
-    );
-}
-
-/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
- *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
- *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
- *  vom MQTT-Gateway. Die Namen stammen aus dem Geraete-Zwischenspeicher
- *  (devices_cache.json), also aus der letzten echten Gardena-Antwort -
- *  nichts ist geraten. Nur Zahlenwerte; Textwerte legt das Gateway beim
- *  ersten Empfang selbst an. */
-/**
- * Ein Kommentar einer Vorlage wird in Loxone Config zum Kachelnamen - hoechstens
- * 40 Zeichen (1.2.11, O7; Regeln/07). Zuerst "attribut Geraet (TYP)", passt das
- * nicht, "attribut Geraet", sonst auf 39 Zeichen und ein Auslassungszeichen.
- * UTF-8-sicher ohne mbstring (die Erweiterung ist nicht zugesichert).
- */
-function gardena_kurz($attr, $geraet, $typ)
-{
-    $zeichen = function ($s) { return preg_match_all('/./us', (string) $s); };
-    $voll = $attr . ' ' . $geraet . ' (' . $typ . ')';
-    if ($zeichen($voll) <= 40) { return $voll; }
-    $kurz = $attr . ' ' . $geraet;
-    if ($zeichen($kurz) <= 40) { return $kurz; }
-    preg_match('/^.{0,39}/us', $kurz, $m);
-    return (isset($m[0]) ? $m[0] : '') . '…';
-}
-
-function gardena_vorlage($cachefile, $topic, $ausgenommen = array())
-{
-    $cache = json_decode((string) @file_get_contents($cachefile), true);
-    $crlf = "\r\n";
-    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    // Wortlaut ueber Sprachschluessel (1.2.11, O7): bis 1.2.10 stand er fest
-    // deutsch und in Umschrift im Code (oberflaeche Befund B11).
-    $o .= '<VirtualInHttp HintText="" Title="Gardena smart system" Comment="'
-        . htmlspecialchars(sprintf(gardena_t('LOX.VI_KOMMENTAR'), date('d.m.Y'), $topic), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
-        . '" Address="http://localhost" PollingTime="604800">' . $crlf;
-    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
-    // Bekannte Wertebereiche; alles andere bekommt weite, aber endliche Grenzen.
-    $grenzen = array(
-        'batteryLevel' => array('0', '100', '<v.0> %'),
-        'rfLinkLevel'  => array('0', '100', '<v.0> %'),
-    );
-    if (is_array($cache) && !empty($cache['locations'])) {
-        foreach ($cache['locations'] as $loc) {
-            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
-            foreach ($loc['devices'] as $devId => $dev) {
-                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
-                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
-                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
-                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
-                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
-                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
-                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
-                if (in_array((string) $devName, $ausgenommen, true)
-                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
-                if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
-                foreach ($dev['services'] as $type => $attrs) {
-                    if (!is_array($attrs)) { continue; }
-                    foreach ($attrs as $attrName => $attr) {
-                        if ($attrName === '_service_id' || !is_array($attr) || !array_key_exists('value', $attr)) { continue; }
-                        $value = $attr['value'];
-                        if (is_bool($value)) { $value = $value ? 1 : 0; }
-                        if (!is_numeric($value)) { continue; } // Textwerte legt das Gateway selbst an
-                        $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
-                        /* Der Titel MUSS derselbe Name sein, unter dem das
-                         * Gateway den Eingang anlegt - also aus dem Thema,
-                         * das wirklich gesendet wird, nicht aus dem rohen
-                         * Geraetenamen. Bis 1.1.9 stand hier
-                         *
-                         *     str_replace('/', '_', $topic . '/' . $devName . ...)
-                         *
-                         * auf dem ROHEN Namen. Gesendet wurde aber ein ueber
-                         * gardena_mqtt_thema() umgeschriebenes Thema. Sobald
-                         * ein Geraetename ein Leerzeichen, einen Umlaut oder
-                         * ein Sonderzeichen trug - der Normalfall -, legte
-                         * die Vorlage Eingaenge an, die nie einen Wert
-                         * bekamen und auf DefVal="0" stehenblieben.
-                         * gardena_wert_eingang() ist jetzt die gemeinsame
-                         * Quelle mit dem Sender in gardenaMain.php. */
-                        $titel = gardena_wert_eingang($topic, $devName, $type, $attrName);
-                        $o .= "\t" . '<VirtualInHttpCmd Title="' . htmlspecialchars($titel, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
-                        $o .= 'Comment="' . htmlspecialchars(gardena_kurz($attrName, $devName, $type), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Check=" " ';
-                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . htmlspecialchars($g[2], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" HintText=""/>' . $crlf;
-                    }
-                }
-            }
-        }
-    }
-    /* Die Werte des Lebenszeichens gehen bei JEDEM Lauf hinaus und tragen
-     * die Ausfallerkennung aus der Baustein-Liste. Bis 1.2.5 kamen sie in
-     * keiner Vorlage vor - ausgerechnet die Eingaenge, ohne die ein toter
-     * Dienst unbemerkt bleibt, musste der Anwender von Hand anlegen und ihre
-     * Namen abtippen. 'fehler' bleibt draussen: ein Textwert bekommt keinen
-     * virtuellen Eingang, den legt das Gateway beim ersten Empfang selbst an. */
-    foreach (gardena_lz_vorlage() as $gl_name => $gl_g) {
-        $gl_titel = gardena_wert_eingang($topic, 'Plugin', 'STATUS', $gl_name);
-        $gl_x = function ($t) {
-            return htmlspecialchars((string) $t, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
-        };
-        $o .= "\t" . '<VirtualInHttpCmd Title="' . $gl_x($gl_titel) . '" ';
-        // Kurzschluessel (<= 40 Zeichen, 1.2.11 O7): der Kommentar wird zum
-        // Kachelnamen; die langen Saetze bleiben in der Tabelle des Reiters MQTT.
-        $o .= 'Comment="' . $gl_x(gardena_t('LOX.LZK_' . strtoupper($gl_name))) . '" Check=" " ';
-        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" '
-            . 'SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $gl_g[0]
-            . '" MaxVal="' . $gl_g[1] . '" Unit="' . $gl_x($gl_g[2]) . '" HintText=""/>' . $crlf;
-    }
-    $o .= '</VirtualInHttp>' . $crlf;
-    return array('VI_gardena.xml', $o);
-}
+/* gardena_lz_vorlage(), gardena_kurz() und gardena_vorlage() stehen seit 1.2.19 (Welle Bild 20,
+ * E10) in bin/functions.inc.php - aufrufbar ohne diese Seite, Verhalten gleich. */
 
 /* ==================================================================
  * Verarbeitung
@@ -1378,172 +1252,8 @@ if ($gpost && isset($_POST['roh_anzeigen'])) {
     }
 }
 
-/**
- * Vorlage fuer den UDP-Weg (VirtualInUdp).
- *
- * Bis 1.2.0 gab es sie nicht: das Plugin bot UDP als gleichwertigen Weg an,
- * die Vorlage erzeugte aber nur die MQTT-Fassung. Wer UDP waehlte, legte
- * weiterhin jeden Eingang von Hand an.
- *
- * Aufbau, Attributreihenfolge und Zeilenenden sind gegen die massgebliche
- * Ausfuhr aus Loxone Config vom 12.08.2026 gemessen
- * ("VIU_Wetter Loxberry W4L ..._Test.xml"): Wurzel VirtualInUdp mit
- * HintText, Title, Comment, Address, Port; als erstes Kindelement
- * <Info templateType="1" .../> - templateType 1 ist der UDP-Eingang, 2 der
- * HTTP-Eingang, 3 der Ausgang. Je Kindelement die Reihenfolge Title,
- * Comment, Address, Check, Signed, Analog, SourceValLow, DestValLow,
- * SourceValHigh, DestValHigh, DefVal, MinVal, MaxVal, Unit, HintText.
- *
- * Der Check-Ausdruck muss zu dem passen, was gardena_wert_senden() wirklich
- * schickt: SERVICE.Geraetename.attribut:wert - und zwar mit dem ROHEN
- * Geraetenamen, denn anders als beim MQTT-Thema wird er fuer UDP nicht
- * umgeschrieben.
- */
-function gardena_vorlage_udp($cachefile, $port, $eigene_ip, $ausgenommen = array())
-{
-    $cache = json_decode((string) @file_get_contents($cachefile), true);
-    $crlf = "\r\n";
-    $x = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8'); };
-    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInUdp HintText="" Title="' . $x(gardena_t('LOX.VIU_TITEL')) . '" Comment="'
-        . $x(sprintf(gardena_t('LOX.VIU_KOMMENTAR'), date('d.m.Y'))) . '" Address="'
-        . $x($eigene_ip) . '" Port="' . (int) $port . '">' . $crlf;
-    $o .= "\t" . '<Info templateType="1" minVersion="17010727"/>' . $crlf;
-    $grenzen = array(
-        'batteryLevel' => array('0', '100', '<v.0> %'),
-        'rfLinkLevel'  => array('0', '100', '<v.0> %'),
-    );
-    if (is_array($cache) && !empty($cache['locations'])) {
-        foreach ($cache['locations'] as $loc) {
-            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
-            foreach ($loc['devices'] as $devId => $dev) {
-                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
-                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
-                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
-                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
-                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
-                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
-                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
-                if (in_array((string) $devName, $ausgenommen, true)
-                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
-                if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
-                foreach ($dev['services'] as $type => $attrs) {
-                    if (!is_array($attrs)) { continue; }
-                    foreach ($attrs as $attrName => $attr) {
-                        if ($attrName === '_service_id' || !is_array($attr) || !array_key_exists('value', $attr)) { continue; }
-                        $value = $attr['value'];
-                        if (is_bool($value)) { $value = $value ? 1 : 0; }
-                        if (!is_numeric($value)) { continue; }
-                        $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
-                        $o .= "\t" . '<VirtualInUdpCmd Title="' . $x($devName . ' ' . $attrName) . '" ';
-                        $o .= 'Comment="' . $x(gardena_kurz($attrName, $devName, $type)) . '" Address="" ';
-                        /* Der Suchtext kommt aus DERSELBEN Funktion wie die
-                         * gesendete Zeile (bin/functions.inc.php). Bis 1.2.5
-                         * baute die Vorlage ihn selbst zusammen und liess dabei
-                         * Mehrfachleerzeichen und Tabulatoren stehen, die der
-                         * Sender zusammenfallen laesst - bei einem
-                         * Geraetenamen mit zwei Leerzeichen traf der Suchtext
-                         * nie, und der Eingang blieb auf DefVal="0" stehen. */
-                        $o .= 'Check="' . $x(gardena_udp_zeile($type, $devName, $attrName)) . '" ';
-                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="'
-                            . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . $x($g[2]) . '" HintText=""/>' . $crlf;
-                    }
-                }
-            }
-        }
-    }
-    /* Das Lebenszeichen auch hier. Bis 1.2.7 stand es nur in der MQTT-Vorlage
-     * (seit 1.2.6); wer den UDP-Weg nahm, musste die Eingaenge der
-     * Ausfallerkennung weiter von Hand anlegen. Suchtext aus derselben
-     * Funktion wie die gesendete Zeile. 'fehler' bleibt draussen: Text. */
-    foreach (gardena_lz_vorlage() as $gl_name => $gl_g) {
-        $o .= "	" . '<VirtualInUdpCmd Title="' . $x('Gardena ' . $gl_name) . '" ';
-        $o .= 'Comment="' . $x(gardena_t('LOX.LZK_' . strtoupper($gl_name))) . '" Address="" ';
-        $o .= 'Check="' . $x(gardena_udp_zeile('STATUS', 'Plugin', $gl_name)) . '" ';
-        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="'
-            . $gl_g[0] . '" MaxVal="' . $gl_g[1] . '" Unit="' . $x($gl_g[2]) . '" HintText=""/>' . $crlf;
-    }
-    $o .= '</VirtualInUdp>' . $crlf;
-    return array('VI_gardena_udp.xml', $o);
-}
-
-/** VO-Vorlage (Steuerbefehle) nach dem Heimkino/Robonect-Muster:
- *  templateType 3, Token eingesetzt. Geraete und ihre Art stammen aus dem
- *  Abbild (devices_cache.json), die Befehle aus der Tabelle im
- *  Einbindungs-Reiter - nichts ist geraten. */
-function gardena_vorlage_vo($cachefile, $token, $ordner)
-{
-    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
-        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
-        : (gethostname() ?: 'loxberry');
-    /* Der Ordnername kommt vom Aufrufer, nicht aus einem Rueckfallwert.
-     *
-     * Bis 1.2.0 stand hier
-     *
-     *     $ordner = getenv('LBPPLUGINDIR') ?: 'gardena';
-     *
-     * Der Rueckfall konnte NIE stimmen: die plugin.cfg legt
-     * FOLDER=gardenasmartsystem fest. Griff er - ob LBPPLUGINDIR im
-     * Apache-Prozess gesetzt ist, war nie gemessen -, trugen alle Befehle
-     * der heruntergeladenen Vorlage /plugins/gardena/index.php und liefen
-     * auf 404, waehrend die Oberflaeche daneben die richtige Adresse
-     * anzeigte. Ein Virtueller Ausgang wertet die Antwort nicht aus; der
-     * Ausfall waere still geblieben.
-     *
-     * Jetzt gibt es fuer die Angabe genau eine Quelle ($gordner weiter
-     * unten), und Anzeige wie Vorlage benutzen sie gemeinsam. */
-    $ordner = (string) $ordner;
-    $basis = '/plugins/' . $ordner . '/index.php?action=command&token=' . rawurlencode((string) $token);
-    $cache = json_decode((string) @file_get_contents($cachefile), true);
-    $crlf = "\r\n";
-    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualOut HintText="" Title="' . htmlspecialchars(gardena_t('LOX.VO_TITEL'), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
-        . '" Comment="' . htmlspecialchars(sprintf(gardena_t('LOX.VO_KOMMENTAR'), $ordner), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
-        . '" Address="http://' . htmlspecialchars($host, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
-    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
-    /*
-     * Die Befehle kommen aus gardena_befehle() - derselben Liste, gegen die
-     * der Endpunkt prueft (1.2.11, O6). Bis 1.2.10 stand hier eine eigene
-     * Liste, und die Steckdose liess sich nur einschalten, nicht aus
-     * (oberflaeche Befund B10). Die Titel kommen aus den Sprachdateien (O7):
-     * ein geaenderter Titel legt bei einem erneuten Import neue Bausteine an.
-     */
-    $dienst_zu = array('MOWER_CONTROL' => 'MOWER', 'VALVE_CONTROL' => 'VALVE', 'POWER_SOCKET_CONTROL' => 'POWER_SOCKET');
-    $sek = array('MOWER_CONTROL' => 3600, 'VALVE_CONTROL' => 1800, 'POWER_SOCKET_CONTROL' => 3600);
-    $texte = gardena_befehl_texte();
-    $befehle = array();
-    foreach (gardena_befehle() as $typ => $cmds) {
-        if (!isset($dienst_zu[$typ])) { continue; }
-        foreach ($cmds as $cmd) {
-            $schl = isset($texte[$typ][$cmd]) ? 'LOX.VO_' . substr($texte[$typ][$cmd], 2) : '';
-            $titel = ($schl !== '') ? gardena_t($schl) : $cmd;
-            $teil = ($cmd === 'START_SECONDS_TO_OVERRIDE') ? $cmd . '&seconds=' . $sek[$typ] : $cmd;
-            $befehle[$dienst_zu[$typ]][] = array($titel, $typ, $teil);
-        }
-    }
-    if (is_array($cache) && !empty($cache['locations'])) {
-        foreach ($cache['locations'] as $loc) {
-            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
-            foreach ($loc['devices'] as $devId => $dev) {
-                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
-                $dienste = isset($dev['services']) && is_array($dev['services']) ? array_keys($dev['services']) : array();
-                foreach ($befehle as $dienst => $liste) {
-                    // VALVE trifft auch VALVE_SET nicht - nur echte Ventile.
-                    if (!in_array($dienst, $dienste, true)) { continue; }
-                    foreach ($liste as $b) {
-                        $adr = $basis . '&device=' . rawurlencode($devName) . '&type=' . $b[1] . '&cmd=' . $b[2];
-                        $o .= "\t" . '<VirtualOutCmd Title="' . htmlspecialchars($devName . ' ' . $b[0], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Comment="" CmdOnMethod="GET" CmdOffMethod="GET" ';
-                        $o .= 'CmdOn="' . htmlspecialchars($adr, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
-                        $o .= 'CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" ';
-                        $o .= 'Analog="false" Repeat="0" RepeatRate="0" HintText=""/>' . $crlf;
-                    }
-                }
-            }
-        }
-    }
-    $o .= '</VirtualOut>' . $crlf;
-    return array('VQ_gardena_steuern.xml', $o);
-}
+/* gardena_vorlage_udp() und gardena_vorlage_vo() stehen seit 1.2.19 (Welle Bild 20, E10) in
+ * bin/functions.inc.php - aufrufbar ohne diese Seite. */
 
 /* ==================================================================
  * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
@@ -2333,6 +2043,15 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
    Beanstandung rot umrandete Feld. */
 .sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet {
     border: 2px solid #c62828 !important; background-color: #fff5f5; }
+/* Welle Bild 20 (1.2.19): vier Seiten aus dem Musterprojekt im Reiter Einbindung - Bild, Ueberschrift,
+   Schritte und Hinweise je Seite (wie Govee 0.9.27). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
 
 </style>
 <div class="sm-wrap">
@@ -2749,7 +2468,8 @@ if (!empty($gcache['locations']) && is_array($gcache['locations'])) {
             if (in_array($gn, $gthemen_aus, true) || in_array((string) $gid, $gthemen_aus, true)) { continue; }
             foreach ($gd['services'] as $gt => $gattrs) {
                 if (!is_array($gattrs)) { continue; }
-                foreach ($gattrs as $ga => $gv) {
+                /* Seit 1.2.19 (E4) mit den Zahlenfeldern - dieselbe Funktion wie der Sender. */
+                foreach (gardena_mit_zahlen($gt, $gattrs) as $ga => $gv) {
                     if ($ga === '_service_id' || !is_array($gv) || !array_key_exists('value', $gv)) { continue; }
                     /* Seit 1.2.11 (M1) geht ein Wert, den die Wolke ohne Inhalt
                      * liefert, ueber MQTT als "-" hinaus - er steht deshalb auch
@@ -2901,65 +2621,270 @@ foreach (gardena_befehle() as $gb_typ => $gb_cmds) {
 <div class="sm-small"><?= sprintf(gardena_t('LOX.SEKUNDEN_HINWEIS'),
     (int) (gardena_sekunden_grenze('VALVE_CONTROL') / 3600), (int) (gardena_sekunden_grenze('MOWER_CONTROL') / 3600)) ?></div>
 <div class="sm-small"><?= gardena_t('LOX.BREMSEN') ?></div>
+<div class="sm-small"><?= gardena_t('LOX.BEWAESSERUNG') ?></div>
 </div>
 
 <div class="sm-step"><b><?= gardena_t('LOX.H_BAUSTEINE') ?></b>
 <div class="sm-small"><?= gardena_t('LOX.BAUSTEINE_TEXT') ?></div>
-<table class="sm-tbl">
 <?php
-/*
- * Die Namen der virtuellen Eingaenge sind die GATEWAY-NAMEN, keine
- * Vorschlaege. Bis 1.2.7 stand hier "Gardena_Akku", "Gardena_Abrufzeit" -
- * das Gateway legt Eingaenge aber unter dem Thema an ('/' wird zu '_'), und
- * wer den Titel verschoent, bekommt beim ersten Empfang einen zweiten
- * Eingang, der nie verdrahtet ist (Regeln/07). Gebaut aus derselben Funktion
- * wie der Sender. Steht ein Maeher im Abbild, sein Name - sonst ein
- * Platzhalter, der als solcher erkennbar ist.
+/**
+ * Die Baustein-Seiten (Welle Bild 20, 1.2.19; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das
+ * Maximum leicht uebernehmen koennen; Entwurf Welle 20 ga, E1-E17). VIER Seiten aus dem LoxBerry-Plugins
+ * Musterprojekt, dort in Loxone Config gebaut und verbunden (Musterprojekt/baustein_listen.txt, Abschnitte
+ * "GARDENA smart system" 29, "... Maehroboter" 26, "... Ventil" 16, "... Sensor und Steckdose" 23 Zeilen,
+ * wortgleich). Je Tabellenzeile EIN Sprachschluessel BAUSTEIN.Z<seite>_<nn> = "Typ | Name | Parameter |
+ * Eingaenge" ohne Auszeichnung; jede Zelle und jeder Satz wird maskiert ausgegeben. Zeilen mit Prozentzeichen
+ * tragen es verdoppelt (%%) und gehen durch sprintf().
+ *
+ * Bis 1.2.18 stand hier EINE Liste mit 15 Zeilen: Alter ueber eine Formel mit "Ihr Zeit-Baustein" (den gibt es
+ * im Muster nicht; je nach Zeitbasis um 1,23 Milliarden falsch), zwei Vergleicher ohne Verzoegerung, Befehle mit
+ * erfundenen Namen statt der Vorlagentitel.
+ *
+ * DIE NAMEN WERDEN GERECHNET, NICHT ABGESCHRIEBEN: die zweite Angabe je Zeile ist die Namensquelle - 'gw' =
+ * Gateway-Name eines Eingangs (gardena_wert_eingang() mit Basisthema und Geraetenamen, wie die Vorlage), 'bf' =
+ * Titel eines Befehls der Steuervorlage (Geraetename + gardena_vo_titel()). Geraetenamen: je Art das erste
+ * Geraet des Abbilds (ausgenommene Geraete zaehlen nicht, die Vorlage laesst sie weg); ohne Abbild bzw. ohne
+ * Geraet dieser Art die Beispielnamen des Musterprojekts - mit dem Werksthema steht dann genau die Liste da.
  */
-$gb_topic = (string) $gc['MQTT_TOPIC'];
-$gb_geraet = '';
-if (!empty($gcache['locations']) && is_array($gcache['locations'])) {
-    foreach ($gcache['locations'] as $gbl) {
-        if (empty($gbl['devices']) || !is_array($gbl['devices'])) { continue; }
-        foreach ($gbl['devices'] as $gbid => $gbd) {
-            if (is_array($gbd) && isset($gbd['services']['MOWER'])) {
-                $gb_geraet = (isset($gbd['name']) && $gbd['name'] !== '') ? (string) $gbd['name'] : (string) $gbid;
-                break 2;
+function gardena_bausteinseiten()
+{
+    return array(
+        array('kopf' => "GARDENA smart system", 'bild' => 'einbindung_loxone.png',
+              'arten' => array('MOWER', 'VALVE', 'SENSOR', 'POWER_SOCKET'),
+              'schritte' => array(
+                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT1'), gardena_t('REITER.EINSTELLUNGEN'), gardena_t('EINST.PLUGIN_AKTIV'), gardena_t('REITER.TEST'), gardena_t('TEST.K_ABRUF'), gardena_t('REITER.GERAETE')),
+                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT2'), gardena_t('REITER.MQTT')),
+                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT3'), gardena_t('REITER.LOXONE'), gardena_t('LOX.K_VORLAGE')),
+                  gardena_t('BAUSTEIN.S1_SCHRITT4'),
+                  gardena_t('BAUSTEIN.S1_SCHRITT5'),
+                  gardena_t('BAUSTEIN.S1_SCHRITT6')),
+              'zeilen' => array(
+                  array(gardena_t('BAUSTEIN.Z1_01'), array('gw', 'Plugin', 'STATUS', 'zaehler')),
+                  array(gardena_t('BAUSTEIN.Z1_02'), array('gw', 'Plugin', 'STATUS', 'ok')),
+                  array(gardena_t('BAUSTEIN.Z1_03'), array('gw', 'Plugin', 'STATUS', 'werte')),
+                  array(gardena_t('BAUSTEIN.Z1_04'), array('gw', 'Plugin', 'STATUS', 'fehler')),
+                  array(gardena_t('BAUSTEIN.Z1_05'), null),
+                  array(gardena_t('BAUSTEIN.Z1_06'), null),
+                  array(gardena_t('BAUSTEIN.Z1_07'), null),
+                  array(gardena_t('BAUSTEIN.Z1_08'), null),
+                  array(gardena_t('BAUSTEIN.Z1_09'), null),
+                  array(gardena_t('BAUSTEIN.Z1_10'), null),
+                  array(gardena_t('BAUSTEIN.Z1_11'), null),
+                  array(gardena_t('BAUSTEIN.Z1_12'), array('gw', 'MOWER', 'COMMON', 'online')),
+                  array(gardena_t('BAUSTEIN.Z1_13'), array('gw', 'VALVE', 'COMMON', 'online')),
+                  array(gardena_t('BAUSTEIN.Z1_14'), array('gw', 'SENSOR', 'COMMON', 'online')),
+                  array(gardena_t('BAUSTEIN.Z1_15'), array('gw', 'POWER_SOCKET', 'COMMON', 'online')),
+                  array(gardena_t('BAUSTEIN.Z1_16'), null),
+                  array(gardena_t('BAUSTEIN.Z1_17'), null),
+                  array(gardena_t('BAUSTEIN.Z1_18'), null),
+                  array(gardena_t('BAUSTEIN.Z1_19'), null),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_20')), array('gw', 'VALVE', 'COMMON', 'batteryLevel')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_21')), array('gw', 'SENSOR', 'COMMON', 'batteryLevel')),
+                  array(gardena_t('BAUSTEIN.Z1_22'), null),
+                  array(gardena_t('BAUSTEIN.Z1_23'), null),
+                  array(gardena_t('BAUSTEIN.Z1_24'), null),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_25')), array('gw', 'MOWER', 'COMMON', 'rfLinkLevel')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_26')), array('gw', 'VALVE', 'COMMON', 'rfLinkLevel')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_27')), array('gw', 'SENSOR', 'COMMON', 'rfLinkLevel')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_28')), array('gw', 'POWER_SOCKET', 'COMMON', 'rfLinkLevel')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z1_29')), null)),
+              'hinweise' => array(
+                  sprintf(gardena_t('BAUSTEIN.S1_H1'), gardena_t('EINST.PLUGIN_AKTIV')),
+                  gardena_t('BAUSTEIN.S1_H2'),
+                  gardena_t('BAUSTEIN.S1_H3'),
+                  sprintf(gardena_t('BAUSTEIN.S1_H4'), gardena_t('REITER.EINSTELLUNGEN'), gardena_t('EINST.UDP_VERSAND')),
+                  sprintf(gardena_t('BAUSTEIN.S1_H5'), gardena_t('TOKEN.NEU')))),
+        array('kopf' => "GARDENA smart system M\u{e4}hroboter", 'bild' => 'einbindung_loxone_maehroboter.png',
+              'arten' => array('MOWER'),
+              'schritte' => array(
+                  sprintf(gardena_t('BAUSTEIN.S2_SCHRITT1'), gardena_t('REITER.LOXONE'), gardena_t('LOX.K_VORLAGE_VO')),
+                  gardena_t('BAUSTEIN.S2_SCHRITT2'),
+                  gardena_t('BAUSTEIN.S2_SCHRITT3'),
+                  gardena_t('BAUSTEIN.S2_SCHRITT4')),
+              'zeilen' => array(
+                  array(gardena_t('BAUSTEIN.Z2_01'), array('gw', 'MOWER', 'MOWER', 'maeht')),
+                  array(gardena_t('BAUSTEIN.Z2_02'), array('gw', 'MOWER', 'MOWER', 'station')),
+                  array(gardena_t('BAUSTEIN.Z2_03'), array('gw', 'MOWER', 'MOWER', 'stoerung')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_04')), array('gw', 'MOWER', 'COMMON', 'batteryLevel')),
+                  array(gardena_t('BAUSTEIN.Z2_05'), array('gw', 'MOWER', 'MOWER', 'operatingHours')),
+                  array(gardena_t('BAUSTEIN.Z2_06'), array('gw', 'MOWER', 'MOWER', 'activity')),
+                  array(gardena_t('BAUSTEIN.Z2_07'), array('gw', 'MOWER', 'MOWER', 'lastErrorCode')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_08')), null),
+                  array(gardena_t('BAUSTEIN.Z2_09'), null),
+                  array(gardena_t('BAUSTEIN.Z2_10'), null),
+                  array(gardena_t('BAUSTEIN.Z2_11'), null),
+                  array(gardena_t('BAUSTEIN.Z2_12'), array('bf', 'MOWER', 'MOWER_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(gardena_t('BAUSTEIN.Z2_13'), null),
+                  array(gardena_t('BAUSTEIN.Z2_14'), null),
+                  array(gardena_t('BAUSTEIN.Z2_15'), array('bf', 'MOWER', 'MOWER_CONTROL', 'PARK_UNTIL_NEXT_TASK')),
+                  array(gardena_t('BAUSTEIN.Z2_16'), null),
+                  array(gardena_t('BAUSTEIN.Z2_17'), null),
+                  array(gardena_t('BAUSTEIN.Z2_18'), null),
+                  array(gardena_t('BAUSTEIN.Z2_19'), null),
+                  array(gardena_t('BAUSTEIN.Z2_20'), null),
+                  array(gardena_t('BAUSTEIN.Z2_21'), null),
+                  array(gardena_t('BAUSTEIN.Z2_22'), null),
+                  array(gardena_t('BAUSTEIN.Z2_23'), array('bf', 'MOWER', 'MOWER_CONTROL', 'PARK_UNTIL_FURTHER_NOTICE')),
+                  array(gardena_t('BAUSTEIN.Z2_24'), null),
+                  array(gardena_t('BAUSTEIN.Z2_25'), array('bf', 'MOWER', 'MOWER_CONTROL', 'START_DONT_OVERRIDE')),
+                  array(gardena_t('BAUSTEIN.Z2_26'), null)),
+              'hinweise' => array(
+                  gardena_t('BAUSTEIN.S2_H1'),
+                  gardena_t('BAUSTEIN.S2_H2'),
+                  gardena_t('BAUSTEIN.S2_H3'),
+                  gardena_t('BAUSTEIN.S2_H4'))),
+        array('kopf' => "GARDENA smart system Ventil", 'bild' => 'einbindung_loxone_ventil.png',
+              'arten' => array('VALVE'),
+              'schritte' => array(
+                  gardena_t('BAUSTEIN.S3_SCHRITT1'),
+                  gardena_t('BAUSTEIN.S3_SCHRITT2'),
+                  gardena_t('BAUSTEIN.S3_SCHRITT3')),
+              'zeilen' => array(
+                  array(gardena_t('BAUSTEIN.Z3_01'), array('gw', 'VALVE', 'VALVE', 'offen')),
+                  array(gardena_t('BAUSTEIN.Z3_02'), array('gw', 'VALVE', 'VALVE', 'stoerung')),
+                  array(gardena_t('BAUSTEIN.Z3_03'), array('gw', 'VALVE', 'VALVE', 'activity')),
+                  array(gardena_t('BAUSTEIN.Z3_04'), null),
+                  array(gardena_t('BAUSTEIN.Z3_05'), array('bf', 'VALVE', 'VALVE_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(gardena_t('BAUSTEIN.Z3_06'), null),
+                  array(gardena_t('BAUSTEIN.Z3_07'), array('bf', 'VALVE', 'VALVE_CONTROL', 'STOP_UNTIL_NEXT_TASK')),
+                  array(gardena_t('BAUSTEIN.Z3_08'), null),
+                  array(gardena_t('BAUSTEIN.Z3_09'), null),
+                  array(gardena_t('BAUSTEIN.Z3_10'), null),
+                  array(gardena_t('BAUSTEIN.Z3_11'), null),
+                  array(gardena_t('BAUSTEIN.Z3_12'), array('bf', 'VALVE', 'VALVE_CONTROL', 'PAUSE')),
+                  array(gardena_t('BAUSTEIN.Z3_13'), array('bf', 'VALVE', 'VALVE_CONTROL', 'UNPAUSE')),
+                  array(gardena_t('BAUSTEIN.Z3_14'), null),
+                  array(gardena_t('BAUSTEIN.Z3_15'), null),
+                  array(gardena_t('BAUSTEIN.Z3_16'), null)),
+              'hinweise' => array(
+                  gardena_t('BAUSTEIN.S3_H1'),
+                  gardena_t('BAUSTEIN.S3_H2'),
+                  gardena_t('BAUSTEIN.S3_H3'),
+                  sprintf(gardena_t('BAUSTEIN.S3_H4'), gardena_t('REITER.EINSTELLUNGEN'), gardena_t('EINST.H_VENTIL')),
+                  gardena_t('BAUSTEIN.S3_H5'))),
+        array('kopf' => "GARDENA smart system Sensor und Steckdose", 'bild' => 'einbindung_loxone_sensor_steckdose.png',
+              'arten' => array('SENSOR', 'POWER_SOCKET'),
+              'schritte' => array(
+                  gardena_t('BAUSTEIN.S4_SCHRITT1'),
+                  gardena_t('BAUSTEIN.S4_SCHRITT2'),
+                  gardena_t('BAUSTEIN.S4_SCHRITT3')),
+              'zeilen' => array(
+                  array(sprintf(gardena_t('BAUSTEIN.Z4_01')), array('gw', 'SENSOR', 'SENSOR', 'soilHumidity')),
+                  array(gardena_t('BAUSTEIN.Z4_02'), array('gw', 'SENSOR', 'SENSOR', 'soilTemperature')),
+                  array(gardena_t('BAUSTEIN.Z4_03'), array('gw', 'SENSOR', 'SENSOR', 'ambientTemperature')),
+                  array(gardena_t('BAUSTEIN.Z4_04'), array('gw', 'SENSOR', 'SENSOR', 'lightIntensity')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z4_05')), null),
+                  array(gardena_t('BAUSTEIN.Z4_06'), null),
+                  array(gardena_t('BAUSTEIN.Z4_07'), null),
+                  array(gardena_t('BAUSTEIN.Z4_08'), null),
+                  array(gardena_t('BAUSTEIN.Z4_09'), null),
+                  array(gardena_t('BAUSTEIN.Z4_10'), null),
+                  array(gardena_t('BAUSTEIN.Z4_11'), null),
+                  array(gardena_t('BAUSTEIN.Z4_12'), array('gw', 'POWER_SOCKET', 'POWER_SOCKET', 'an')),
+                  array(gardena_t('BAUSTEIN.Z4_13'), array('gw', 'POWER_SOCKET', 'POWER_SOCKET', 'stoerung')),
+                  array(gardena_t('BAUSTEIN.Z4_14'), array('gw', 'POWER_SOCKET', 'POWER_SOCKET', 'activity')),
+                  array(gardena_t('BAUSTEIN.Z4_15'), null),
+                  array(gardena_t('BAUSTEIN.Z4_16'), null),
+                  array(gardena_t('BAUSTEIN.Z4_17'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'START_OVERRIDE')),
+                  array(gardena_t('BAUSTEIN.Z4_18'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'STOP_UNTIL_NEXT_TASK')),
+                  array(gardena_t('BAUSTEIN.Z4_19'), null),
+                  array(gardena_t('BAUSTEIN.Z4_20'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(gardena_t('BAUSTEIN.Z4_21'), null),
+                  array(gardena_t('BAUSTEIN.Z4_22'), null),
+                  array(gardena_t('BAUSTEIN.Z4_23'), null)),
+              'hinweise' => array(
+                  gardena_t('BAUSTEIN.S4_H1'),
+                  gardena_t('BAUSTEIN.S4_H2'),
+                  gardena_t('BAUSTEIN.S4_H3'))),
+    );
+}
+
+/** Geraetenamen je Art fuer die Baustein-Seiten: array('namen', 'fehlt' (Arten ohne Geraet), 'abbild'). */
+function gardena_bs_geraete($cache, $ausgenommen)
+{
+    $namen = array('MOWER' => 'Maehroboter', 'VALVE' => 'Ventil Beet', 'SENSOR' => 'Sensor Beet', 'POWER_SOCKET' => 'Steckdose Teich');
+    $gefunden = array();
+    $abbild = false;
+    if (is_array($cache) && !empty($cache['locations']) && is_array($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            if (!is_array($loc) || empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+            foreach ($loc['devices'] as $id => $dev) {
+                if (!is_array($dev)) { continue; }
+                $abbild = true;
+                $name = (isset($dev['name']) && $dev['name'] !== '') ? (string) $dev['name'] : (string) $id;
+                if (in_array($name, $ausgenommen, true) || in_array((string) $id, $ausgenommen, true)) { continue; }
+                foreach (array_keys($namen) as $art) {
+                    if (!isset($gefunden[$art]) && isset($dev['services'][$art]) && is_array($dev['services'][$art])) {
+                        $gefunden[$art] = $name;
+                    }
+                }
             }
         }
     }
+    $fehlt = array();
+    foreach (array_keys($namen) as $art) {
+        if (isset($gefunden[$art])) {
+            $namen[$art] = $gefunden[$art];
+        } elseif ($abbild) {
+            $fehlt[] = $art;
+        }
+    }
+    return array('namen' => $namen, 'fehlt' => $fehlt, 'abbild' => $abbild);
 }
-$gb_name = function ($geraet, $dienst, $attr) use ($gb_topic, $gb_geraet) {
-    if ($geraet === 'Plugin') {
-        return gardena_e(gardena_wert_eingang($gb_topic, 'Plugin', $dienst, $attr));
+
+/** Der Name einer Tabellenzeile aus ihrer Namensquelle (siehe gardena_bausteinseiten()). */
+function gardena_bs_name($name, $q, $topic, $namen)
+{
+    if (!is_array($q)) { return (string) $name; }
+    if ($q[0] === 'gw') {
+        return gardena_wert_eingang($topic, $q[1] === 'Plugin' ? 'Plugin' : $namen[$q[1]], $q[2], $q[3]);
     }
-    if ($gb_geraet !== '') {
-        return gardena_e(gardena_wert_eingang($gb_topic, $gb_geraet, $dienst, $attr));
-    }
-    // Noch kein Abbild: der Geraeteteil als sichtbare Luecke.
-    return str_replace('GERAET', '&lt;' . gardena_e(gardena_t('LOX.GERAET')) . '&gt;',
-        gardena_e(gardena_wert_eingang($gb_topic, 'GERAET', $dienst, $attr)));
-};
-?>
+    $t = gardena_vo_titel();
+    return $namen[$q[1]] . ' ' . (isset($t[$q[2]][$q[3]]) ? $t[$q[2]][$q[3]] : $q[3]);
+}
+
+$gbs_g = gardena_bs_geraete($gcache, gardena_ausgenommen($gc));
+$gbs_topic = ((string) $gc['MQTT_TOPIC'] !== '') ? (string) $gc['MQTT_TOPIC'] : 'gardena';
+if (!$gbs_g['abbild']) { ?>
+<div class="sm-alert sm-info"><?= gardena_e(gardena_t('BAUSTEIN.OHNE_ABBILD')) ?></div>
+<?php }
+foreach (gardena_bausteinseiten() as $gbs) {
+    $gbs_fehlt = array();
+    foreach (array_intersect($gbs['arten'], $gbs_g['fehlt']) as $gbs_a) {
+        $gbs_fehlt[] = gardena_t('BAUSTEIN.ART_' . $gbs_a);
+    } ?>
+<h4 class="sm-h4"><?= gardena_e($gbs['kopf']) ?></h4>
+<?php if ($gbs_fehlt) { ?>
+<div class="sm-alert sm-warn"><?= gardena_e(sprintf(gardena_t('BAUSTEIN.FEHLT_ART'), implode(', ', $gbs_fehlt))) ?></div>
+<?php } ?>
+<div class="sm-hinweis"><b><?= gardena_e(gardena_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($gbs['schritte'] as $gbs_x) { ?>
+<li><?= gardena_e($gbs_x) ?></li>
+<?php } ?>
+</ol></div>
+<table class="sm-tbl">
 <tr><th>#</th><th><?= gardena_t('LOX.S_BAUSTEIN') ?></th><th><?= gardena_t('LOX.S_NAME') ?></th><th><?= gardena_t('LOX.S_PARAMETER') ?></th><th><?= gardena_t('LOX.S_EINGAENGE') ?></th></tr>
-<tr><td>1</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('', 'COMMON', 'batteryLevel') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt; %</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>2</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('', 'COMMON', 'rfLinkLevel') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt; %</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>3</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('', 'MOWER', 'operatingHours') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt; h</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>4</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('Plugin', 'STATUS', 'ok') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt;</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>5</td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('Plugin', 'STATUS', 'ts') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt;</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
-<tr><td>6</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Akku_niedrig</td><td><?= gardena_t('LOX.P_SCHWELLE') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #1</td></tr>
-<tr><td>7</td><td><?= gardena_t('LOX.B_FORMEL') ?></td><td>Gardena_Abruf_Alter</td><td><span class="sm-mono">I1-I2</span></td><td><?= gardena_t('LOX.P_ALTER_EINGAENGE') ?></td></tr>
-<tr><td>8</td><td><?= gardena_t('LOX.B_VERGLEICHER') ?></td><td>Gardena_Abruf_haengt</td><td><?= gardena_t('LOX.P_SCHWELLE_ALTER') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #7</td></tr>
-<tr><td>9</td><td><?= gardena_t('LOX.B_ODER') ?></td><td>Gardena_Meldungen</td><td>–</td><td>I1 = #6, I2 = #8</td></tr>
-<tr><td>10</td><td><?= gardena_t('LOX.B_BENACHRICHTIGUNG') ?></td><td>Gardena_Melder</td><td><?= gardena_t('LOX.P_TEXT_FREI') ?></td><td><?= gardena_t('LOX.S_AUSGANG_VON') ?> #9</td></tr>
-<tr><td>11</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_maehen</td><td><span class="sm-mono">…&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
-<tr><td>12</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_parken</td><td><span class="sm-mono">…&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
-<tr><td>13</td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_bewaessern</td><td><span class="sm-mono">…&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
-<tr><td>14 <i><?= gardena_t('LOX.OPTIONAL') ?></i></td><td><?= gardena_t('LOX.B_VQ') ?></td><td>Gardena_bewaessern_stopp</td><td><span class="sm-mono">…&amp;type=VALVE_CONTROL&amp;cmd=STOP_UNTIL_NEXT_TASK</span></td><td><?= gardena_t('LOX.S_VON_VISU') ?></td></tr>
-<tr><td>15 <i><?= gardena_t('LOX.OPTIONAL') ?></i></td><td><?= gardena_t('LOX.B_VI') ?></td><td><span class="sm-mono"><?= $gb_name('Plugin', 'STATUS', 'zaehler') ?></span></td><td><?= gardena_t('LOX.S_EINHEIT') ?> <span class="sm-mono">&lt;v.0&gt;</span></td><td><?= gardena_t('LOX.S_VOM_GATEWAY') ?></td></tr>
+<?php foreach ($gbs['zeilen'] as $gbs_i => $gbs_z) {
+    $gbs_c = array_pad(explode(' | ', $gbs_z[0], 4), 4, ''); ?>
+<tr><td><?= (int) $gbs_i + 1 ?></td><td><?= gardena_e($gbs_c[0]) ?></td><td><?= gardena_e(gardena_bs_name($gbs_c[1], $gbs_z[1], $gbs_topic, $gbs_g['namen'])) ?></td>
+    <td><?= gardena_e($gbs_c[2]) ?></td><td><?= gardena_e($gbs_c[3]) ?></td></tr>
+<?php } ?>
 </table>
+<div class="sm-warnung"><b><?= gardena_e(gardena_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($gbs['hinweise'] as $gbs_x) { ?>
+<li><?= gardena_e($gbs_x) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= gardena_e($gbs['bild']) ?>" alt="<?= gardena_e(gardena_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= gardena_e(sprintf(gardena_t('LOX.BILD_UNTERSCHRIFT'), $gbs['kopf'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= gardena_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_NAMEN') ?></b> <?= gardena_t('LOX.ZU_NAMEN_TEXT') ?></div>
-<div class="sm-small"><b><?= gardena_t('LOX.ZU_7') ?></b> <?= gardena_t('LOX.ZU_7_TEXT') ?></div>
+<div class="sm-small"><b><?= gardena_t('LOX.ZU_ZAHLEN') ?></b> <?= gardena_t('LOX.ZU_ZAHLEN_TEXT') ?></div>
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_9') ?></b> <?= gardena_t('LOX.ZU_9_TEXT') ?></div>
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_ANSAGE') ?></b> <?= gardena_t('LOX.ZU_ANSAGE_TEXT') ?></div>
 </div>

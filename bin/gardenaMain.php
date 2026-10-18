@@ -425,6 +425,21 @@ foreach ($locations as $location) {
                 $gwerte[$gschl] = $gfehlt ? null : gardena_wert_flach($attr['value']);
                 $gteil[$gschl] = array($devName, $type, $attrName);
             }
+            /*
+             * Zustaende als Zahl (seit 1.2.19, Welle Bild 20, E4): je Dienst die
+             * abgeleiteten Felder online, maeht, station, offen, an, stoerung
+             * (gardena_zahlen_ableiten()) - im selben Bestand wie die Werte, also
+             * mit derselben Signatur, demselben Retain (gardena_retain()) und auf
+             * beiden Wegen. Ein Feld ohne Wert (Quelltext null) geht hinaus wie
+             * jeder fehlende Wert und zaehlt nicht zu "ohne Inhalt" - das tut
+             * schon sein Quelltext. Bestehende Schluessel bleiben unberuehrt.
+             */
+            foreach (gardena_zahlen_ableiten($type, $attrs) as $gzfeld => $gzwert) {
+                $gschl = $devName . '|' . $type . '|' . $gzfeld;
+                if (isset($gteil[$gschl])) { continue; }
+                $gwerte[$gschl] = $gzwert;
+                $gteil[$gschl] = array($devName, $type, $gzfeld);
+            }
         }
     }
 }

@@ -1,5 +1,47 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.19
+
+Einbindung in Loxone in Vollausstattung: vier Seiten aus dem gemeinsamen Musterprojekt mit Bildern und
+Schritt-für-Schritt-Anleitung; neue Zahlenfelder für Zustände; Steuervorlage mit festen deutschen Titeln.
+
+* **Reiter „Einbindung in Loxone“, die Bausteine:** Statt der bisherigen Liste mit 15 Zeilen stehen dort die vier
+  Seiten des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), je mit
+  Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „GARDENA smart system“ (29 Zeilen:
+  Ausfallerkennung am Lebenszeichen `zaehler` mit einer Analogwertvalidierung, Meldung nach 10 Minuten, Funk und
+  Batterie aller Geräte), „GARDENA smart system Mähroboter“ (26: mäht/Station/Störung, vier Befehle,
+  Regensperre), „GARDENA smart system Ventil“ (16: gießt/Störung, 30 Minuten gießen, stoppen, Zeitplan aussetzen
+  von Hand oder bei Regen) und „GARDENA smart system Sensor und Steckdose“ (23: Boden trocken, Frostgefahr,
+  Steckdose dauerhaft und für eine Stunde). Die Namen der Eingänge und Befehle werden aus dem Basisthema und den
+  eigenen Geräten gerechnet (je Art das erste Gerät im Abbild; ohne Abbild die Beispielnamen des Musterprojekts).
+* **Wer die alte Liste gebaut hat:** Sie rechnete das Alter mit einer Formel aus einem „Zeit-Baustein“, den es im
+  Muster nicht gibt (je nach Zeitbasis um 1,23 Milliarden falsch), und meldete über zwei Vergleicher ohne
+  Verzögerung. Die neue Seite „GARDENA smart system“ prüft das Lebenszeichen mit einer Analogwertvalidierung
+  (Haken bei ‚En‘ im Eigenschaftsfenster entfernen) und meldet erst nach 10 Minuten.
+* **Neue Zahlenfelder je Gerät, je 1 oder 0** – auf beiden Wegen (MQTT wie die Zustände zurückbehalten, UDP) und in
+  beiden Eingangsvorlagen: `COMMON/online` (rfLinkState ONLINE), `MOWER/maeht` (activity OK_CUTTING oder
+  OK_CUTTING_TIMER_OVERRIDDEN), `MOWER/station` (activity PARKED_… oder OK_CHARGING), `VALVE/offen`
+  (MANUAL_WATERING oder SCHEDULED_WATERING), `POWER_SOCKET/an` (FOREVER_ON, TIME_LIMITED_ON oder SCHEDULED_ON)
+  und `stoerung` an Mähroboter, Ventil und Steckdose (state ERROR). Jeder andere Text ergibt 0 – eine unbekannte
+  Meldung sagt nie fälschlich „mäht“ oder „an“. Die Wertelisten stammen aus der Schnittstellenbeschreibung von
+  Husqvarna, gemessen sind sie nicht. **Bestehende Themen, Suchtexte und Eingänge bleiben unverändert.** Wer schon
+  importiert hat, holt die Vorlage neu und übernimmt nur die neuen Eingänge (zweimal eingelesen ergibt doppelte
+  Eingänge).
+* **Steuervorlage fest deutsch:** Behälter und Befehle heißen auch bei englischer Oberfläche
+  „Gardena steuern (LoxBerry-Plugin)“ und „<Gerät> mähen (1 h)“ …, wie Liste, Bild und Musterprojekt; der Kommentar
+  jedes Befehls trägt seinen Text in der Sprache der Oberfläche. Betrifft nur neu eingelesene Vorlagen – Config
+  benennt Importiertes nicht um.
+* **Eingangsvorlagen (MQTT und UDP):** Grenzen und Einheiten für Bodenfeuchte (0–100, `<v.0> %`), Boden- und
+  Lufttemperatur (−50…80, `<v.1> °C`), Helligkeit (0–200000, `<v.0> lx`), Betriebsstunden (0–1000000, `<v.0> h`)
+  und die neuen Felder (0–1); der Kommentar trägt kein Erzeugungsdatum mehr. Nur neu eingelesene Vorlagen.
+* **Intern:** die Vorlagenfunktionen stehen jetzt in `bin/functions.inc.php` (Verhalten gleich).
+* **Texte berichtigt:** die Erläuterung zur Formel mit dem Zeit-Baustein entfällt, die Ausfallerkennung nennt
+  `zaehler` als Lebenszeichen der Analogwertvalidierung, die Vorlagenhinweise die neuen Felder; unter den Befehlen
+  steht ein Satz zur Schnittstelle für die Bewässerung.
+* Dienst-Takt, Endpunkt, Befehle, Bremsen, Ventil-Schnittstelle und Sprachausgabe unverändert. Gerendert unter
+  PHP 7.4, 8.4 und 8.5, Vorlagen und Zahlenfelder mit Selbsttests belegt; nicht am Gerät angesehen (kein
+  GARDENA-Gerät im Haus).
+
 ## Neu in 1.2.18
 
 Konto ohne Geräte als Hinweis, Baustein-Liste in der Schreibweise des Leitungswerkzeugs, gemeinsame
@@ -812,6 +854,14 @@ dem Zerlegen nur ganze Zeilen, deren erstes sichtbares Zeichen `#` ist; ein
   - `/plugins/gardenasmartsystem/index.php?action=command&token=TOKEN&device=NAME&type=MOWER_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=3600`
   - `...&type=MOWER_CONTROL&cmd=PARK_UNTIL_NEXT_TASK`
   - `...&type=VALVE_CONTROL&cmd=START_SECONDS_TO_OVERRIDE&seconds=1800`
+- **Musterprojekt:** Der Reiter *Einbindung in Loxone* zeigt seit 1.2.19 vier Baustein-Seiten zum Nachbauen
+  (Anleitung, Tabelle, Hinweise, Bild). Fertig verbunden stehen sie auf den Seiten „GARDENA smart system“,
+  „… Mähroboter“, „… Ventil“ und „… Sensor und Steckdose“ im
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) – die ganze
+  Projektdatei mit allen Plugin-Seiten und Vorlagen.
+- **Zustände als Zahl** (seit 1.2.19): je Gerät `COMMON/online`, `MOWER/maeht`, `MOWER/station`, `VALVE/offen`,
+  `POWER_SOCKET/an` und `…/stoerung` mit 1 oder 0, abgeleitet aus den Texten der Wolke („1 bei bekanntem Wert,
+  sonst 0“), zusätzlich zu allen bisherigen Themen.
 - Geräteliste/Diagnose: `/plugins/gardenasmartsystem/index.php?action=list&token=…`
   (rein lesend, aber **mit** Token — seit 1.1.0 verlangen es alle Endpunkte)
 - **Gleicher Ventil- oder Steckdosenbefehl nur einmal:** Derselbe Befehl mit derselben
