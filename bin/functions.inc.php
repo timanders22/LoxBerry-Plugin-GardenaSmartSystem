@@ -1111,6 +1111,10 @@ function gardena_name_umgeschrieben($geraet)
  * statt sich zu verstecken.
  *
  * '' und 0 sind KEINE fehlenden Werte - die hat die Wolke so geschickt.
+ *
+ * Seit 1.2.21 (Gruppe 5 / MQTT, Entwurf ga E4/E5) geht fuer einen fehlenden ZAHLENwert auf BEIDEN Wegen
+ * der Fehlwert hinaus (gardena_fehlwert(): -1, -999 bzw. 0 bei den Zahlenfeldern); der Absatz oben
+ * beschreibt den Stand bis 1.2.20. Texte und unbekannte Attribute behalten ihn.
  */
 function gardena_wert_fehlt($wert)
 {
@@ -1160,11 +1164,18 @@ function gardena_wert_senden($basis, $geraet, $dienst, $attribut, $wert,
      * nichts: ein Virtueller Eingang mit Befehlserkennung laese aus einer
      * Zeile ohne Zahl eine 0.
      */
+    /*
+     * Seit 1.2.21 (Gruppe 5 / MQTT, Entwurf ga 2.3, E4/E5; ENTSCHEIDUNGEN Gruppe 5 Punkt 3): ein fehlender
+     * Zahlenwert geht als Fehlwert hinaus - -1 (vorzeichenlos), -999 (Boden- und Lufttemperatur), 0 (die
+     * Zahlenfelder online, maeht, station, offen, an, stoerung) -, ueber MQTT UND ueber UDP. "-" las ein
+     * Analogeingang als 0 ("Akku 0 %"), und ueber UDP ging gar nichts. Texte und unbekannte Attribute
+     * behalten "-" ueber MQTT und gehen ueber UDP weiter nicht hinaus (eine Zeile ohne Zahl laese 0).
+     */
     $fehlt = gardena_wert_fehlt($wert);
-    $wert = $fehlt ? '-' : gardena_wert_flach($wert);
+    $wert = $fehlt ? gardena_fehlwert($attribut) : gardena_wert_flach($wert);
     $versucht = 0;
     $fehl = 0;
-    if ((string) $udp_ziel !== '' && !$fehlt) {
+    if ((string) $udp_ziel !== '' && !($fehlt && !is_int($wert))) {
         $versucht++;
         // Umbrueche raus: Loxone wertet den UDP-Eingang zeilenweise aus. Der
         // Geraetename kommt aus der Gardena-App, der Wert aus einer fremden
@@ -1513,6 +1524,10 @@ function gardena_vorgaben()
         // Block TTS (nicht in dieser Liste, siehe gardena_cfg_vervollstaendigen())
         // steht ab Werk auf 'aus' (D-Regel).
         'ANSAGE_BEENDET' => '1', 'ANSAGE_STOERUNG' => '1', 'ANSAGE_BATTERIE' => '1',
+        // Ab 1.2.21 (Gruppe 5 / MQTT, Entwurf ga E3): die beiden Haken der Befehlsbruecke, ab Werk AUS -
+        // "Befehle ueber MQTT annehmen" und "Geraete ueber MQTT schalten". Eine eingerichtete Anlage
+        // aendert sich durch das Update nicht (gardena_cfg_vervollstaendigen() traegt sie mit 0 nach).
+        'BEFEHLE_MQTT_EIN' => '0', 'BEFEHLE_MQTT_STEUERN' => '0',
     );
 }
 
@@ -2162,7 +2177,11 @@ function gardena_abo_text()
     }
     $gemessen = ' <span class="sm-mono">'
               . sprintf(gardena_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
-    return gardena_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_TEXT') . $gemessen;
+    if ($f >= 2) { return gardena_t('MQTT.ABO_V2') . $gemessen; }
+    /* Gruppe 5 / MQTT (1.2.21, Entwurf ga E8): unter V1 bringt das Plugin sein Abo selbst mit
+     * (config/mqtt_subscriptions.cfg, gardena_abo_datei()); liegt es nicht richtig, sagt es der Text. */
+    list(, $da) = gardena_abo_datei(gardena_config());
+    return gardena_t($da ? 'MQTT.ABO_TEXT' : 'MQTT.ABO_WARNUNG') . $gemessen;
 }
 
 
@@ -2295,7 +2314,8 @@ function gardena_befehl_texte()
  *
  * Fehlt der Quelltext in der Antwort, fehlt auch das Feld. Ist er ohne Wert
  * (null), ist das Feld ohne Wert - es geht hinaus wie jeder fehlende Wert
- * (MQTT "-", UDP nichts, gardena_wert_senden()). Liefert die Wolke selbst
+ * (seit 1.2.21 auf beiden Wegen 0, gardena_fehlwert(); bis 1.2.20 MQTT "-", UDP
+ * nichts - gardena_wert_senden()). Liefert die Wolke selbst
  * ein Attribut gleichen Namens, bleibt es ihres: bestehende Themen aendern
  * sich nie. Gebildet beim Sammeln in gardenaMain.php; aus derselben Funktion
  * lesen die Vorlagen und die Themenliste im Reiter MQTT.
@@ -2393,17 +2413,21 @@ function gardena_vo_behaelter()
  * (Betriebsstunden zeigten eine Nachkommastelle). MaxVal ist in Loxone eine
  * Pruefgrenze - ein Wert darueber wird 0 (Regeln/07) -, die Grenzen sind
  * deshalb weit. Nur neu eingelesene Vorlagen.
+ *
+ * Seit 1.2.21 (Gruppe 5 / MQTT, Entwurf ga 2.3): MinVal traegt den Fehlwert - -1 bei Batterie, Funk,
+ * Bodenfeuchte, Helligkeit und Betriebsstunden, -999 bei Boden- und Lufttemperatur (bis 1.2.20: 0 bzw. -50).
+ * gardena_fehlwert() liest ihn von hier; Loxone schneidet ihn so nicht ab (Regeln/07).
  */
 function gardena_vorlage_grenzen()
 {
     $g = array(
-        'batteryLevel'       => array('0', '100', '<v.0> %'),
-        'rfLinkLevel'        => array('0', '100', '<v.0> %'),
-        'soilHumidity'       => array('0', '100', '<v.0> %'),
-        'soilTemperature'    => array('-50', '80', "<v.1> \u{b0}C"),
-        'ambientTemperature' => array('-50', '80', "<v.1> \u{b0}C"),
-        'lightIntensity'     => array('0', '200000', '<v.0> lx'),
-        'operatingHours'     => array('0', '1000000', '<v.0> h'),
+        'batteryLevel'       => array('-1', '100', '<v.0> %'),
+        'rfLinkLevel'        => array('-1', '100', '<v.0> %'),
+        'soilHumidity'       => array('-1', '100', '<v.0> %'),
+        'soilTemperature'    => array('-999', '80', "<v.1> \u{b0}C"),
+        'ambientTemperature' => array('-999', '80', "<v.1> \u{b0}C"),
+        'lightIntensity'     => array('-1', '200000', '<v.0> lx'),
+        'operatingHours'     => array('-1', '1000000', '<v.0> h'),
     );
     foreach (gardena_zahlen_felder() as $f) { $g[$f] = array('0', '1', '<v.0>'); }
     return $g;
@@ -2434,17 +2458,9 @@ function gardena_lz_vorlage()
     );
 }
 
-/** Vorlage der Gateway-Eingaenge nach dem Heimkino-Kunstgriff (12.08.2026):
- *  VirtualInHttp mit Dummy-Adresse http://localhost und Abfragezyklus 604800 s,
- *  nur damit Loxone die richtig benannten Eingaenge anlegt - die Werte kommen
- *  vom MQTT-Gateway. Die Namen stammen aus dem Geraete-Zwischenspeicher
- *  (devices_cache.json), also aus der letzten echten Gardena-Antwort -
- *  nichts ist geraten. Nur Zahlenwerte; Textwerte legt das Gateway beim
- *  ersten Empfang selbst an. Dazu seit 1.2.19 (Welle Bild 20, E4) je Dienst
- *  die abgeleiteten Zahlenfelder (gardena_mit_zahlen()).
- *  Seit 1.2.19 (E10) in bin/functions.inc.php - bis 1.2.18 stand die Funktion
- *  in webfrontend/htmlauth/index.php, deren Hauptteil eine ganze Seite
- *  ausgibt; ein Pruefstand erreichte sie nur ueber einen Seitenaufruf. */
+/* gardena_vorlage() (VI_gardena.xml, Virtueller HTTP-Eingang mit http://localhost nach dem
+ * Heimkino-Kunstgriff) ist seit 1.2.21 (Gruppe 5 / MQTT, Entwurf ga E9) entfallen: die Werte
+ * kommen ueber das MQTT-Gateway, ihre Namen zeigt die Namenstabelle (gardena_mqtt_namen()). */
 /**
  * Ein Kommentar einer Vorlage wird in Loxone Config zum Kachelnamen - hoechstens
  * 40 Zeichen (1.2.11, O7; Regeln/07). Zuerst "attribut Geraet (TYP)", passt das
@@ -2460,92 +2476,6 @@ function gardena_kurz($attr, $geraet, $typ)
     if ($zeichen($kurz) <= 40) { return $kurz; }
     preg_match('/^.{0,39}/us', $kurz, $m);
     return (isset($m[0]) ? $m[0] : '') . "\u{2026}";
-}
-
-function gardena_vorlage($cachefile, $topic, $ausgenommen = array())
-{
-    $cache = json_decode((string) @file_get_contents($cachefile), true);
-    $crlf = "\r\n";
-    $o  = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    // Wortlaut ueber Sprachschluessel (1.2.11, O7): bis 1.2.10 stand er fest
-    // deutsch und in Umschrift im Code (oberflaeche Befund B11). Seit 1.2.19
-    // (Welle Bild 20, E12) ohne Erzeugungsdatum: zwei Erzeugungen derselben
-    // Anlage sind jetzt gleich, und die Datei passt bytegleich ins Musterprojekt.
-    $o .= '<VirtualInHttp HintText="" Title="Gardena smart system" Comment="'
-        . htmlspecialchars(sprintf(gardena_t('LOX.VI_KOMMENTAR'), $topic), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8')
-        . '" Address="http://localhost" PollingTime="604800">' . $crlf;
-    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
-    // Bekannte Wertebereiche; alles andere bekommt weite, aber endliche Grenzen.
-    // Seit 1.2.19 aus gardena_vorlage_grenzen() - EINE Liste fuer MQTT- und UDP-Vorlage.
-    $grenzen = gardena_vorlage_grenzen();
-    if (is_array($cache) && !empty($cache['locations'])) {
-        foreach ($cache['locations'] as $loc) {
-            if (empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
-            foreach ($loc['devices'] as $devId => $dev) {
-                $devName = isset($dev['name']) && $dev['name'] !== '' ? $dev['name'] : $devId;
-                /* Ausgenommene Geraete gehoeren NICHT in die Vorlage.
-                 * Bis 1.2.5 legte sie fuer sie virtuelle Eingaenge an, die der
-                 * Dienst nie bedient - sie blieben auf DefVal="0" stehen, und
-                 * in Loxone sieht das aus wie ein gemessener Wert. (Die
-                 * Vorlage der Virtuellen AUSGAENGE behaelt sie: die Ausnahme
-                 * betrifft nur das Senden, geschaltet wird weiterhin.) */
-                if (in_array((string) $devName, $ausgenommen, true)
-                    || in_array((string) $devId, $ausgenommen, true)) { continue; }
-                if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
-                foreach ($dev['services'] as $type => $attrs) {
-                    if (!is_array($attrs)) { continue; }
-                    // Seit 1.2.19 (E4) mit den abgeleiteten Zahlenfeldern hinter den Werten des Dienstes.
-                    foreach (gardena_mit_zahlen($type, $attrs) as $attrName => $attr) {
-                        if ($attrName === '_service_id' || !is_array($attr) || !array_key_exists('value', $attr)) { continue; }
-                        $value = $attr['value'];
-                        if (is_bool($value)) { $value = $value ? 1 : 0; }
-                        if (!is_numeric($value)) { continue; } // Textwerte legt das Gateway selbst an
-                        $g = isset($grenzen[$attrName]) ? $grenzen[$attrName] : array('-1000000', '1000000', '<v.1>');
-                        /* Der Titel MUSS derselbe Name sein, unter dem das
-                         * Gateway den Eingang anlegt - also aus dem Thema,
-                         * das wirklich gesendet wird, nicht aus dem rohen
-                         * Geraetenamen. Bis 1.1.9 stand hier
-                         *
-                         *     str_replace('/', '_', $topic . '/' . $devName . ...)
-                         *
-                         * auf dem ROHEN Namen. Gesendet wurde aber ein ueber
-                         * gardena_mqtt_thema() umgeschriebenes Thema. Sobald
-                         * ein Geraetename ein Leerzeichen, einen Umlaut oder
-                         * ein Sonderzeichen trug - der Normalfall -, legte
-                         * die Vorlage Eingaenge an, die nie einen Wert
-                         * bekamen und auf DefVal="0" stehenblieben.
-                         * gardena_wert_eingang() ist jetzt die gemeinsame
-                         * Quelle mit dem Sender in gardenaMain.php. */
-                        $titel = gardena_wert_eingang($topic, $devName, $type, $attrName);
-                        $o .= "\t" . '<VirtualInHttpCmd Title="' . htmlspecialchars($titel, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" ';
-                        $o .= 'Comment="' . htmlspecialchars(gardena_kurz($attrName, $devName, $type), ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" Check=" " ';
-                        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $g[0] . '" MaxVal="' . $g[1] . '" Unit="' . htmlspecialchars($g[2], ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8') . '" HintText=""/>' . $crlf;
-                    }
-                }
-            }
-        }
-    }
-    /* Die Werte des Lebenszeichens gehen bei JEDEM Lauf hinaus und tragen
-     * die Ausfallerkennung aus der Baustein-Liste. Bis 1.2.5 kamen sie in
-     * keiner Vorlage vor - ausgerechnet die Eingaenge, ohne die ein toter
-     * Dienst unbemerkt bleibt, musste der Anwender von Hand anlegen und ihre
-     * Namen abtippen. 'fehler' bleibt draussen: ein Textwert bekommt keinen
-     * virtuellen Eingang, den legt das Gateway beim ersten Empfang selbst an. */
-    foreach (gardena_lz_vorlage() as $gl_name => $gl_g) {
-        $gl_titel = gardena_wert_eingang($topic, 'Plugin', 'STATUS', $gl_name);
-        $gl_x = function ($t) {
-            return htmlspecialchars((string) $t, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
-        };
-        $o .= "\t" . '<VirtualInHttpCmd Title="' . $gl_x($gl_titel) . '" ';
-        // Kurzschluessel (<= 40 Zeichen, 1.2.11 O7): der Kommentar wird zum
-        // Kachelnamen; die langen Saetze bleiben in der Tabelle des Reiters MQTT.
-        $o .= 'Comment="' . $gl_x(gardena_t('LOX.LZK_' . strtoupper($gl_name))) . '" Check=" " ';
-        $o .= 'Signed="true" Analog="true" SourceValLow="0" DestValLow="0" '
-            . 'SourceValHigh="1" DestValHigh="1" DefVal="0" MinVal="' . $gl_g[0]
-            . '" MaxVal="' . $gl_g[1] . '" Unit="' . $gl_x($gl_g[2]) . '" HintText=""/>' . $crlf;
-    }
-    $o .= '</VirtualInHttp>' . $crlf;
-    return array('VI_gardena.xml', $o);
 }
 
 /**
@@ -3150,7 +3080,8 @@ function gardena_roh_aufbereiten($daten, array $geheim)
 function gardena_spaete_schluessel()
 {
     return array('VENTIL_SCHNITTSTELLE', 'VENTIL_TOKEN', 'VENTIL_MAX_MIN',
-                 'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE');      // seit 1.2.15
+                 'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE',       // seit 1.2.15
+                 'BEFEHLE_MQTT_EIN', 'BEFEHLE_MQTT_STEUERN');                  // seit 1.2.21
 }
 
 /**
@@ -3340,7 +3271,8 @@ function gardena_wert_taugt($v)
 function gardena_wert_pruefen($k, $v)
 {
     $ja_nein = array('ENABLED', 'UDP_ENABLED', 'MQTT_ENABLED', 'VENTIL_SCHNITTSTELLE',
-                     'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE');
+                     'ANSAGE_BEENDET', 'ANSAGE_STOERUNG', 'ANSAGE_BATTERIE',
+                     'BEFEHLE_MQTT_EIN', 'BEFEHLE_MQTT_STEUERN');      // seit 1.2.21
     if (in_array($k, $ja_nein, true)) {
         return ($v === '0' || $v === '1') ? '' : gardena_t('EINST.PRUEF_NUR01');
     }
@@ -3888,4 +3820,843 @@ if (!function_exists('ansage_sprechen')) {
             . 'gefunden, gesucht in: ' . implode(', ', gardena_ansage_kandidaten()) . ' - es gibt keine Ansage, '
             . 'alles andere laeuft weiter.');
     }
+}
+
+
+/* ==================================================================
+ * Gruppe 5 / MQTT (1.2.21): Fehlwerte, Namenstabelle und Hakenliste, Befehle ueber die Befehlsbruecke
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe5_ga.txt (E1-E18 nach Empfehlung bzw. nach
+ * ENTSCHEIDUNGEN_GRUPPE5_MQTT.md), Bauvorschrift wz_bild/GRUPPE5_BAUVORSCHRIFT.md. Fuer Werte ueber das
+ * MQTT-Gateway gibt es KEINE Importvorlage mehr: je Wert ein einfacher Virtueller Eingang, Name genau so,
+ * wie das Gateway ihn vergibt (Gruppe 1 Nachtrag 2). Namen, Hakenliste und Pruefzeile kommen aus EINER
+ * Funktion (gardena_mqtt_namen()); die Befehle aus Loxone gehen ueber die gemeinsame Befehlsbruecke
+ * (bin/befehlsbruecke.php, Stammfassung) an DIESELBE Funktion wie der HTTP-Endpunkt
+ * (gardena_befehl_ausfuehren(), gardena_abruf_starten()). Der UDP-Weg und die HTTP-Befehle bleiben fuer
+ * bestehende Anlagen.
+ * ================================================================== */
+
+/**
+ * Der Fehlwert eines Attributs, das die Wolke ohne Wert liefert (Entwurf ga 2.3, E4/E5; ENTSCHEIDUNGEN
+ * Gruppe 5 Punkt 3): die zweiwertigen Zahlenfelder (online, maeht, station, offen, an, stoerung) 0 - sie
+ * heissen seit 1.2.19 "1 bei bekanntem Wert, sonst 0", ihre Verbraucher sind Digitaleingaenge -; Boden- und
+ * Lufttemperatur -999 (-1 Grad ist ein echter Wert); die uebrigen Zahlen der Grenzen-Tabelle -1. Gelesen aus
+ * gardena_vorlage_grenzen(): MinVal traegt dort den Fehlwert, Vorlage und Sender laufen nicht auseinander.
+ * Texte und unbekannte Attribute behalten "-" (ein Text "-" ist eine sichtbare Aussage; ohne Bereich kein
+ * sicherer Fehlwert). Rueckgabe int oder '-'.
+ */
+function gardena_fehlwert($attribut)
+{
+    $a = (string) $attribut;
+    if (in_array($a, gardena_zahlen_felder(), true)) { return 0; }
+    $g = gardena_vorlage_grenzen();
+    if (isset($g[$a]) && is_numeric($g[$a][0]) && (int) $g[$a][0] < 0) { return (int) $g[$a][0]; }
+    return '-';
+}
+
+/** Das Basisthema, wie der Sender es bildet (gardenaMain.php: rtrim('/'), gardena_mqtt_thema()). */
+function gardena_mqtt_basis($cfg)
+{
+    $t = gardena_mqtt_thema(is_array($cfg) && isset($cfg['MQTT_TOPIC']) && !is_array($cfg['MQTT_TOPIC'])
+        ? rtrim((string) $cfg['MQTT_TOPIC'], '/') : '');
+    return ($t !== '') ? $t : 'gardena';
+}
+
+/** Die Geraete des Abbilds: Liste array(Kennung, Name, Geraet). Ein Abbild aus einem Lauf fuehrt
+ *  'locations' als Liste oder als Feld mit Schluesseln - beides wird gelesen. */
+function gardena_abbild_geraete($cache)
+{
+    $aus = array();
+    if (!is_array($cache) || empty($cache['locations']) || !is_array($cache['locations'])) { return $aus; }
+    foreach ($cache['locations'] as $loc) {
+        if (!is_array($loc) || empty($loc['devices']) || !is_array($loc['devices'])) { continue; }
+        foreach ($loc['devices'] as $id => $dev) {
+            if (!is_array($dev)) { continue; }
+            $name = (isset($dev['name']) && !is_array($dev['name']) && (string) $dev['name'] !== '')
+                ? (string) $dev['name'] : (string) $id;
+            $aus[] = array((string) $id, $name, $dev);
+        }
+    }
+    return $aus;
+}
+
+/** Das Lebenszeichen unter <basis>/Plugin/STATUS (Entwurf ga E6: bleibt dort): Name => array(Sprachschluessel,
+ *  Zahl, V2-Haken). zeitstempel und ts gehen hinaus, die Musterseiten nehmen sie nicht (kein Alter, Regeln/07). */
+function gardena_mqtt_lz_themen()
+{
+    return array('zaehler' => array('MQTT.Z_ZAEHLER', true, true), 'ok' => array('MQTT.Z_OK', true, true),
+                 'werte' => array('MQTT.Z_WERTE', true, true), 'fehler' => array('MQTT.Z_FEHLER', false, true),
+                 'zeitstempel' => array('MQTT.Z_ZEIT', true, false), 'ts' => array('MQTT.Z_TS', true, false));
+}
+
+/** Die V2-Haken je Dienst = die Attribute der vier Musterseiten (Entwurf ga 2.4). */
+function gardena_v2_haken()
+{
+    return array('COMMON' => array('online', 'batteryLevel', 'rfLinkLevel'),
+                 'MOWER' => array('maeht', 'station', 'stoerung', 'operatingHours', 'activity', 'lastErrorCode'),
+                 'VALVE' => array('offen', 'stoerung', 'activity'),
+                 'POWER_SOCKET' => array('an', 'stoerung', 'activity'),
+                 'SENSOR' => array('soilHumidity', 'soilTemperature', 'ambientTemperature', 'lightIntensity'));
+}
+
+/** Bedeutung eines Attributs fuer die Namenstabelle (LOX.N_<ATTRIBUT>, sonst LOX.N_SONST) - Klartext, die
+ *  Oberflaeche maskiert bei der Ausgabe. */
+function gardena_mqtt_bedeutung($attr)
+{
+    $k = 'LOX.N_' . strtoupper(preg_replace('/[^A-Za-z0-9_]/', '', (string) $attr));
+    $t = gardena_t($k);
+    return ($t === $k) ? sprintf(gardena_t('LOX.N_SONST'), (string) $attr) : $t;
+}
+
+/** Einheit ohne Formatzeichen: "<v.1> Grad C" -> "Grad C". */
+function gardena_mqtt_einheit_text($e)
+{
+    return trim(preg_replace('/<v(\.\d)?>/', '', (string) $e));
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste und
+ * Pruefzeile (Entwurf ga 2.4). Dieselbe Schleife wie die Themenliste im Reiter MQTT: ausgenommene Geraete
+ * fehlen, die Zahlenfelder ueber gardena_mit_zahlen(); dazu das Lebenszeichen und status/befehle (sendet die
+ * Befehlsbruecke). Je Zeile: thema, name (Gateway-Name), geraet, dienst, attribut, zahl, bedeutung (Text),
+ * bereich, fehlwert (null = keiner), retained, haken (V2), im_muster.
+ */
+function gardena_mqtt_namen($cache, $cfg)
+{
+    $basis = gardena_mqtt_basis($cfg);
+    $grenzen = gardena_vorlage_grenzen();
+    $haken = gardena_v2_haken();
+    $ausg = gardena_ausgenommen($cfg);
+    $aus = array();
+    foreach (gardena_abbild_geraete($cache) as $g) {
+        list($id, $name, $dev) = $g;
+        if (in_array($name, $ausg, true) || in_array($id, $ausg, true)) { continue; }
+        if (empty($dev['services']) || !is_array($dev['services'])) { continue; }
+        foreach ($dev['services'] as $typ => $attrs) {
+            if (!is_array($attrs)) { continue; }
+            foreach (gardena_mit_zahlen($typ, $attrs) as $a => $v) {
+                if ($a === '_service_id' || !is_array($v) || !array_key_exists('value', $v)) { continue; }
+                $a = (string) $a;
+                $bekannt = isset($grenzen[$a]);
+                $zahl = $bekannt || (!gardena_wert_fehlt($v['value']) && is_numeric(gardena_wert_flach($v['value'])));
+                $fw = $bekannt ? gardena_fehlwert($a) : null;
+                if ($bekannt) {
+                    $min = ($fw !== '-' && (int) $fw < (int) $grenzen[$a][0]) ? (int) $fw : (int) $grenzen[$a][0];
+                    $u = gardena_mqtt_einheit_text($grenzen[$a][2]);
+                    $bereich = $min . " \u{2026} " . $grenzen[$a][1] . ($u !== '' ? ' ' . $u : '');
+                } else {
+                    $bereich = $zahl ? gardena_t('LOX.M_ZAHL') : gardena_t('LOX.M_TEXT');
+                }
+                $h = isset($haken[(string) $typ]) && in_array($a, $haken[(string) $typ], true);
+                $aus[] = array('thema' => gardena_wert_thema($basis, $name, $typ, $a),
+                               'name' => gardena_wert_eingang($basis, $name, $typ, $a),
+                               'geraet' => $name, 'dienst' => (string) $typ, 'attribut' => $a, 'zahl' => $zahl,
+                               'bedeutung' => gardena_mqtt_bedeutung($a), 'bereich' => $bereich,
+                               'fehlwert' => ($fw === '-' ? null : $fw), 'retained' => gardena_retain($name, $typ, $a),
+                               'haken' => $h, 'im_muster' => $h);
+            }
+        }
+    }
+    $lz = gardena_lz_vorlage();
+    foreach (gardena_mqtt_lz_themen() as $a => $d) {
+        $bereich = isset($lz[$a]) ? $lz[$a][0] . " \u{2026} " . $lz[$a][1] : gardena_t('LOX.M_TEXT');
+        $aus[] = array('thema' => gardena_wert_thema($basis, 'Plugin', 'STATUS', $a),
+                       'name' => gardena_wert_eingang($basis, 'Plugin', 'STATUS', $a),
+                       'geraet' => 'Plugin', 'dienst' => 'STATUS', 'attribut' => $a, 'zahl' => $d[1],
+                       'bedeutung' => gardena_t($d[0]), 'bereich' => $bereich, 'fehlwert' => null, 'retained' => false,
+                       'haken' => $d[2], 'im_muster' => $d[2]);
+    }
+    $aus[] = array('thema' => $basis . '/status/befehle', 'name' => str_replace('/', '_', $basis . '/status/befehle'),
+                   'geraet' => 'Plugin', 'dienst' => 'status', 'attribut' => 'befehle', 'zahl' => true,
+                   'bedeutung' => gardena_t('BEFEHL.TH_STATUS'), 'bereich' => "-1 \u{2026} 1", 'fehlwert' => null,
+                   'retained' => false, 'haken' => true, 'im_muster' => false);
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf ga 2.4): die Werte der Musterseiten je vorhandenem Geraet und
+ *  status/befehle - mit den vier Beispielgeraeten 26 Zahlen + 5 Texte + status/befehle = 32 Haken. */
+function gardena_mqtt_hakenliste($cache, $cfg)
+{
+    $aus = array();
+    foreach (gardena_mqtt_namen($cache, $cfg) as $z) {
+        if ($z['haken']) { $aus[] = $z; }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf ga 2.4): jeder Name der Tabelle ist ein Thema, das der Sender bildet, und
+ * jedes Thema steht in der Tabelle. Die Gegenseite wird wie in gardenaMain.php aus dem Abbild gebildet (ohne
+ * gardena_mqtt_namen() und gardena_wert_eingang()). $namen: fuer die Gegenprobe (ein falsch geschriebener Name
+ * muss rot werden). Rueckgabe array(1|0, Text).
+ */
+function gardena_mqtt_namen_probe($cache, $cfg, $namen = null)
+{
+    $basis = gardena_mqtt_basis($cfg);
+    if ($namen === null) {
+        $namen = array();
+        foreach (gardena_mqtt_namen($cache, $cfg) as $z) { $namen[] = $z['name']; }
+    }
+    $soll = array();
+    $ausg = gardena_ausgenommen($cfg);
+    foreach (gardena_abbild_geraete($cache) as $g) {
+        if (in_array($g[1], $ausg, true) || in_array($g[0], $ausg, true)) { continue; }
+        if (empty($g[2]['services']) || !is_array($g[2]['services'])) { continue; }
+        foreach ($g[2]['services'] as $typ => $attrs) {
+            if (!is_array($attrs)) { continue; }
+            foreach (gardena_mit_zahlen($typ, $attrs) as $a => $v) {
+                if ($a === '_service_id' || !is_array($v) || !array_key_exists('value', $v)) { continue; }
+                $soll[] = strtr(gardena_wert_thema($basis, $g[1], $typ, $a), '/', '_');
+            }
+        }
+    }
+    foreach (array_keys(gardena_mqtt_lz_themen()) as $a) {
+        $soll[] = strtr(gardena_wert_thema($basis, 'Plugin', 'STATUS', $a), '/', '_');
+    }
+    $soll[] = strtr($basis . '/status/befehle', '/', '_');
+    $nur_tabelle = array_values(array_diff($namen, $soll));
+    $nur_themen = array_values(array_diff($soll, $namen));
+    if ($nur_tabelle || $nur_themen) {
+        return array(0, sprintf(gardena_t('TEST.A_NAMENSTABELLE_NEIN'),
+            $nur_tabelle ? implode(', ', $nur_tabelle) : '-', $nur_themen ? implode(', ', $nur_themen) : '-'));
+    }
+    return array(1, sprintf(gardena_t('TEST.A_NAMENSTABELLE_JA'), count($namen),
+                            count(gardena_mqtt_hakenliste($cache, $cfg))));
+}
+
+/**
+ * Das Abo fuer Gateway V1 (Entwurf ga E8): config/mqtt_subscriptions.cfg im Konfigurationsordner traegt
+ * "<basis>/#"; das Gateway liest die Plugin-Abos selbst. Mitgeliefert mit "gardena/#", nachgefuehrt beim
+ * Speichern des Reiters MQTT und in jedem Cron-Lauf (ein Update spielt die alte Konfiguration zurueck).
+ * Bauart ev_abo_datei() (EVCC 0.9.45). Rueckgabe array(Pfad, liegt richtig).
+ */
+function gardena_abo_datei($cfg, $schreiben = false)
+{
+    $dir = isset($GLOBALS['lbpconfigdir']) ? rtrim((string) $GLOBALS['lbpconfigdir'], '/') : '';
+    if ($dir === '' || !is_dir($dir)) { return array('', false); }
+    $pfad = $dir . '/mqtt_subscriptions.cfg';
+    $soll = gardena_mqtt_basis($cfg) . '/#';
+    clearstatcache(true, $pfad);
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $roh !== $soll . "\n") {
+        $tmp = $pfad . '.tmp.' . getmypid();
+        if (gardena_nebendatei_schreiben($tmp, $soll . "\n", 0644) && @rename($tmp, $pfad)) {
+            gardena_log('INF', 'Gateway-Abo (mqtt_subscriptions.cfg) gesetzt: ' . $soll);
+            $da = true;
+        } else {
+            @unlink($tmp);
+            gardena_log_gebremst('abo_datei', 'ERR', 'Das Gateway-Abo ' . $pfad . ' liess sich nicht schreiben - '
+                . 'unter Gateway V1 das Abo ' . $soll . ' von Hand eintragen.');
+        }
+    }
+    return array($pfad, $da);
+}
+
+/* ---------------- Befehle: EINE Funktion fuer Endpunkt und Befehlsbruecke ----------------
+ * Bis 1.2.20 stand diese Pruefung in webfrontend/html/index.php (?action=command, ?action=refresh). Seit 1.2.21
+ * rufen der HTTP-Endpunkt (Quelle 'http', Antwort, Code und Protokoll unveraendert - Wirkungstest Quelle gegen Bau)
+ * und die Befehlsbruecke (Quelle 'mqtt', bin/befehle_zuordnung.php) dieselben Funktionen: type gegen cmd, seconds
+ * (Vielfaches von 60, Grenzen je Dienst), Abbild, Mehrventil, Gleichwert-Unterdrueckung (X-7), Abrufsperre,
+ * 30 Befehle je Stunde, Anmeldung, sendCommand. Das Token prueft weiter nur der Endpunkt; auf dem MQTT-Weg ersetzen
+ * es die Anmeldung am Broker und beide Haken (Entwurf gemeinsam E13). Zugangsdaten und "Plugin aktiv" prueft der
+ * Endpunkt VOR dem Befehlsteil fuer jede Aktion; hier stehen dieselben Tore noch einmal fuer den MQTT-Weg (ueber
+ * den Endpunkt werden sie nie erreicht). Rueckgabe array(HTTP-Code, Antworttext, Protokollzeile, Grund): Text und
+ * Protokollzeile wortgleich wie bis 1.2.20, Grund ASCII fuer die Quittung der Bruecke. */
+
+/** Gemeinsamer Ausgang: auf dem MQTT-Weg ins Plugin-Protokoll (der Endpunkt schreibt sein eigenes). */
+function gardena_befehl_ende($quelle, $code, $text, $protokoll, $grund)
+{
+    if ($quelle === 'mqtt') {
+        gardena_log($code === 200 ? 'INF' : 'ERR', 'Befehl ueber MQTT: ' . $protokoll);
+    }
+    return array($code, $text, $protokoll, $grund);
+}
+
+function gardena_befehl_ausfuehren($type_roh, $cmd_roh, $device_roh, $seconds_roh, $quelle = 'http')
+{
+    global $lbpconfigdir;
+    $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
+    if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
+        return gardena_befehl_ende($quelle, 409,
+            "FEHLER: Application Key/Secret nicht konfiguriert (Plugin-Oberflaeche oeffnen).\n",
+            'ABGEWIESEN command: keine Zugangsdaten hinterlegt', 'KEINE_ZUGANGSDATEN');
+    }
+    if ((string) $g['ENABLED'] !== '1') {
+        return gardena_befehl_ende($quelle, 409,
+            "FEHLER: Plugin ist ausgeschaltet (Plugin aktiv: Nein) - es wird nichts abgerufen und nichts geschaltet.\n",
+            'ABGEWIESEN command: Plugin ist ausgeschaltet (ENABLED=0)', 'PLUGIN_AUS');
+    }
+    $devQuery = trim((string) $device_roh);
+    $cmd = strtoupper(trim((string) $cmd_roh));
+
+    /*
+     * type wird NICHT mehr geraten.
+     *
+     * Bis 1.2.5 galt ohne Angabe MOWER_CONTROL - sechs Zeilen weiter wird ein
+     * fehlendes 'device' ausdruecklich abgewiesen, mit der Begruendung, eine
+     * fehlende Angabe werde nicht geraten. Ein Virtueller Ausgang, bei dem
+     * '&type=' beim Abschreiben verlorenging, startete damit den MAEHER,
+     * statt ein Ventil zu oeffnen - und wertete die Antwort nicht aus.
+     */
+    $type = strtoupper(trim((string) $type_roh));
+    if ($type === '') {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: Es fehlt die Angabe type=. Erlaubt: MOWER_CONTROL, VALVE_CONTROL,"
+            . " POWER_SOCKET_CONTROL.\n",
+            'command abgewiesen: type fehlt', 'TYPE_FEHLT');
+    }
+
+    /*
+     * seconds: ein GESETZTER, aber unlesbarer Wert wird abgewiesen.
+     *
+     * Bis 1.2.5 liefen "nicht angegeben" und "Unsinn angegeben" in denselben
+     * Wert: 'abc', '-60', '99999999' und '1800.0' wurden alle zu null und
+     * damit wortlos zu 3600 - der Maeher lief eine Stunde. Fuer die
+     * 60er-Regel wurde dagegen sauber abgewiesen: dieselbe Fehlerklasse,
+     * zwei verschiedene Antworten. Gemessen unter 7.4.33 und 8.4.24.
+     */
+    $seconds = null;
+    if ((string) $seconds_roh !== '') {
+        if (preg_match('/^[0-9]{1,7}$/', (string) $seconds_roh) !== 1) {
+            return gardena_befehl_ende($quelle, 400,
+                "FEHLER: seconds muss eine ganze Zahl aus Ziffern sein (hoechstens 7 Stellen).\n",
+                'command abgewiesen: seconds unlesbar (' . strlen((string) $seconds_roh) . ' Zeichen)', 'SEKUNDEN_UNGUELTIG');
+        }
+        $seconds = (int) $seconds_roh;
+        if ($seconds < 60) {
+            return gardena_befehl_ende($quelle, 400,
+                "FEHLER: seconds muss mindestens 60 betragen (angegeben: " . $seconds . ").\n",
+                'command abgewiesen: seconds zu klein', 'SEKUNDEN_UNGUELTIG');
+        }
+    }
+
+    /*
+     * Ohne device wurde bis 1.2.0 das ERSTE Geraet mit passendem Dienst
+     * geschaltet - bei mehreren Maehern oder Ventilen also irgendeines. Eine
+     * fehlende Angabe wird abgewiesen, nicht geraten.
+     */
+    if ($devQuery === '') {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: Es fehlt die Angabe device=NAME. Die Geraetenamen zeigt ?action=list.\n",
+            'command abgewiesen: device fehlt', 'GERAET_FEHLT');
+    }
+    /*
+     * Die Oberflaeche sagt seit jeher, seconds sei ein Vielfaches von 60 -
+     * geprueft wurde es nie. Ein Satz in der Anleitung, den der Code nicht
+     * einhaelt, ist eine der beiden Stellen falsch; hier ist es der Code.
+     */
+    if ($seconds !== null && $seconds % 60 !== 0) {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: seconds muss ein Vielfaches von 60 sein (angegeben: " . $seconds . ").\n",
+            'command abgewiesen: seconds kein Vielfaches von 60', 'SEKUNDEN_UNGUELTIG');
+    }
+
+    /*
+     * type und cmd werden GEGENEINANDER geprueft, nicht gegen zwei getrennte
+     * flache Listen. Bis 1.2.5 bestand 'type=MOWER_CONTROL&cmd=PAUSE' die
+     * Pruefung, kostete einen Abruf des Husqvarna-Kontingents und scheiterte
+     * erst in der Wolke - das Plugin konnte es ohne jeden Netzzugriff wissen.
+     */
+    $gbefehle = gardena_befehle();
+    if (!isset($gbefehle[$type])) {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: Ungueltiger type. Erlaubt: " . implode(', ', array_keys($gbefehle)) . "\n",
+            'command abgewiesen: type unbekannt', 'TYPE_UNBEKANNT');
+    }
+    if (!in_array($cmd, $gbefehle[$type], true)) {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: cmd '" . $cmd . "' gibt es fuer type " . $type . " nicht. Erlaubt: "
+            . implode(', ', $gbefehle[$type]) . "\n",
+            'command abgewiesen: cmd passt nicht zu type ' . $type, 'CMD_UNGUELTIG');
+    }
+    // Die Vorgabe greift nur, wenn seconds WIRKLICH fehlt (siehe oben).
+    if ($cmd === 'START_SECONDS_TO_OVERRIDE' && $seconds === null) { $seconds = 3600; }
+
+    /*
+     * Obergrenze je Dienst (1.2.11, C1; Entscheidung 10): Ventil 3 h, Maeher und
+     * Steckdose 24 h je Befehl - gardena_sekunden_grenzen(). Bis 1.2.10 ging
+     * seconds=9999960 (115 Tage) an die Wolke (in WSL gemessen, code Befund 1).
+     */
+    $ggrenze = gardena_sekunden_grenze($type);
+    if ($seconds !== null && $ggrenze > 0 && $seconds > $ggrenze) {
+        return gardena_befehl_ende($quelle, 400,
+            "FEHLER: seconds ist fuer " . $type . " hoechstens " . $ggrenze . " (" . ($ggrenze / 3600)
+            . " h je Befehl), angegeben: " . $seconds . ". Der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: seconds ueber der Grenze ' . $ggrenze . ' fuer ' . $type, 'GRENZE');
+    }
+
+    // Service-ID im Cache suchen (Geraetename oder Geraete-ID)
+    $gcache = $lbpconfigdir . '/devices_cache.json';
+    $cache = is_file($gcache)
+        ? json_decode((string) @file_get_contents($gcache), true) : null;
+    $serviceMap = array('MOWER_CONTROL' => 'MOWER', 'VALVE_CONTROL' => 'VALVE', 'POWER_SOCKET_CONTROL' => 'POWER_SOCKET');
+    $svcType = $serviceMap[$type];
+    $serviceId = '';
+    $gmehrfach = 1;
+    if (is_array($cache) && !empty($cache['locations']) && is_array($cache['locations'])) {
+        foreach ($cache['locations'] as $loc) {
+            // Ohne diese Pruefung waere ein Zwischenspeicher ohne 'devices'
+            // unter PHP 8 ein toedlicher Fehler (foreach ueber null), und der
+            // Miniserver bekaeme eine leere Antwort statt einer Fehlermeldung.
+            if (!is_array($loc) || !isset($loc['devices']) || !is_array($loc['devices'])) { continue; }
+            foreach ($loc['devices'] as $devId => $dev) {
+                if (!is_array($dev)) { continue; }
+                $devName = isset($dev['name']) ? (string) $dev['name'] : '';
+                if ($devQuery !== '' && strcasecmp($devName, $devQuery) !== 0 && strcasecmp((string) $devId, $devQuery) !== 0) { continue; }
+                if (isset($dev['services'][$svcType]['_service_id']['value'])) {
+                    $serviceId = $dev['services'][$svcType]['_service_id']['value'];
+                    if (isset($dev['mehrfach'][$svcType]) && is_numeric($dev['mehrfach'][$svcType])) {
+                        $gmehrfach = (int) $dev['mehrfach'][$svcType];
+                    }
+                    break 2;
+                }
+            }
+        }
+    }
+    if (!is_array($cache)) {
+        // Noch kein Abbild: das ist fehlende Datenlage, kein unbekanntes
+        // Geraet (Regeln/07). Bis 1.2.7 kam hier 404 "Kein passendes Geraet".
+        return gardena_befehl_ende($quelle, 503,
+            "FEHLER: Es gibt noch kein Geraete-Abbild - erst muss ein Abruf gelingen (?action=refresh).\n",
+            'command abgewiesen: noch kein Geraete-Abbild', 'KEIN_ABBILD');
+    }
+    /*
+     * Mehrere Dienste gleichen Typs an einem Geraet (1.2.11, C10; Entscheidung
+     * 10): Befehle werden abgewiesen, bis an echter Hardware gemessen ist, wie
+     * die Wolke ein Mehrventil-Geraet liefert.
+     */
+    if ($serviceId !== '' && $gmehrfach > 1) {
+        return gardena_befehl_ende($quelle, 409,
+            "FEHLER: Das Geraet '" . $devQuery . "' hat " . $gmehrfach . " Dienste vom Typ " . $svcType
+            . " (etwa mehrere Ventile). Befehle an ein solches Geraet werden abgewiesen, bis an echter"
+            . " Hardware gemessen ist, welches Ventil die Wolke unter welcher Kennung fuehrt."
+            . " Der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Geraet mit ' . $gmehrfach . ' Diensten vom Typ ' . $svcType, 'MEHRVENTIL');
+    }
+    if ($serviceId === '') {
+        return gardena_befehl_ende($quelle, 404,
+            "FEHLER: Kein passendes Geraet/Service gefunden (device='" . $devQuery . "', type=" . $type . "). Erst ?action=refresh ausfuehren; Geraetenamen zeigt ?action=list.\n",
+            'command: kein passendes Geraet (device ' . strlen($devQuery) . ' Zeichen, type ' . $type . ')', 'GERAET_UNBEKANNT');
+    }
+
+    /*
+     * Gleichwert-Unterdrueckung fuer Ventil- und Steckdosenbefehle (1.2.13,
+     * X-7; Entscheidung 19 vom 01.10.2026; Steckdose seit 1.2.14): derselbe
+     * Befehl mit derselben Dauer an dasselbe Ventil bzw. dieselbe Steckdose
+     * innerhalb von 60 s geht nicht erneut hinaus - Antwort 200 mit
+     * UNVERAENDERT=1. Sie steht VOR der Abrufsperre und der Stundengrenze:
+     * ein unterdrueckter Befehl zaehlt nicht mit. Der Maeher ist nicht betroffen
+     * (gardena_gleichwert_gilt()). Die Sperre des Merkers wird vor jedem
+     * Rueckgabeweg freigegeben (bis 1.2.20: in gardena_ende() des Endpunkts).
+     */
+    $ggw = null;
+    $gw_wert = '';
+    if (gardena_gleichwert_gilt($type)) {
+        $gw_wert = gardena_gleichwert_wert($cmd, $seconds);
+        $ggw = gardena_gleichwert_oeffnen();
+        if ($ggw === null) {
+            gardena_log_gebremst('gleichwert_merker', 'ERR', 'Der Merker der Gleichwert-Unterdrueckung ('
+                . gardena_log_datei('gardena_gleichwert.merker') . ') laesst sich nicht oeffnen - Ventil- und '
+                . 'Steckdosenbefehle werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
+            return gardena_befehl_ende($quelle, 503, "FEHLER: Der Merker der Gleichwert-Unterdrueckung ist nicht nutzbar (Merkerdatei im "
+                . "Protokollordner) - der Befehl wurde NICHT gesendet.\n",
+                'command abgewiesen: Merker der Gleichwert-Unterdrueckung nicht nutzbar', 'BREMSE_MERKER');
+        }
+        $gw_seit = gardena_gleichwert_seit($ggw, $serviceId, $gw_wert);
+        if ($gw_seit >= 0) {
+            gardena_gleichwert_schliessen($ggw);
+            return gardena_befehl_ende($quelle, 200, 'OK: ' . $cmd . ' an ' . $serviceId . ' nicht erneut gesendet - derselbe Befehl wurde vor '
+                . $gw_seit . " s angenommen (UNVERAENDERT=1).\n",
+                'command ' . $type . '/' . $cmd . ' unveraendert (vor ' . $gw_seit . ' s angenommen), nichts gesendet', 'UNVERAENDERT');
+        }
+    }
+    $frei = function () use (&$ggw) {
+        if (is_array($ggw)) { gardena_gleichwert_schliessen($ggw); }
+        $ggw = null;
+    };
+
+    /*
+     * Bremsen VOR dem Netzzugriff (seit 1.2.8, Regeln/03).
+     */
+    $gsperre_bis = gardena_sperre_bis($lbpconfigdir);
+    if ($gsperre_bis > 0) {
+        $frei();
+        return gardena_befehl_ende($quelle, 503, "FEHLER: Abrufsperre nach HTTP 429 bis " . date('H:i', $gsperre_bis)
+            . " - der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis), 'ABRUFSPERRE');
+    }
+    $gzuviel = gardena_bremse_befehl();
+    if ($gzuviel < 0) {
+        // Die Bremse faellt geschlossen aus (1.2.11, C2).
+        gardena_log_gebremst('bremse_merker', 'ERR', 'Der Merker der Befehlsbremse ('
+            . gardena_log_datei('gardena_befehle.merker') . ') laesst sich nicht oeffnen oder schreiben - '
+            . 'Befehle werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
+        $frei();
+        return gardena_befehl_ende($quelle, 503, "FEHLER: Die Befehlsbremse ist nicht nutzbar (Merkerdatei im Protokollordner) - "
+            . "der Befehl wurde NICHT gesendet.\n",
+            'command abgewiesen: Merker der Befehlsbremse nicht nutzbar', 'BREMSE_MERKER');
+    }
+    if ($gzuviel > 0) {
+        $frei();
+        return gardena_befehl_ende($quelle, 429, "FEHLER: Mehr als " . gardena_bremse_befehle_h() . " Befehle in der letzten Stunde"
+            . " - der Befehl wurde NICHT gesendet. Flattert ein Baustein am Virtuellen Ausgang?\n",
+            'command abgewiesen: Obergrenze ' . gardena_bremse_befehle_h() . ' je Stunde erreicht', 'BREMSE');
+    }
+
+    $gardena = new gardena($g['CLIENT_ID'], $g['CLIENT_SECRET'], $lbpconfigdir);
+    if (!$gardena->authenticate()) {
+        if ($gardena->last_http === 429) { gardena_kontingent_vermerken($lbpconfigdir, $gardena->retry_after); }
+        $frei();
+        return gardena_befehl_ende($quelle, 502, 'FEHLER: Anmeldung fehlgeschlagen: ' . $gardena->last_error . "\n",
+            'command: Anmeldung an der Wolke fehlgeschlagen (HTTP ' . (int) $gardena->last_http . ')',
+            $gardena->last_http === 429 ? 'KONTINGENT' : 'ANMELDUNG');
+    }
+    if ($gardena->sendCommand($serviceId, $type, $cmd, $seconds)) {
+        // Gemerkt wird nur, was die Wolke angenommen hat (X-7).
+        if ($ggw !== null) {
+            gardena_gleichwert_schliessen($ggw, $serviceId, $gw_wert);
+            $ggw = null;
+        }
+        return gardena_befehl_ende($quelle, 200, 'OK: ' . $cmd . ' an ' . $serviceId . " gesendet.\n",
+            'command ' . $type . '/' . $cmd . ' abgesetzt', '');
+    }
+    if ($gardena->last_http === 429) { gardena_kontingent_vermerken($lbpconfigdir, $gardena->retry_after); }
+    $frei();
+    return gardena_befehl_ende($quelle, 502, 'FEHLER: ' . $gardena->last_error . "\n",
+        'command ' . $type . '/' . $cmd . ' gescheitert (HTTP ' . (int) $gardena->last_http . ')',
+        $gardena->last_http === 429 ? 'KONTINGENT' : 'WOLKE');
+}
+
+/**
+ * Sofortabruf (bis 1.2.20 der Zweig ?action=refresh des Endpunkts): Abrufsperre, 60-s-Bremse, Sperrprobe,
+ * gardenaMain.php --sofort im Hintergrund, Rueckmeldung binnen 5 s. Rueckgabe wie gardena_befehl_ausfuehren().
+ */
+function gardena_abruf_starten($quelle = 'http')
+{
+    global $lbpconfigdir;
+    if ($quelle === 'mqtt') {
+        $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
+        if (empty($g['CLIENT_ID']) || empty($g['CLIENT_SECRET'])) {
+            return gardena_befehl_ende($quelle, 409,
+                "FEHLER: Application Key/Secret nicht konfiguriert (Plugin-Oberflaeche oeffnen).\n",
+                'ABGEWIESEN refresh: keine Zugangsdaten hinterlegt', 'KEINE_ZUGANGSDATEN');
+        }
+        if ((string) $g['ENABLED'] !== '1') {
+            return gardena_befehl_ende($quelle, 409,
+                "FEHLER: Plugin ist ausgeschaltet (Plugin aktiv: Nein) - es wird nichts abgerufen und nichts geschaltet.\n",
+                'ABGEWIESEN refresh: Plugin ist ausgeschaltet (ENABLED=0)', 'PLUGIN_AUS');
+        }
+    }
+    // gardenaMain liegt seit 1.1.0 in bin/ - neben dieser Bibliothek.
+    $skript = dirname(__FILE__) . '/gardenaMain.php';
+    if (!is_file($skript)) {
+        return gardena_befehl_ende($quelle, 500, "FEHLER: " . $skript . " nicht gefunden - Plugin neu installieren.\n",
+            'refresh: gardenaMain.php nicht gefunden', 'DIENST_FEHLT');
+    }
+    /*
+     * Bremsen (seit 1.2.8, Regeln/03). Bis 1.2.7 loeste ein flatternder
+     * Virtueller Ausgang mit jeder Flanke einen vollstaendigen Abruf aus.
+     * Abgewiesen wird ausdruecklich und mit Grund.
+     */
+    $gsperre_bis = gardena_sperre_bis($lbpconfigdir);
+    if ($gsperre_bis > 0) {
+        return gardena_befehl_ende($quelle, 503, "FEHLER: Abrufsperre nach HTTP 429 bis " . date('H:i', $gsperre_bis)
+            . " - vorher wird nicht abgerufen.\n",
+            'refresh abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis), 'ABRUFSPERRE');
+    }
+    $gst = gardena_status_lesen($lbpconfigdir);
+    $gseit = time() - (int) $gst['letzter_lauf'];
+    if ((int) $gst['letzter_lauf'] > 0 && $gseit >= 0 && $gseit < gardena_bremse_abruf_s()) {
+        return gardena_befehl_ende($quelle, 429, "FEHLER: Der letzte Abruf liegt erst " . $gseit . " Sekunden zurueck. "
+            . "Ein Sofortabruf ist fruehestens " . gardena_bremse_abruf_s() . " Sekunden nach dem letzten Lauf moeglich.\n",
+            'refresh abgewiesen: zu frueh (' . $gseit . ' s nach dem letzten Lauf)', 'ZU_FRUEH');
+    }
+    /*
+     * Die Sperre wird einmal probeweise genommen und gleich wieder freigegeben:
+     * laesst sie sich nicht nehmen, laeuft schon einer (Begruendung seit 1.2.0).
+     */
+    $gprobe = gardena_sperre('main', $gprobe_grund);
+    if ($gprobe === false && $gprobe_grund === 'nicht_zu_oeffnen') {
+        // Nicht "laeuft bereits" (1.2.11, I6): die Sperrdatei ist nicht nutzbar.
+        return gardena_befehl_ende($quelle, 500, "FEHLER: Die Sperrdatei des Abrufs laesst sich nicht oeffnen - es wurde kein Abruf "
+            . "gestartet. Rechte im Protokollordner pruefen.\n",
+            'refresh: Sperrdatei nicht zu oeffnen, kein Abruf gestartet', 'SPERRDATEI');
+    }
+    if ($gprobe === false) {
+        return gardena_befehl_ende($quelle, 200, "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n",
+            'refresh: laeuft bereits, kein zweiter Lauf gestartet', '');
+    }
+    flock($gprobe, LOCK_UN);
+    fclose($gprobe);
+    $php = defined('PHP_BINARY') && PHP_BINARY !== '' ? PHP_BINARY : '/usr/bin/php';
+    /*
+     * --sofort (1.2.11, C3): der Lauf ueberspringt den eingestellten Abstand.
+     * "Abruf gestartet" steht erst da, wenn der Lauf seine Sperre wirklich hat
+     * (gardena_sofort_warten()); meldet er sich binnen 5 s nicht, ist das ein
+     * Fehler, keine Erfolgsmeldung.
+     */
+    gardena_sofort_vergessen();
+    shell_exec(escapeshellarg($php) . ' ' . escapeshellarg($skript) . ' --sofort > /dev/null 2>&1 &');
+    $gsofort = gardena_sofort_warten(5.0);
+    if ($gsofort === 'gestartet') {
+        return gardena_befehl_ende($quelle, 200, "OK: Abruf gestartet (Ergebnis im Protokoll und unter ?action=list).\n",
+            'refresh: Abruf gestartet', '');
+    }
+    if ($gsofort === 'belegt') {
+        return gardena_befehl_ende($quelle, 200, "OK: Es laeuft bereits ein Abruf - dieser Aufruf startet keinen zweiten.\n",
+            'refresh: laeuft bereits (der gestartete Lauf fand die Sperre belegt)', '');
+    }
+    return gardena_befehl_ende($quelle, 503, "FEHLER: Der Abruf ist nicht angelaufen (binnen 5 Sekunden keine Rueckmeldung) - "
+        . "Grund im Protokoll (Reiter Logdateien, Fehler des Cron-Rahmens).\n",
+        'refresh: Abruf nicht angelaufen (keine Rueckmeldung binnen 5 s)', 'NICHT_ANGELAUFEN');
+}
+
+/* ---------------- Befehle ueber die Befehlsbruecke (Entwurf ga 3.2) ---------------- */
+
+/** Der Teil <geraet> im Befehlsthema (Entwurf ga E1): Geraetename bzw. Kennung klein, "_" statt "-" und "/"
+ *  (nach gardena_mqtt_thema(), dieselbe Umschreibung wie in den Werte-Themen). */
+function gardena_befehl_teil($name)
+{
+    return strtolower(str_replace(array('-', '/'), '_', gardena_mqtt_thema((string) $name)));
+}
+
+/** Die Befehle je Dienst (Entwurf ga 3.2 und 6): array(Aktion, Wert der Musterseite bzw. der Vorlage, fester
+ *  deutscher Titel wie im Musterprojekt). Dieselbe Tabelle fuer Reiter, Vorlage und Baustein-Liste. */
+function gardena_mq_befehle()
+{
+    return array(
+        'MOWER' => array(
+            array('maehen', '60', "m\u{e4}hen (1 h)"),
+            array('betrieb', 'parken', "parken bis n\u{e4}chste Zeit"),
+            array('betrieb', 'parken_dauerhaft', 'parken bis auf Widerruf'),
+            array('betrieb', 'zeitplan', 'Zeitplan folgen')),
+        'VALVE' => array(
+            array('bewaessern', '30', "bew\u{e4}ssern (30 min)"),
+            array('stoppen', '1', "stoppen bis n\u{e4}chste Zeit"),
+            array('zeitplan', 'aussetzen', 'Zeitplan aussetzen'),
+            array('zeitplan', 'fortsetzen', 'Zeitplan fortsetzen')),
+        'POWER_SOCKET' => array(
+            array('einschalten', '60', 'einschalten (1 h)'),
+            array('schalten', 'dauerhaft', 'einschalten (dauerhaft)'),
+            array('schalten', 'aus', 'ausschalten')),
+    );
+}
+
+/** Der Befehl, wie Loxone ihn sendet: "publish <basis>/befehl/<geraet>/<aktion> <wert>". */
+function gardena_befehl_loxone($cfg, $geraet, $aktion, $wert)
+{
+    return 'publish ' . gardena_mqtt_basis($cfg) . '/befehl/' . gardena_befehl_teil($geraet) . '/' . $aktion . ' ' . $wert;
+}
+
+/**
+ * Das Geraet zum Teil <geraet> im Abbild (Entwurf ga 3.2): gleich ist der Teil des Namens oder der Kennung.
+ * Rueckgabe array(Kennung oder '', Grund): KEIN_ABBILD, GERAET_UNBEKANNT, MEHRDEUTIG (zwei Geraete ergeben
+ * denselben Teil - dann ueber die Kennung ansprechen).
+ */
+function gardena_befehl_geraet($teil)
+{
+    global $lbpconfigdir;
+    $f = $lbpconfigdir . '/devices_cache.json';
+    $cache = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($cache)) { return array('', 'KEIN_ABBILD'); }
+    $treffer = array();
+    foreach (gardena_abbild_geraete($cache) as $g) {
+        if (gardena_befehl_teil($g[1]) === (string) $teil || gardena_befehl_teil($g[0]) === (string) $teil) {
+            $treffer[$g[0]] = true;
+        }
+    }
+    if (!$treffer) { return array('', 'GERAET_UNBEKANNT'); }
+    if (count($treffer) > 1) { return array('', 'MEHRDEUTIG'); }
+    return array((string) key($treffer), '');
+}
+
+/** Ein Befehl der Bruecke: Geraet aufloesen, dann gardena_befehl_ausfuehren() mit Quelle 'mqtt'.
+ *  $sekunden: Minuten x 60 als Text oder ''. Rueckgabe fuer tun(): array(bool, Grund). */
+function gardena_befehl_bruecke($teil, $type, $cmd, $sekunden)
+{
+    list($id, $grund) = gardena_befehl_geraet($teil);
+    if ($id === '') {
+        gardena_log('ERR', 'Befehl ueber MQTT an ' . $teil . ' abgewiesen: ' . $grund);
+        return array(false, $grund);
+    }
+    $r = gardena_befehl_ausfuehren($type, $cmd, $id, (string) $sekunden, 'mqtt');
+    return array((int) $r[0] === 200, (int) $r[0] === 200 ? '' : (string) $r[3]);
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf ga 3.2): Praefix aus MQTT_TOPIC, annehmen = Haken "Befehle ueber
+ *  MQTT annehmen" UND MQTT an, eingreifend = zweiter Haken "Geraete ueber MQTT schalten". Liest nur. */
+function gardena_befehle_einstellungen()
+{
+    $c = gardena_config();
+    $mqtt = ((string) $c['MQTT_ENABLED'] === '1');
+    return array('praefix' => gardena_mqtt_basis($c),
+                 'annehmen' => $mqtt && (string) $c['BEFEHLE_MQTT_EIN'] === '1',
+                 'eingreifend' => (string) $c['BEFEHLE_MQTT_STEUERN'] === '1', 'mqtt_ein' => $mqtt);
+}
+
+/* ---------------- Befehlsbruecke (bin/befehlsbruecke.php, Stammfassung Werkzeuge/gemeinsam) ---------------- */
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). Sie liegt neben dieser Datei. */
+function gardena_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = dirname(__FILE__) . '/befehlsbruecke.php';
+    if (!is_file($f)) { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart wp_bruecke_schalten()): der Waechter in
+ * cron.01min startet nach einem Start hoechstens alle 600 s neu. befehlsbruecke.sh start startet nur nach --soll,
+ * nie als root, nie waehrend eines Updates, nie doppelt. Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl',
+ * Ausgabe).
+ */
+function gardena_bruecke_schalten()
+{
+    if (!gardena_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = gardena_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft) { return array('', ''); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            gardena_log('INF', 'Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        gardena_log('ERR', 'Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        gardena_log('INF', 'Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage) oder null. */
+function gardena_befehle_liste()
+{
+    if (!gardena_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/**
+ * Die Befehlstabelle im Reiter (Schritt 4): je Geraet des Abbilds und je Dienst die Befehle (gardena_mq_befehle()),
+ * mit dem Teil <geraet>, Thema und Befehl; ohne Abbild die Beispielgeraete des Musterprojekts. Zeilen mit einem
+ * Teil, den ein zweites Geraet ebenfalls ergibt oder der laenger als 40 Zeichen ist, tragen 'kennung' = true (dann
+ * gilt der Befehl ueber die Kennung). Rueckgabe array('zeilen' => ..., 'beispiel' => bool).
+ */
+function gardena_befehle_tabelle($cache, $cfg)
+{
+    $geraete = gardena_abbild_geraete($cache);
+    $beispiel = false;
+    if (!$geraete) {
+        $beispiel = true;
+        foreach (array('Maehroboter' => 'MOWER', 'Ventil Beet' => 'VALVE', 'Steckdose Teich' => 'POWER_SOCKET') as $n => $d) {
+            $geraete[] = array($n, $n, array('services' => array($d => array())));
+        }
+    }
+    $zahl = array();
+    foreach ($geraete as $g) {
+        $t = gardena_befehl_teil($g[1]);
+        $zahl[$t] = isset($zahl[$t]) ? $zahl[$t] + 1 : 1;
+    }
+    $art = gardena_mq_befehle();
+    $sperre = array('MOWER' => 10, 'VALVE' => 0, 'POWER_SOCKET' => 0);
+    $zeilen = array();
+    foreach ($geraete as $g) {
+        if (empty($g[2]['services']) || !is_array($g[2]['services'])) { continue; }
+        $t = gardena_befehl_teil($g[1]);
+        $ueber_kennung = ($zahl[$t] > 1 || strlen($t) > 40 || $t === '');
+        $teil = $ueber_kennung ? gardena_befehl_teil($g[0]) : $t;
+        foreach ($art as $dienst => $liste) {
+            if (!array_key_exists($dienst, $g[2]['services'])) { continue; }
+            foreach ($liste as $b) {
+                $zeilen[] = array('geraet' => $g[1], 'teil' => $teil, 'kennung' => $ueber_kennung, 'dienst' => $dienst,
+                                  'aktion' => $b[0], 'wert' => $b[1], 'titel' => $b[2],
+                                  'thema' => gardena_mqtt_basis($cfg) . '/befehl/' . $teil . '/' . $b[0],
+                                  'loxone' => 'publish ' . gardena_mqtt_basis($cfg) . '/befehl/' . $teil . '/' . $b[0] . ' ' . $b[1],
+                                  'sperre' => $sperre[$dienst]);
+            }
+        }
+    }
+    return array('zeilen' => $zeilen, 'beispiel' => $beispiel);
+}
+
+/**
+ * Vorlage "Gardena MQTT-Befehle" (Entwurf ga 3.3): die Bruecke legt fuer Muster keine Befehle an
+ * (bb_vorlage() ueberspringt sie) - die Linie baut die Vorlage selbst aus dem Abbild (Bauart Govee): eigener
+ * Virtueller Ausgang an den UDP-Eingang des Gateways, je Geraet und Dienst die Befehle mit fester Dauer wie bisher
+ * (maehen 60, bewaessern 30, einschalten 60 Minuten), Titel "Gardena <Geraet> <Aktion> (MQTT)", nie retain.
+ * Rueckgabe array(Dateiname, Inhalt) oder null (keine Bruecke, kein Abbild).
+ */
+function gardena_befehle_vorlage($cache, $cfg, $host, $port)
+{
+    if (!gardena_bruecke_laden() || !function_exists('bb_vorlage_befehl')) { return null; }
+    $t = gardena_befehle_tabelle($cache, $cfg);
+    if ($t['beispiel']) { return null; }
+    $z = array('<?xml version="1.0" encoding="utf-8"?>');
+    $z[] = '<VirtualOut HintText="" Title="Gardena MQTT-Befehle" Comment="'
+         . bb_xml('UDP-Eingang des MQTT-Gateways auf dem LoxBerry; wirkt nur mit den Haken "Befehle ueber MQTT annehmen" '
+                  . 'und "Geraete ueber MQTT schalten"')
+         . '" Address="' . bb_xml('/dev/udp/' . $host . '/' . (int) $port) . '" CmdInit="" CloseAfterSend="true" CmdSep="">';
+    $z[] = "\t" . '<Info templateType="3" minVersion="17010727"/>';
+    foreach ($t['zeilen'] as $b) {
+        $z[] = bb_vorlage_befehl('Gardena ' . $b['geraet'] . ' ' . $b['titel'] . ' (MQTT)',
+                                 $b['aktion'] . ' ' . $b['wert'] . ', eingreifend, nie retain', $b['loxone'], '', false);
+    }
+    $z[] = '</VirtualOut>';
+    return array('VQ_gardena_mqtt.xml', implode("\n", $z) . "\n");
+}
+
+/** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|-1, Text). Gemessen wird das Erzeugnis
+ *  (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie der Waechter. */
+function gardena_pruef_bruecke($cfg)
+{
+    if (!gardena_bruecke_laden()) { return array(-1, gardena_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(-1, sprintf(gardena_t('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(-1, sprintf(gardena_t('BEFEHL.P_DEFEKT'), $f[0])); }
+    if ((string) $cfg['BEFEHLE_MQTT_EIN'] !== '1') { return array(0, gardena_t('BEFEHL.P_AUS')); }
+    if ((string) $cfg['MQTT_ENABLED'] !== '1') { return array(0, gardena_t('BEFEHL.P_MQTT_AUS')); }
+    if (!bb_pfade()) { return array(0, gardena_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(-1, gardena_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(-1, sprintf(gardena_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(-1, sprintf(gardena_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(gardena_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(gardena_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . gardena_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) fuer den Reiter Test; leer ohne Bruecke. */
+function gardena_bruecke_pruefzeilen()
+{
+    if (!gardena_bruecke_laden()) { return array(); }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
 }

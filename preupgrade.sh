@@ -354,4 +354,12 @@ netz_json_zweitschrift devices_cache.json  0600
 # danach zeitstempel=0, in Loxone also "noch nie erfolgreich".
 netz_json_zweitschrift gardena_status.json 0600
 
+# Gruppe 5 / MQTT (1.2.21): die Befehlsbruecke anhalten. Die Marke liegt schon (oben) - der Waechter in
+# cron.01min startet sie bis postupgrade.sh nicht neu; es ist dieselbe Marke, die befehlsbruecke.sh liest.
+# Bis 1.2.20 gab es keine Bruecke (dann fehlt die Datei).
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
+fi
+
 exit 0

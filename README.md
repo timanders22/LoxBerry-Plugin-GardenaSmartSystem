@@ -1,5 +1,39 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.21
+
+Werte und Befehle über MQTT – der Weg des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt).
+Der UDP-Weg an den Miniserver und die HTTP-Befehle mit Token wirken weiter.
+
+* **Befehle über MQTT (Befehlsbrücke):** je Gerät `gardena/befehl/<gerät>/<aktion>` – `maehen` (Minuten 1–1440),
+  `betrieb` (`zeitplan`, `parken`, `parken_dauerhaft`), `bewaessern` (Minuten 1–180), `stoppen` (1), `zeitplan`
+  (`aussetzen`, `fortsetzen`), `einschalten` (Minuten 1–1440), `schalten` (`dauerhaft`, `aus`), dazu `abruf` (1).
+  `<gerät>` ist der Gerätename klein, „_“ statt Sonderzeichen (`maehroboter`, `ventil_beet`); der Reiter
+  „Einbindung in Loxone“ zeigt ihn je Gerät. Sie wirken nur mit zwei Haken im Reiter **MQTT**: „Befehle über MQTT
+  annehmen“ und „Geräte über MQTT schalten“ – beide ab Werk aus. Geprüft und ausgeführt wird wie über den Endpunkt
+  (dieselbe Funktion): Grenzen je Gerät, Gleichwert-Unterdrückung bei Ventil und Steckdose, 30 Befehle je Stunde,
+  Abrufsperre, „Plugin aktiv: Nein“ sperrt. Sperrzeit der Brücke: Mähroboter 10 s, Ventil und Steckdose 0 s.
+  Quittung auf `…/befehl/<gerät>/<aktion>/quittung`, Lebenszeichen `gardena/status/befehle`, Wächter jede Minute
+  (`cron/cron.01min`). Neuer Knopf „Vorlage MQTT-Befehle“.
+* **−1 bzw. −999 statt „-“ – auch über UDP:** Zahlenwerte, die die Wolke ohne Wert liefert, senden −1 (Batterie,
+  Funk, Bodenfeuchte, Helligkeit, Betriebsstunden) bzw. −999 (Boden- und Lufttemperatur), über MQTT und über den
+  UDP-Weg (dort ging bisher gar nichts hinaus). Die Zahlenfelder online, maeht, station, offen, an und stoerung
+  senden ohne Wert 0. Texte behalten „-“. **Wer in einer bestehenden Anlage auf „= 0“ prüft, sieht künftig −1
+  bzw. −999.** Die UDP-Vorlage nimmt die Fehlwerte an (MinVal −1 bzw. −999).
+* **Abo für Gateway V1 kommt mit:** `config/mqtt_subscriptions.cfg` trägt `gardena/#` und folgt dem Basisthema
+  (beim Speichern des Reiters MQTT und in jedem Cron-Lauf) – unter Gateway V1 ist nichts mehr von Hand einzutragen.
+* **Reiter Einbindung in Loxone:** MQTT zuerst – Gateway V1/V2 mit Hakenliste (mit den vier Beispielgeräten 32
+  Datenpunkte), Namenstabelle mit Kopierknopf statt Werte-Vorlage, Befehle je Gerät, Ausfallerkennung am
+  Lebenszeichen `Plugin/STATUS/zaehler` (Tmc 1500 s statt 900 s). Die vier Musterseiten nehmen Virtuelle Eingänge
+  und die Befehle am Ausgang „LoxBerry MQTT-Gateway“; „Frostgefahr“ zählt eine nicht gelieferte Lufttemperatur
+  (−999) nicht. UDP-Weg und HTTP-Befehle stehen zugeklappt darunter. Der Knopf „Vorlage für Loxone Config erzeugen“
+  (Virtueller HTTP-Eingang mit http://localhost) entfällt; wer ihn eingelesen hat, behält seine Eingänge.
+* Reiter Geräte: Warnung bei einem Gerät namens „befehl“ oder „status“. Reiter Test: Namenstabelle, Abo-Datei und
+  Befehlsbrücke.
+* Deinstallation: tut nichts, wenn LoxBerry sie für ein anderes Plugin aufruft (dessen Name ein Anfang von
+  „gardenasmartsystem“ ist); sie hält zuerst die Befehlsbrücke an und entfernt deren Optionsdateien.
+* Geprüft unter PHP 7.4, 8.4 und 8.5 mit Attrappen, nicht am Gerät und nicht an einer GARDENA-Anlage.
+
 ## Neu in 1.2.20
 
 Pflege: Die Selbstprüfung im Reiter Test zählt die Zahlenfelder mit. Kein Neuimport nötig.

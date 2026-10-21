@@ -529,6 +529,32 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
             $namen ? implode(' · ', $namen) : gardena_t('TEST.A_NAMEN_OK'));
     }
 
+    /* ---- Gruppe 5 / MQTT (1.2.21): Namenstabelle, Abo fuer Gateway V1, Befehlsbruecke ----
+     * Die Namen der Einbindung in Loxone gegen die Themen, die der Sender bildet (Entwurf ga 2.4); das Abo der
+     * Datei mqtt_subscriptions.cfg (E8); die Bruecke gemessen am Erzeugnis wie im Waechter (Entwurf gemeinsam 2.11),
+     * dazu ihre Einrichtungspruefung (--pruefen). Aus (Haken) ist ein Hinweis, kein Kreuz. */
+    list($n_ok, $n_text) = gardena_mqtt_namen_probe($cache, $cfg);
+    $z[] = gardena_pruefzeile($n_ok ? 1 : -1, gardena_t('TEST.F_NAMENSTABELLE'), $n_text);
+    list($a_pfad, $a_da) = gardena_abo_datei($cfg);
+    if ($a_pfad === '') {
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_ABO'), gardena_t('TEST.A_ABO_NICHT_INSTALLIERT'));
+    } elseif (!$a_da && ((string) $cfg['MQTT_ENABLED'] !== '1' || gardena_gateway_fassung() >= 2)) {
+        // Unter Gateway V2 und mit MQTT aus braucht es die Datei nicht - ein Hinweis, kein Kreuz.
+        $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_ABO'), sprintf(gardena_t('TEST.A_ABO_UNNOETIG'), $a_pfad));
+    } else {
+        $z[] = gardena_pruefzeile($a_da ? 1 : -1, gardena_t('TEST.F_ABO'),
+            sprintf(gardena_t($a_da ? 'TEST.A_ABO_JA' : 'TEST.A_ABO_NEIN'), $a_pfad));
+    }
+    list($b_stand, $b_text) = gardena_pruef_bruecke($cfg);
+    $z[] = gardena_pruefzeile($b_stand, gardena_t('TEST.F_BRUECKE'), $b_text);
+    $b_pz = gardena_bruecke_pruefzeilen();
+    if (!$b_pz) {
+        $z[] = gardena_pruefzeile(-1, gardena_t('TEST.F_BRUECKE_PRUEFEN'), gardena_t('TEST.A_BRUECKE_PRUEFEN_KEINE'));
+    } else {
+        $b_fehl = count(preg_grep('/^\[FEHL\]/', $b_pz));
+        $z[] = gardena_pruefzeile($b_fehl ? -1 : 1, gardena_t('TEST.F_BRUECKE_PRUEFEN'), implode(' | ', $b_pz));
+    }
+
     // ---- Die Loxone-Vorlagen ----
     if (!is_file($cachedatei)) {
         $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_VORLAGE'), gardena_t('TEST.A_VORLAGE_KEIN_ABBILD'));
@@ -541,9 +567,9 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
         $kaputt = array();
         $vorher = libxml_use_internal_errors(true);
         $ausg = gardena_ausgenommen($cfg);
-        list(, $xa) = gardena_vorlage($cachedatei,
-            $cfg['MQTT_TOPIC'] !== '' ? $cfg['MQTT_TOPIC'] : 'gardena', $ausg);
-        if (simplexml_load_string($xa) === false) { $kaputt[] = 'VI_gardena.xml'; }
+        /* Gruppe 5 / MQTT (1.2.21, E9): statt VI_gardena.xml (Knopf entfallen) die Vorlage der MQTT-Befehle. */
+        $xa = gardena_befehle_vorlage(json_decode((string) @file_get_contents($cachedatei), true), $cfg, 'loxberry', 11884);
+        if (!is_array($xa) || simplexml_load_string($xa[1]) === false) { $kaputt[] = 'VQ_gardena_mqtt.xml'; }
         list(, $xb) = gardena_vorlage_vo($cachedatei, $cfg['TOKEN'], $ordner);
         if (simplexml_load_string($xb) === false) { $kaputt[] = 'VQ_gardena_steuern.xml'; }
         list(, $xc) = gardena_vorlage_udp($cachedatei,
@@ -797,8 +823,9 @@ if (isset($_GET['form'])) {
 }
 function gaktiv($id) { global $g_tab; return $g_tab === $id ? ' sm-active' : ''; }
 
-/* gardena_lz_vorlage(), gardena_kurz() und gardena_vorlage() stehen seit 1.2.19 (Welle Bild 20,
- * E10) in bin/functions.inc.php - aufrufbar ohne diese Seite, Verhalten gleich. */
+/* gardena_lz_vorlage() und gardena_kurz() stehen seit 1.2.19 (Welle Bild 20, E10) in
+ * bin/functions.inc.php - aufrufbar ohne diese Seite, Verhalten gleich. gardena_vorlage() (VI_gardena.xml)
+ * ist seit 1.2.21 (Gruppe 5 / MQTT, E9) entfallen. */
 
 /* ==================================================================
  * Verarbeitung
@@ -851,7 +878,7 @@ function gardena_eingaben_sammeln($form)
     $felder = array(
         'save' => array('enabled', 'client_id', 'udp_enabled', 'miniserver', 'udpport', 'intervall',
                         'messer_intervall', 'secret_loeschen'),
-        'mqtt' => array('mqtt_enabled', 'mqtt_topic'),
+        'mqtt' => array('mqtt_enabled', 'mqtt_topic', 'befehle_mqtt_ein', 'befehle_mqtt_steuern'),
         'ventil' => array('ventil_schnittstelle', 'ventil_max_min'),
     );
     if (function_exists('ansage_x2_felder')) {
@@ -1284,6 +1311,8 @@ if ($gpost && isset($_POST['vorlage'])) {
     // dass er sie pruefen soll.
     $g_ip = (class_exists('LBSystem', false) && method_exists('LBSystem', 'get_localip'))
         ? (string) LBSystem::get_localip() : '';
+    $g_vname = '';
+    $g_vinhalt = '';
     if ($_POST['vorlage'] === 'vo') {
         list($g_vname, $g_vinhalt) = gardena_vorlage_vo($gcachefile,
             isset($gc_v['TOKEN']) ? $gc_v['TOKEN'] : '', $gordner);
@@ -1291,15 +1320,32 @@ if ($gpost && isset($_POST['vorlage'])) {
         list($g_vname, $g_vinhalt) = gardena_vorlage_udp($gcachefile,
             !empty($gc_v['UDPPORT']) ? (int) $gc_v['UDPPORT'] : 5005, $g_ip,
             gardena_ausgenommen($gc_v));
+    } elseif ($_POST['vorlage'] === 'mq') {
+        /* Gruppe 5 / MQTT (1.2.21, Entwurf ga 3.3): Vorlage "Gardena MQTT-Befehle" - eigener Virtueller Ausgang an den
+         * UDP-Eingang des MQTT-Gateways, je Geraet des Abbilds die Befehle der Befehlsbruecke. */
+        $g_mq_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+            ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:\d+\z/', '', (string) $_SERVER['HTTP_HOST']))
+            : (gethostname() ?: 'loxberry');
+        $g_mq_port = gardena_mqtt_udpport();
+        $g_mq = gardena_befehle_vorlage(is_file($gcachefile) ? json_decode((string) @file_get_contents($gcachefile), true) : null,
+            $gc_v, $g_mq_host !== '' ? $g_mq_host : 'loxberry', $g_mq_port > 0 ? $g_mq_port : 11884);
+        if (is_array($g_mq)) {
+            list($g_vname, $g_vinhalt) = $g_mq;
+        } else {
+            $gfehler[] = gardena_t('BEFEHL.FEHLER_VORLAGE');
+        }
     } else {
-        list($g_vname, $g_vinhalt) = gardena_vorlage($gcachefile,
-            !empty($gc_v['MQTT_TOPIC']) ? $gc_v['MQTT_TOPIC'] : 'gardena',
-            gardena_ausgenommen($gc_v));
+        /* Gruppe 5 / MQTT (1.2.21, Entwurf ga E9): die Vorlage der MQTT-Eingaenge (VI_gardena.xml, Virtueller
+         * HTTP-Eingang mit http://localhost) gibt es nicht mehr - fuer die Werte steht die Namenstabelle da. */
+        $gfehler[] = gardena_t('LOX.VORLAGE_UNBEKANNT');
     }
-    header('Content-Type: application/x-download');
-    header('Content-Disposition: attachment; filename="' . $g_vname . '"');
-    echo $g_vinhalt;
-    exit;
+    if ($g_vname !== '') {
+        header('Content-Type: application/x-download');
+        header('Content-Disposition: attachment; filename="' . $g_vname . '"');
+        echo $g_vinhalt;
+        exit;
+    }
+    $g_tab = 'tab-loxone';
 }
 
 // ---------- MQTT speichern (eigener Reiter seit 1.1.6, Hausstandard) ----------
@@ -1340,10 +1386,22 @@ if ($gpost && isset($_POST['mqtt_save'])) {
         $gfehler[] = gardena_t('EINST.MQTT_VERSAND') . ': ' . gardena_t('EINST.PRUEF_NUR01');
         $gneu_mark[] = 'mqtt_enabled';
     }
+    /* Gruppe 5 / MQTT (1.2.21, Entwurf ga 3.3): die beiden Haken der Befehlsbruecke (ab Werk aus). Das
+     * Formular schickt je Haken ein verstecktes 0 und, angehakt, ein 1 dahinter; etwas anderes als 0 oder 1
+     * wird beanstandet wie beim MQTT-Versand. */
+    $gneu_bb = array();
+    foreach (array('befehle_mqtt_ein' => 'BEFEHLE_MQTT_EIN', 'befehle_mqtt_steuern' => 'BEFEHLE_MQTT_STEUERN') as $gbb_f => $gbb_k) {
+        $gbb_w = (isset($_POST[$gbb_f]) && is_string($_POST[$gbb_f])) ? trim($_POST[$gbb_f]) : '0';
+        if ($gbb_w !== '0' && $gbb_w !== '1') {
+            $gfehler[] = gardena_t($gbb_f === 'befehle_mqtt_ein' ? 'BEFEHL.HAKEN_EIN' : 'BEFEHL.HAKEN_STEUERN') . ': ' . gardena_t('EINST.PRUEF_NUR01');
+            $gneu_mark[] = $gbb_f;
+        }
+        $gneu_bb[$gbb_k] = $gbb_w;
+    }
     $gneu_mq = array(
         'MQTT_ENABLED' => $gmq_ein,
         'MQTT_TOPIC' => $gtopic_mq,
-    );
+    ) + $gneu_bb;
     /*
      * Gespeichert wird NUR ohne Beanstandung.
      *
@@ -1361,6 +1419,16 @@ if ($gpost && isset($_POST['mqtt_save'])) {
     } elseif (gardena_cfg_write($gconfigfile, $gneu_mq)) {
         $gsaved = true;
         gardena_log('INF', 'MQTT-Einstellungen gespeichert (Oberflaeche).');
+        /* Gruppe 5 / MQTT (1.2.21): das Abo fuer Gateway V1 dem Basisthema nachfuehren (E8) und die
+         * Befehlsbruecke sofort schalten - der Waechter (cron.01min) startet nach einem Start hoechstens alle
+         * 600 s neu (Stammfassung). */
+        $gc_bb = gardena_cfg_read($gconfigfile);
+        gardena_abo_datei($gc_bb, true);
+        list($gbb_art, $gbb_aus) = gardena_bruecke_schalten();
+        if ($gbb_art === 'ein') { $gsaved = gardena_t('ALLG.GESPEICHERT') . ' ' . gardena_t('BEFEHL.M_EIN'); }
+        elseif ($gbb_art === 'aus') { $gsaved = gardena_t('ALLG.GESPEICHERT') . ' ' . gardena_t('BEFEHL.M_AUS'); }
+        elseif ($gbb_art === 'start_fehl') { $gfehler[] = sprintf(gardena_t('BEFEHL.M_START_FEHL'), $gbb_aus); }
+        elseif ($gbb_art === 'stop_fehl') { $gfehler[] = sprintf(gardena_t('BEFEHL.M_STOP_FEHL'), $gbb_aus); }
         /*
          * Neues Basisthema oder MQTT eingeschaltet: die Signatur leeren, damit
          * der naechste Lauf ALLES sendet (1.2.11, M2; Regeln/07, ACTiKamera
@@ -2056,6 +2124,10 @@ LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/
     padding-top: 10px; border-top: 1px solid #e0e0e0; }
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 5 / MQTT (1.2.21): Kopierknopf der Namenstabelle, breite Tabellen, zugeklappte Abschnitte. */
+button.sm-kopie { font-size: 0.8em; padding: 1px 6px; margin-left: 4px; border: 1px solid #ccc; border-radius: 4px; background: #f5f5f5; color: #333; cursor: pointer; }
+.sm-breit { overflow-x: auto; }
+details > summary { cursor: pointer; font-weight: 600; color: #4f7d17; margin: 8px 0 6px; }
 
 </style>
 <div class="sm-wrap">
@@ -2439,6 +2511,23 @@ if ($g_altwerte) { ?>
     </div>
 </div>
 <div class="sm-small"><?= gardena_t('EINST.MQTT_FORMAT') ?><br><?= gardena_t('EINST.MQTT_ZEICHEN') ?></div>
+<?php /* Gruppe 5 / MQTT (1.2.21, Entwurf ga 3.3): die beiden Haken der Befehlsbruecke, ab Werk aus. Das
+   versteckte Feld davor traegt die 0, wenn der Haken fehlt. */ ?>
+<div class="sm-feld">
+  <input data-role="none" type="hidden" name="befehle_mqtt_ein" value="0">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= gfeld('mqtt', 'befehle_mqtt_ein', $gc['BEFEHLE_MQTT_EIN']) === '1' ? ' checked' : '' ?><?= gmark('mqtt', 'befehle_mqtt_ein') ?>>
+    <?= gardena_e(gardena_t('BEFEHL.HAKEN_EIN')) ?></label>
+  <div class="sm-hilfe"><?= gardena_t('BEFEHL.HAKEN_HILFE') ?></div>
+<?php if ((string) $gc['MQTT_ENABLED'] !== '1') { ?>
+  <div class="sm-hilfe"><?= gardena_t('BEFEHL.HAKEN_MQTT_AUS') ?></div>
+<?php } ?>
+</div>
+<div class="sm-feld">
+  <input data-role="none" type="hidden" name="befehle_mqtt_steuern" value="0">
+  <label style="font-weight:400;"><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1"<?= gfeld('mqtt', 'befehle_mqtt_steuern', $gc['BEFEHLE_MQTT_STEUERN']) === '1' ? ' checked' : '' ?><?= gmark('mqtt', 'befehle_mqtt_steuern') ?>>
+    <?= gardena_e(gardena_t('BEFEHL.HAKEN_STEUERN')) ?></label>
+  <div class="sm-hilfe"><?= gardena_t('BEFEHL.HAKEN_STEUERN_HILFE') ?></div>
+</div>
 
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-aktion"></i> <?= gardena_t('LEGENDE.AKTION') ?></span>
@@ -2505,7 +2594,7 @@ $gn_retained = 0;
 foreach ($gthemen_liste as $gz) { if ($gz[5]) { $gn_retained++; } }
 ?>
 <div class="sm-small"><?= gardena_e(sprintf(gardena_t('MQTT.THEMEN_ANZAHL'),
-    count($gthemen_liste) + count($glz_zeilen), $gn_retained)) ?></div>
+    count($gthemen_liste) + count($glz_zeilen) + 1, $gn_retained)) ?></div>
 <table class="sm-tbl">
 <tr><th><?= gardena_t('MQTT.SP_THEMA') ?></th><th><?= gardena_t('MQTT.SP_BEDEUTUNG') ?></th><th><?= gardena_t('MQTT.SP_LETZTER') ?></th><th><?= gardena_t('MQTT.SP_RETAINED') ?></th></tr>
 <?php foreach ($gthemen_liste as $gz) { ?>
@@ -2514,6 +2603,8 @@ foreach ($gthemen_liste as $gz) { if ($gz[5]) { $gn_retained++; } }
 <?php foreach ($glz_zeilen as $glz_name => $glz_text) { ?>
 <tr><td><span class="sm-mono"><?= gardena_e(gardena_wert_thema((string) $gc['MQTT_TOPIC'], 'Plugin', 'STATUS', $glz_name)) ?></span></td><td colspan="2"><?= gardena_t($glz_text) ?></td><td><?= gardena_t(gardena_retain('Plugin', 'STATUS', $glz_name) ? 'ALLG.JA_KURZ' : 'ALLG.NEIN_KURZ') ?></td></tr>
 <?php } ?>
+<?php /* Gruppe 5 / MQTT (1.2.21): das Lebenszeichen der Befehlsbruecke (bb_status_senden(), nie retained). */ ?>
+<tr><td><span class="sm-mono"><?= gardena_e(gardena_mqtt_basis($gc)) ?>/status/befehle</span></td><td colspan="2"><?= gardena_e(gardena_t('BEFEHL.TH_STATUS')) ?></td><td><?= gardena_t('ALLG.NEIN_KURZ') ?></td></tr>
 </table>
 <?php } ?>
 </div>
@@ -2521,6 +2612,14 @@ foreach ($gthemen_liste as $gz) { if ($gz[5]) { $gn_retained++; } }
 <!-- ================= Reiter: Geraete ================= -->
 <div class="sm-seite<?= gaktiv('tab-devices') ?>" id="tab-devices">
 <h2><?= gardena_t('GERAETE.H') ?><?= !empty($gcache['updated']) ? ' (' . gardena_t('GERAETE.LETZTER_ABRUF') . ' ' . gardena_e($gcache['updated']) . ')' : '' ?></h2>
+<?php /* Gruppe 5 / MQTT (1.2.21, Entwurf ga E17): ein Geraet namens "befehl" oder "status" veroeffentlicht neben
+   den Befehlen bzw. dem Lebenszeichen der Befehlsbruecke - nur warnen, nicht umbenennen. */
+foreach (gardena_abbild_geraete($gcache) as $g_wg) {
+    $g_wt = gardena_mqtt_thema($g_wg[1]);
+    if ($g_wt === 'befehl' || $g_wt === 'status') { ?>
+<div class="sm-alert sm-warn"><?= gardena_e(sprintf(gardena_t('GERAETE.W_NAME'), $g_wg[1], gardena_mqtt_basis($gc), $g_wt)) ?></div>
+<?php }
+} ?>
 <?php if (empty($gcache['locations']) || !is_array($gcache['locations'])) { ?>
 <div class="sm-alert sm-info"><?= gardena_t('GERAETE.KEINE_DATEN') ?></div>
 <?php } else { foreach ($gcache['locations'] as $gloc) {
@@ -2569,66 +2668,147 @@ foreach ($gthemen_liste as $gz) { if ($gz[5]) { $gn_retained++; } }
 <div class="sm-seite<?= gaktiv('tab-loxone') ?>" id="tab-loxone">
 <h2><?= gardena_t('LOX.H') ?></h2>
 
-<div class="sm-step"><b><?= gardena_t('LOX.H_EMPFANG') ?></b><br>
-<?= sprintf(gardena_t('LOX.EMPFANG'), (int) $gc['UDPPORT'], gardena_e($gc['MQTT_TOPIC'])) ?>
-</div>
-
-<div class="sm-step"><b><?= gardena_t('LOX.H_SENDEN') ?></b><br>
-<?= gardena_t('LOX.SENDEN') ?>
-<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</div>
-<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</div>
-<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</div>
-</div>
-
-<h2><?= gardena_t('LOX.H_VORLAGE') ?></h2>
-<div class="sm-hinweis"><?= gardena_t('LOX.H_VORLAGE_TEXT') ?> <?= gardena_t('LOX.H_VORLAGE_TEXT2') ?></div>
-<?php if (!is_file($gcachefile)) { ?>
-<div class="sm-alert sm-warn"><?= gardena_t('LOX.VORLAGE_KEIN_ABBILD') ?></div>
-<?php } else { ?>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= gardena_t('LEGENDE.TECHNIK') ?></span>
-</div>
-<div class="sm-knopfreihe" style="margin-bottom:14px;">
-<form action="index.php" method="post" style="margin:0;">
-<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
-  <input data-role="none" type="hidden" name="vorlage" value="1">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_t('LOX.K_VORLAGE') ?></button>
-</form>
-<form action="index.php" method="post" style="margin:0;">
-<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
-  <input data-role="none" type="hidden" name="vorlage" value="udp">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_t('LOX.K_VORLAGE_UDP') ?></button>
-</form>
-<form action="index.php" method="post" style="margin:0;">
-<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
-  <input data-role="none" type="hidden" name="vorlage" value="vo">
-  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_t('LOX.K_VORLAGE_VO') ?></button>
-</form>
-</div>
-<div class="sm-small"><?= gardena_t('LOX.VORLAGE_ADRESSE') ?></div>
+<?php /* Gruppe 5 / MQTT (1.2.21; Entwurf ga 2.5 und 3.3, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des
+   LoxBerry-Plugins Musterprojekts. Schritt 1 MQTT einschalten, Schritt 2 das Gateway nach seiner Fassung (V1: das Plugin
+   traegt sein Abo selbst ein; V2 und "nicht feststellbar": Hakenliste aus gardena_mqtt_namen()), Schritt 3 die
+   Namenstabelle (KEINE Importvorlage fuer Werte - der Knopf "Vorlage fuer Loxone Config erzeugen" ist entfallen, E9),
+   Schritt 4 die Befehle ueber die Befehlsbruecke (gardena_befehle_tabelle(), Vorlage "Gardena MQTT-Befehle"), Schritt 5
+   die Ausfallerkennung am Lebenszeichen Plugin/STATUS/zaehler (Tmc 1500 s, E7), Schritt 6 die Musterseiten, Schritt 7
+   die Gegenprobe. UDP-Weg und HTTP-Befehle (bis 1.2.20 die Wege dieses Reiters) stehen zugeklappt darunter. */
+$gm_basis = gardena_mqtt_basis($gc);
+$gm_fassung = gardena_gateway_fassung();
+$gm_namen = gardena_mqtt_namen($gcache, $gc);
+$gm_haken = array();
+$gm_weitere = array();
+foreach ($gm_namen as $gm_z) {
+    if ($gm_z['haken']) { $gm_haken[] = $gm_z; } else { $gm_weitere[] = $gm_z; }
+}
+$gm_bt = gardena_befehle_tabelle($gcache, $gc);
+$gm_bliste = gardena_befehle_liste();
+$gm_tabelle = function ($zeilen) { ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= gardena_e(gardena_t('LOX.M_T_THEMA')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_NAME')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($zeilen as $gm_i => $gm_z) { ?>
+<tr><td><?= (int) $gm_i + 1 ?></td><td><span class="sm-mono"><?= gardena_e($gm_z['thema']) ?></span></td><td><span class="sm-mono"><?= gardena_e($gm_z['name']) ?></span></td><td><?= gardena_e($gm_z['bedeutung']) ?></td></tr>
 <?php } ?>
-
-<div class="sm-step"><b><?= gardena_t('LOX.H_BEFEHLE') ?></b>
-<table class="sm-tbl">
-<tr><th><?= gardena_t('LOX.SP_TYP') ?></th><th><?= gardena_t('LOX.SP_CMD') ?></th><th><?= gardena_t('LOX.SP_BEDEUTUNG') ?></th></tr>
-<?php /* Aus gardena_befehle() erzeugt (1.2.11, O6) - derselben Liste, gegen
-   die der Endpunkt prueft; bis 1.2.10 von Hand geschrieben, ohne den
-   Ausschaltbefehl der Steckdose. */
-$gb_texte = gardena_befehl_texte();
-foreach (gardena_befehle() as $gb_typ => $gb_cmds) {
-    $gb_erste = true;
-    foreach ($gb_cmds as $gb_cmd) { ?>
-<tr><?php if ($gb_erste) { ?><td rowspan="<?= count($gb_cmds) ?>"><span class="sm-mono"><?= gardena_e($gb_typ) ?></span></td><?php } ?><td><span class="sm-mono"><?= gardena_e($gb_cmd) ?></span></td><td><?= isset($gb_texte[$gb_typ][$gb_cmd]) ? gardena_t('LOX.' . $gb_texte[$gb_typ][$gb_cmd]) : '' ?></td></tr>
-<?php $gb_erste = false; }
-} ?>
-</table>
-<div class="sm-small"><?= sprintf(gardena_t('LOX.SEKUNDEN_HINWEIS'),
-    (int) (gardena_sekunden_grenze('VALVE_CONTROL') / 3600), (int) (gardena_sekunden_grenze('MOWER_CONTROL') / 3600)) ?></div>
-<div class="sm-small"><?= gardena_t('LOX.BREMSEN') ?></div>
-<div class="sm-small"><?= gardena_t('LOX.BEWAESSERUNG') ?></div>
+</table></div>
+<?php }; ?>
+<div class="sm-step"><b>1.</b> <?= gardena_t('LOX.M_S1') ?>
+<?php if ((string) $gc['MQTT_ENABLED'] !== '1') { ?>
+<div class="sm-alert sm-err"><?= gardena_t('LOX.M_S1_AUS') ?></div>
+<?php } ?>
+</div>
+<div class="sm-step"><b>2.</b> <?= gardena_t('LOX.M_S2') ?>
+  <div class="sm-pre"><?= gardena_e($gm_basis) ?>/#</div>
+<?php if ($gm_fassung <= 1) { /* V1 oder nicht feststellbar: das Abo (gardena_abo_text(), wie im Reiter MQTT) */ ?>
+  <div class="sm-hilfe"><?= gardena_abo_text() ?></div>
+<?php } ?>
+<?php if ($gm_fassung !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(gardena_t('LOX.M_S2_V2'), '<span class="sm-mono">' . gardena_e($gm_basis) . '</span>') ?></div>
+<details open><summary><?= gardena_e(sprintf(gardena_t('LOX.M_HAKEN_AUF'), count($gm_haken))) ?></summary>
+<?php $gm_tabelle($gm_haken); ?>
+</details>
+<details><summary><?= gardena_e(sprintf(gardena_t('LOX.M_WEITERE'), count($gm_weitere))) ?></summary>
+<?php $gm_tabelle($gm_weitere); ?>
+</details>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_NONCACHED') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_RECONNECT') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_V1_BEFEHLE') ?></p>
 </div>
 
-<div class="sm-step"><b><?= gardena_t('LOX.H_BAUSTEINE') ?></b>
+<div class="sm-step"><b>3.</b> <?= gardena_t('LOX.M_S3') ?>
+<?php if (!gardena_abbild_geraete($gcache)) { ?>
+<div class="sm-alert sm-info"><?= gardena_t('LOX.M_S3_LEER') ?></div>
+<?php } ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= gardena_e(gardena_t('LOX.M_T_NAME')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_GERAET')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_BEDEUTUNG')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_BEREICH')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_FEHLWERT')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_ART')) ?></th><th><?= gardena_e(gardena_t('LOX.M_T_MUSTER')) ?></th></tr>
+<?php foreach ($gm_namen as $gm_i => $gm_z) { ?>
+<tr><td><?= (int) $gm_i + 1 ?></td><td><span class="sm-mono"><?= gardena_e($gm_z['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= gardena_e($gm_z['name']) ?>"><?= gardena_e(gardena_t('LOX.M_KOPIEREN')) ?></button></td><td><?= gardena_e($gm_z['geraet'] . ' (' . $gm_z['dienst'] . ')') ?></td><td><?= gardena_e($gm_z['bedeutung']) ?></td><td><?= gardena_e($gm_z['bereich']) ?></td><td><?= $gm_z['fehlwert'] === null ? '&ndash;' : gardena_e($gm_z['fehlwert']) ?></td><td><?= gardena_e(gardena_t($gm_z['zahl'] ? 'LOX.M_ZAHL' : 'LOX.M_TEXT')) ?></td><td><?= gardena_t($gm_z['im_muster'] ? 'ALLG.JA_KURZ' : 'ALLG.NEIN_KURZ') ?></td></tr>
+<?php } ?>
+</table></div>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S3_DIGITAL') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S3_FEHLWERT') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S3_RECHTE') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S3_MUSTER') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S3_PRAEFIX') ?></p>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(gardena_t('LOX.M_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+
+<div class="sm-step"><b>4.</b> <?= gardena_t('LOX.M_S4') ?>
+<?php if ($gm_bliste === null) { ?>
+<div class="sm-warnung"><?= gardena_t('LOX.M_S4_KEINE') ?></div>
+<?php } else { ?>
+<?php if ($gm_bt['beispiel']) { ?>
+<div class="sm-alert sm-info"><?= gardena_t('LOX.M_S4_BEISPIEL') ?></div>
+<?php } ?>
+<?php
+/* Wertebereich je Aktion aus der Tabelle der Bruecke (bb_liste(): EINE Quelle mit der Pruefung). */
+$gm_wb = array();
+foreach ($gm_bliste['befehle'] as $gm_b) {
+    $gm_a = preg_replace('#^\{geraet\}/#', '', $gm_b['name']);
+    if ($gm_b['art'] === 'ganz') {
+        $gm_wb[$gm_a] = sprintf(gardena_t('BEFEHL.W_MINUTEN'), (int) $gm_b['max']);
+    } elseif ($gm_b['art'] === 'auswahl') {
+        $gm_wb[$gm_a] = implode(' | ', $gm_b['werte']);
+    } else {
+        $gm_wb[$gm_a] = gardena_t('BEFEHL.W_PULS');
+    }
+}
+$gm_kennung = false; ?>
+<div class="sm-breit"><table class="sm-tbl">
+<tr><th><?= gardena_e(gardena_t('BEFEHL.T_GERAET')) ?></th><th><?= gardena_e(gardena_t('BEFEHL.T_TEIL')) ?></th><th><?= gardena_e(gardena_t('BEFEHL.T_AKTION')) ?></th><th><?= gardena_e(gardena_t('BEFEHL.T_WERT')) ?></th><th><?= gardena_e(gardena_t('BEFEHL.T_LOXONE')) ?></th><th><?= gardena_e(gardena_t('BEFEHL.T_SPERRE')) ?></th></tr>
+<?php foreach ($gm_bt['zeilen'] as $gm_z) {
+    if ($gm_z['kennung']) { $gm_kennung = true; } ?>
+<tr><td><?= gardena_e($gm_z['geraet']) ?></td><td><span class="sm-mono"><?= gardena_e($gm_z['teil']) ?></span><?= $gm_z['kennung'] ? ' *' : '' ?></td><td><?= gardena_e($gm_z['titel']) ?></td><td><?= gardena_e(isset($gm_wb[$gm_z['aktion']]) ? $gm_wb[$gm_z['aktion']] : '') ?></td><td><span class="sm-mono"><?= gardena_e($gm_z['loxone']) ?></span></td><td><?= (int) $gm_z['sperre'] ?> s</td></tr>
+<?php } ?>
+</table></div>
+<?php if ($gm_kennung) { ?>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S4_KENNUNG') ?></p>
+<?php } ?>
+<p class="sm-hilfe"><?= sprintf(gardena_t('LOX.M_S4_ABRUF'), '<span class="sm-mono">publish ' . gardena_e($gm_basis) . '/befehl/abruf 1</span>') ?></p>
+<p class="sm-hilfe"><?= gardena_e(gardena_t('BEFEHL.T_QUITTUNG')) ?>: <span class="sm-mono"><?= gardena_e($gm_basis) ?>/befehl/…/quittung</span> – <?= gardena_e(gardena_t('BEFEHL.Q_AUSGEFUEHRT')) ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S4_SPERRE') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S4_VERLUST') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S4_NICHTS') ?></p>
+<p class="sm-hilfe"><?= gardena_t('LOX.BEWAESSERUNG') ?></p>
+<?php if (!$gm_bt['beispiel']) { ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-technik"></i> <?= gardena_t('LEGENDE.TECHNIK') ?></span></div>
+<div class="sm-knopfreihe">
+<form action="index.php" method="post" style="margin:0;">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+  <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+  <input data-role="none" type="hidden" name="vorlage" value="mq">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_e(gardena_t('BEFEHL.K_VORLAGE')) ?></button>
+</form>
+</div>
+<?php } ?>
+<p class="sm-hilfe"><?= gardena_t('LOX.M_S4_VORLAGE') ?></p>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b>5.</b> <?= sprintf(gardena_t('LOX.M_S5'),
+    '<span class="sm-mono">' . gardena_e(gardena_wert_eingang($gm_basis, 'Plugin', 'STATUS', 'zaehler')) . '</span>',
+    '<span class="sm-mono">' . gardena_e(gardena_wert_eingang($gm_basis, 'Plugin', 'STATUS', 'ok')) . '</span>') ?></div>
+
+<div class="sm-step"><b>6. <?= gardena_t('LOX.H_BAUSTEINE') ?></b>
 <div class="sm-small"><?= gardena_t('LOX.BAUSTEINE_TEXT') ?></div>
 <?php
 /**
@@ -2644,21 +2824,28 @@ foreach (gardena_befehle() as $gb_typ => $gb_cmds) {
  * im Muster nicht; je nach Zeitbasis um 1,23 Milliarden falsch), zwei Vergleicher ohne Verzoegerung, Befehle mit
  * erfundenen Namen statt der Vorlagentitel.
  *
+ * Gruppe 5 / MQTT (1.2.21): Virtuelle Eingaenge mit den Namen des Gateways statt der HTTP-Vorlage, Befehle am
+ * gemeinsamen Ausgang "LoxBerry MQTT-Gateway" (Namensquelle 'mq': "GARDENA smart system: <Geraet> <Aktion>";
+ * der Befehl steht in der Zeile als %s und kommt aus gardena_befehl_loxone() - Basisthema und Geraetename).
+ *
  * DIE NAMEN WERDEN GERECHNET, NICHT ABGESCHRIEBEN: die zweite Angabe je Zeile ist die Namensquelle - 'gw' =
  * Gateway-Name eines Eingangs (gardena_wert_eingang() mit Basisthema und Geraetenamen, wie die Vorlage), 'bf' =
  * Titel eines Befehls der Steuervorlage (Geraetename + gardena_vo_titel()). Geraetenamen: je Art das erste
  * Geraet des Abbilds (ausgenommene Geraete zaehlen nicht, die Vorlage laesst sie weg); ohne Abbild bzw. ohne
  * Geraet dieser Art die Beispielnamen des Musterprojekts - mit dem Werksthema steht dann genau die Liste da.
  */
-function gardena_bausteinseiten()
+function gardena_bausteinseiten($cfg, $namen)
 {
+    /* Gruppe 5 / MQTT (1.2.21): $cfg und $namen (gardena_bs_geraete()) fuer die Befehle am Ausgang "LoxBerry
+     * MQTT-Gateway" - der Befehl steht als %s in der Zeile und folgt Basisthema und Geraetename
+     * (gardena_befehl_loxone()). Zeilen mit Prozentzeichen tragen es verdoppelt und gehen durch sprintf(). */
     return array(
         array('kopf' => "GARDENA smart system", 'bild' => 'einbindung_loxone.png',
               'arten' => array('MOWER', 'VALVE', 'SENSOR', 'POWER_SOCKET'),
               'schritte' => array(
                   sprintf(gardena_t('BAUSTEIN.S1_SCHRITT1'), gardena_t('REITER.EINSTELLUNGEN'), gardena_t('EINST.PLUGIN_AKTIV'), gardena_t('REITER.TEST'), gardena_t('TEST.K_ABRUF'), gardena_t('REITER.GERAETE')),
-                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT2'), gardena_t('REITER.MQTT')),
-                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT3'), gardena_t('REITER.LOXONE'), gardena_t('LOX.K_VORLAGE')),
+                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT2'), gardena_t('REITER.LOXONE')),
+                  sprintf(gardena_t('BAUSTEIN.S1_SCHRITT3'), gardena_t('REITER.LOXONE')),
                   gardena_t('BAUSTEIN.S1_SCHRITT4'),
                   gardena_t('BAUSTEIN.S1_SCHRITT5'),
                   gardena_t('BAUSTEIN.S1_SCHRITT6')),
@@ -2697,11 +2884,11 @@ function gardena_bausteinseiten()
                   gardena_t('BAUSTEIN.S1_H2'),
                   gardena_t('BAUSTEIN.S1_H3'),
                   sprintf(gardena_t('BAUSTEIN.S1_H4'), gardena_t('REITER.EINSTELLUNGEN'), gardena_t('EINST.UDP_VERSAND')),
-                  sprintf(gardena_t('BAUSTEIN.S1_H5'), gardena_t('TOKEN.NEU')))),
+                  sprintf(gardena_t('BAUSTEIN.S1_H5'), gardena_t('REITER.MQTT')))),
         array('kopf' => "GARDENA smart system M\u{e4}hroboter", 'bild' => 'einbindung_loxone_maehroboter.png',
               'arten' => array('MOWER'),
               'schritte' => array(
-                  sprintf(gardena_t('BAUSTEIN.S2_SCHRITT1'), gardena_t('REITER.LOXONE'), gardena_t('LOX.K_VORLAGE_VO')),
+                  sprintf(gardena_t('BAUSTEIN.S2_SCHRITT1'), gardena_t('REITER.MQTT'), gardena_t('REITER.LOXONE')),
                   gardena_t('BAUSTEIN.S2_SCHRITT2'),
                   gardena_t('BAUSTEIN.S2_SCHRITT3'),
                   gardena_t('BAUSTEIN.S2_SCHRITT4')),
@@ -2717,10 +2904,10 @@ function gardena_bausteinseiten()
                   array(gardena_t('BAUSTEIN.Z2_09'), null),
                   array(gardena_t('BAUSTEIN.Z2_10'), null),
                   array(gardena_t('BAUSTEIN.Z2_11'), null),
-                  array(gardena_t('BAUSTEIN.Z2_12'), array('bf', 'MOWER', 'MOWER_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_12'), gardena_befehl_loxone($cfg, $namen['MOWER'], 'maehen', '60')), array('mq', 'MOWER', 'maehen', '60')),
                   array(gardena_t('BAUSTEIN.Z2_13'), null),
                   array(gardena_t('BAUSTEIN.Z2_14'), null),
-                  array(gardena_t('BAUSTEIN.Z2_15'), array('bf', 'MOWER', 'MOWER_CONTROL', 'PARK_UNTIL_NEXT_TASK')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_15'), gardena_befehl_loxone($cfg, $namen['MOWER'], 'betrieb', 'parken')), array('mq', 'MOWER', 'betrieb', 'parken')),
                   array(gardena_t('BAUSTEIN.Z2_16'), null),
                   array(gardena_t('BAUSTEIN.Z2_17'), null),
                   array(gardena_t('BAUSTEIN.Z2_18'), null),
@@ -2728,9 +2915,9 @@ function gardena_bausteinseiten()
                   array(gardena_t('BAUSTEIN.Z2_20'), null),
                   array(gardena_t('BAUSTEIN.Z2_21'), null),
                   array(gardena_t('BAUSTEIN.Z2_22'), null),
-                  array(gardena_t('BAUSTEIN.Z2_23'), array('bf', 'MOWER', 'MOWER_CONTROL', 'PARK_UNTIL_FURTHER_NOTICE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_23'), gardena_befehl_loxone($cfg, $namen['MOWER'], 'betrieb', 'parken_dauerhaft')), array('mq', 'MOWER', 'betrieb', 'parken_dauerhaft')),
                   array(gardena_t('BAUSTEIN.Z2_24'), null),
-                  array(gardena_t('BAUSTEIN.Z2_25'), array('bf', 'MOWER', 'MOWER_CONTROL', 'START_DONT_OVERRIDE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z2_25'), gardena_befehl_loxone($cfg, $namen['MOWER'], 'betrieb', 'zeitplan')), array('mq', 'MOWER', 'betrieb', 'zeitplan')),
                   array(gardena_t('BAUSTEIN.Z2_26'), null)),
               'hinweise' => array(
                   gardena_t('BAUSTEIN.S2_H1'),
@@ -2748,15 +2935,15 @@ function gardena_bausteinseiten()
                   array(gardena_t('BAUSTEIN.Z3_02'), array('gw', 'VALVE', 'VALVE', 'stoerung')),
                   array(gardena_t('BAUSTEIN.Z3_03'), array('gw', 'VALVE', 'VALVE', 'activity')),
                   array(gardena_t('BAUSTEIN.Z3_04'), null),
-                  array(gardena_t('BAUSTEIN.Z3_05'), array('bf', 'VALVE', 'VALVE_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z3_05'), gardena_befehl_loxone($cfg, $namen['VALVE'], 'bewaessern', '30')), array('mq', 'VALVE', 'bewaessern', '30')),
                   array(gardena_t('BAUSTEIN.Z3_06'), null),
-                  array(gardena_t('BAUSTEIN.Z3_07'), array('bf', 'VALVE', 'VALVE_CONTROL', 'STOP_UNTIL_NEXT_TASK')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z3_07'), gardena_befehl_loxone($cfg, $namen['VALVE'], 'stoppen', '1')), array('mq', 'VALVE', 'stoppen', '1')),
                   array(gardena_t('BAUSTEIN.Z3_08'), null),
                   array(gardena_t('BAUSTEIN.Z3_09'), null),
                   array(gardena_t('BAUSTEIN.Z3_10'), null),
                   array(gardena_t('BAUSTEIN.Z3_11'), null),
-                  array(gardena_t('BAUSTEIN.Z3_12'), array('bf', 'VALVE', 'VALVE_CONTROL', 'PAUSE')),
-                  array(gardena_t('BAUSTEIN.Z3_13'), array('bf', 'VALVE', 'VALVE_CONTROL', 'UNPAUSE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z3_12'), gardena_befehl_loxone($cfg, $namen['VALVE'], 'zeitplan', 'aussetzen')), array('mq', 'VALVE', 'zeitplan', 'aussetzen')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z3_13'), gardena_befehl_loxone($cfg, $namen['VALVE'], 'zeitplan', 'fortsetzen')), array('mq', 'VALVE', 'zeitplan', 'fortsetzen')),
                   array(gardena_t('BAUSTEIN.Z3_14'), null),
                   array(gardena_t('BAUSTEIN.Z3_15'), null),
                   array(gardena_t('BAUSTEIN.Z3_16'), null)),
@@ -2789,10 +2976,10 @@ function gardena_bausteinseiten()
                   array(gardena_t('BAUSTEIN.Z4_14'), array('gw', 'POWER_SOCKET', 'POWER_SOCKET', 'activity')),
                   array(gardena_t('BAUSTEIN.Z4_15'), null),
                   array(gardena_t('BAUSTEIN.Z4_16'), null),
-                  array(gardena_t('BAUSTEIN.Z4_17'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'START_OVERRIDE')),
-                  array(gardena_t('BAUSTEIN.Z4_18'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'STOP_UNTIL_NEXT_TASK')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z4_17'), gardena_befehl_loxone($cfg, $namen['POWER_SOCKET'], 'schalten', 'dauerhaft')), array('mq', 'POWER_SOCKET', 'schalten', 'dauerhaft')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z4_18'), gardena_befehl_loxone($cfg, $namen['POWER_SOCKET'], 'schalten', 'aus')), array('mq', 'POWER_SOCKET', 'schalten', 'aus')),
                   array(gardena_t('BAUSTEIN.Z4_19'), null),
-                  array(gardena_t('BAUSTEIN.Z4_20'), array('bf', 'POWER_SOCKET', 'POWER_SOCKET_CONTROL', 'START_SECONDS_TO_OVERRIDE')),
+                  array(sprintf(gardena_t('BAUSTEIN.Z4_20'), gardena_befehl_loxone($cfg, $namen['POWER_SOCKET'], 'einschalten', '60')), array('mq', 'POWER_SOCKET', 'einschalten', '60')),
                   array(gardena_t('BAUSTEIN.Z4_21'), null),
                   array(gardena_t('BAUSTEIN.Z4_22'), null),
                   array(gardena_t('BAUSTEIN.Z4_23'), null)),
@@ -2843,6 +3030,15 @@ function gardena_bs_name($name, $q, $topic, $namen)
     if ($q[0] === 'gw') {
         return gardena_wert_eingang($topic, $q[1] === 'Plugin' ? 'Plugin' : $namen[$q[1]], $q[2], $q[3]);
     }
+    if ($q[0] === 'mq') {
+        /* Gruppe 5 / MQTT (1.2.21): Befehl am gemeinsamen Ausgang "LoxBerry MQTT-Gateway" - Titel wie im
+         * Musterprojekt "GARDENA smart system: <Geraet> <Aktion>" (gardena_mq_befehle()). */
+        $mq = gardena_mq_befehle();
+        foreach ($mq[$q[1]] as $b) {
+            if ($b[0] === $q[2] && $b[1] === $q[3]) { return 'GARDENA smart system: ' . $namen[$q[1]] . ' ' . $b[2]; }
+        }
+        return 'GARDENA smart system: ' . $namen[$q[1]] . ' ' . $q[2];
+    }
     $t = gardena_vo_titel();
     return $namen[$q[1]] . ' ' . (isset($t[$q[2]][$q[3]]) ? $t[$q[2]][$q[3]] : $q[3]);
 }
@@ -2852,7 +3048,7 @@ $gbs_topic = ((string) $gc['MQTT_TOPIC'] !== '') ? (string) $gc['MQTT_TOPIC'] : 
 if (!$gbs_g['abbild']) { ?>
 <div class="sm-alert sm-info"><?= gardena_e(gardena_t('BAUSTEIN.OHNE_ABBILD')) ?></div>
 <?php }
-foreach (gardena_bausteinseiten() as $gbs) {
+foreach (gardena_bausteinseiten($gc, $gbs_g['namen']) as $gbs) {
     $gbs_fehlt = array();
     foreach (array_intersect($gbs['arten'], $gbs_g['fehlt']) as $gbs_a) {
         $gbs_fehlt[] = gardena_t('BAUSTEIN.ART_' . $gbs_a);
@@ -2893,6 +3089,9 @@ foreach (gardena_bausteinseiten() as $gbs) {
 <div class="sm-small"><b><?= gardena_t('LOX.ZU_ANSAGE') ?></b> <?= gardena_t('LOX.ZU_ANSAGE_TEXT') ?></div>
 </div>
 
+<div class="sm-step"><b>7.</b> <?= sprintf(gardena_t('LOX.M_S7'),
+    '<span class="sm-mono">' . gardena_e(gardena_wert_eingang(gardena_mqtt_basis($gc), 'Plugin', 'STATUS', 'zaehler')) . '</span>') ?></div>
+
 <div class="sm-step"><b><?= gardena_t('LOX.H_LEERE_WERTE') ?></b><br>
 <?= gardena_t('LOX.LEERE_WERTE') ?>
 </div>
@@ -2901,9 +3100,66 @@ foreach (gardena_bausteinseiten() as $gbs) {
 <?= gardena_t('LOX.AUSFALL') ?>
 </div>
 
+<?php /* Gruppe 5 / MQTT (1.2.21): UDP-Weg und HTTP-Befehle (bis 1.2.20 die Wege dieses Plugins) fuer bestehende
+         Anlagen, zugeklappt; Inhalt wie bis 1.2.20, ohne den Knopf der MQTT-Eingangsvorlage (E9). */ ?>
+<details class="sm-step"><summary><b><?= gardena_e(gardena_t('LOX.H_HTTP')) ?></b></summary>
+<p class="sm-hilfe"><?= gardena_t('LOX.HTTP_ERKLAERUNG') ?></p>
+<div class="sm-step"><b><?= gardena_t('LOX.H_EMPFANG') ?></b><br>
+<?= sprintf(gardena_t('LOX.EMPFANG'), (int) $gc['UDPPORT'], gardena_e($gc['MQTT_TOPIC'])) ?>
+</div>
+
+<div class="sm-step"><b><?= gardena_t('LOX.H_SENDEN') ?></b><br>
+<?= gardena_t('LOX.SENDEN') ?>
+<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=3600</div>
+<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=MOWER_CONTROL&amp;cmd=PARK_UNTIL_NEXT_TASK</div>
+<div class="sm-mono">/plugins/<?= $gpl ?>/index.php?action=command<?= $gtokenurl ?>&amp;device=NAME&amp;type=VALVE_CONTROL&amp;cmd=START_SECONDS_TO_OVERRIDE&amp;seconds=1800</div>
+</div>
+
+<h3 class="sm-h3"><?= gardena_t('LOX.H_VORLAGE') ?></h3>
+<div class="sm-hinweis"><?= gardena_t('LOX.H_VORLAGE_TEXT') ?> <?= gardena_t('LOX.H_VORLAGE_TEXT2') ?></div>
+<?php if (!is_file($gcachefile)) { ?>
+<div class="sm-alert sm-warn"><?= gardena_t('LOX.VORLAGE_KEIN_ABBILD') ?></div>
+<?php } else { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= gardena_t('LEGENDE.TECHNIK') ?></span>
+</div>
+<div class="sm-knopfreihe" style="margin-bottom:14px;">
+<form action="index.php" method="post" style="margin:0;">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+  <input data-role="none" type="hidden" name="vorlage" value="udp">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_t('LOX.K_VORLAGE_UDP') ?></button>
+</form>
+<form action="index.php" method="post" style="margin:0;">
+<input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
+  <input data-role="none" type="hidden" name="vorlage" value="vo">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit"><?= gardena_t('LOX.K_VORLAGE_VO') ?></button>
+</form>
+</div>
+<div class="sm-small"><?= gardena_t('LOX.VORLAGE_ADRESSE') ?></div>
+<?php } ?>
+
+<div class="sm-step"><b><?= gardena_t('LOX.H_BEFEHLE') ?></b>
+<table class="sm-tbl">
+<tr><th><?= gardena_t('LOX.SP_TYP') ?></th><th><?= gardena_t('LOX.SP_CMD') ?></th><th><?= gardena_t('LOX.SP_BEDEUTUNG') ?></th></tr>
+<?php /* Aus gardena_befehle() erzeugt (1.2.11, O6) - derselben Liste, gegen
+   die der Endpunkt prueft; bis 1.2.10 von Hand geschrieben, ohne den
+   Ausschaltbefehl der Steckdose. */
+$gb_texte = gardena_befehl_texte();
+foreach (gardena_befehle() as $gb_typ => $gb_cmds) {
+    $gb_erste = true;
+    foreach ($gb_cmds as $gb_cmd) { ?>
+<tr><?php if ($gb_erste) { ?><td rowspan="<?= count($gb_cmds) ?>"><span class="sm-mono"><?= gardena_e($gb_typ) ?></span></td><?php } ?><td><span class="sm-mono"><?= gardena_e($gb_cmd) ?></span></td><td><?= isset($gb_texte[$gb_typ][$gb_cmd]) ? gardena_t('LOX.' . $gb_texte[$gb_typ][$gb_cmd]) : '' ?></td></tr>
+<?php $gb_erste = false; }
+} ?>
+</table>
+<div class="sm-small"><?= sprintf(gardena_t('LOX.SEKUNDEN_HINWEIS'),
+    (int) (gardena_sekunden_grenze('VALVE_CONTROL') / 3600), (int) (gardena_sekunden_grenze('MOWER_CONTROL') / 3600)) ?></div>
+<div class="sm-small"><?= gardena_t('LOX.BREMSEN') ?></div>
+</div>
 <div class="sm-step"><b><?= gardena_t('LOX.H_SICHER') ?></b><br>
 <?= gardena_t('LOX.SICHER') ?>
 </div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->

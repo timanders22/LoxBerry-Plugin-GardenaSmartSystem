@@ -137,6 +137,13 @@ gardena_cfg_vervollstaendigen($lbpconfigdir . '/gardena.cfg');
 $g = gardena_cfg_read($lbpconfigdir . '/gardena.cfg');
 
 /*
+ * Das Abo fuer Gateway V1 (Gruppe 5 / MQTT, 1.2.21, Entwurf ga E8): config/mqtt_subscriptions.cfg traegt
+ * "<basis>/#" - in JEDEM Cron-Lauf nachgefuehrt, auch bei "Plugin aktiv: Nein": ein Update spielt die alte
+ * Konfiguration samt alter Datei zurueck. Schreibt nur, wenn sie nicht stimmt.
+ */
+gardena_abo_datei($g, true);
+
+/*
  * Abschalten raeumt ab (1.2.11, M4): MQTT aus oder "Plugin aktiv: Nein" -
  * die zurueckbehaltenen Themen der Linie werden im Broker geleert und
  * nachgelesen, vorher geht einmal ok=0 fluechtig hinaus. Begruendung bei
@@ -405,7 +412,9 @@ foreach ($locations as $location) {
                 /*
                  * Seit 1.2.11 (M1) bleibt ein solcher Wert im Bestand: ueber
                  * MQTT geht er als "-" hinaus (gardena_wert_senden), ueber UDP
-                 * weiter nicht. Gezaehlt wird er wie bisher.
+                 * weiter nicht. Gezaehlt wird er wie bisher. Seit 1.2.21
+                 * (Gruppe 5, E4/E5) geht ein Zahlenwert statt dessen auf beiden
+                 * Wegen als Fehlwert hinaus (gardena_fehlwert()).
                  */
                 $gfehlt = gardena_wert_fehlt($attr['value']);
                 if ($gfehlt) {
@@ -510,7 +519,8 @@ if ($gvoll) {
         if ($v > 0 && $f === 0) { $sent++; }
         // Miniserver nicht fluten; die 5 ms je Datagramm zum Gateway stehen
         // seit 1.2.11 in gardena_gateway_senden() (M6).
-        if ($udp_enabled && $gwert !== null) { usleep(100000); }
+        // Seit 1.2.21 geht auch ein Fehlwert ueber UDP (gardena_fehlwert(), Gruppe 5) - dieselbe Pause.
+        if ($udp_enabled && ($gwert !== null || gardena_fehlwert($gattr) !== '-')) { usleep(100000); }
     }
     gardena_log('INF', $gunveraendert
         ? 'Unveraendert, aber seit ' . (int) ($galter_meldung / 60) . ' Minuten nichts gesendet - Lebenszeichen mit allen Werten.'
@@ -607,7 +617,8 @@ if ($mqtt_enabled && $standort_fehl === 0) {
             if ($gf['lage'] === 'ok') {
                 if (!isset($gf['belegt'][$gthema])) { $gleer[] = $gthema; continue; }   // leer: erledigt
                 if ($geigen) {
-                    if (isset($gf['werte'][$gthema]) && $gf['werte'][$gthema] === '-') { continue; }
+                    // Seit 1.2.21 (Gruppe 5, E4): der Fehlwert des Attributs statt "-" (Text: weiter "-").
+                    if (isset($gf['werte'][$gthema]) && $gf['werte'][$gthema] === (string) gardena_fehlwert($gattr)) { continue; }
                     $gstrich[] = $gthema;
                 } else {
                     $gzu_loeschen[] = $gthema;
@@ -621,7 +632,7 @@ if ($mqtt_enabled && $standort_fehl === 0) {
             }
         }
         foreach ($gstrich as $gthema) {
-            mqttPublish($gthema, '-', true);
+            mqttPublish($gthema, gardena_fehlwert((string) substr($gthema, (int) strrpos($gthema, '/') + 1)), true);
         }
         foreach ($gzu_loeschen as $gthema) {
             // Ueber die eigene Loeschfunktion: mqttPublish() schickt nie eine
@@ -629,7 +640,7 @@ if ($mqtt_enabled && $standort_fehl === 0) {
             gardena_mqtt_loeschen($gthema);
         }
         if ($gstrich) {
-            gardena_log('INF', count($gstrich) . ' weggefallene MQTT-Themen auf "-" gesetzt (Geraet oder Attribut '
+            gardena_log('INF', count($gstrich) . ' weggefallene MQTT-Themen auf den Fehlwert (-1, -999, 0 bzw. "-") gesetzt (Geraet oder Attribut '
                 . 'nicht mehr geliefert)' . ($gf['lage'] === 'ok' ? ' - der naechste Lauf fragt beim Broker nach.'
                                                                : ' - der Broker war nicht zu fragen, einmalig.'));
         }

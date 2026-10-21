@@ -19,6 +19,16 @@
 ARGV3=$3   # Installationsordner des Plugins
 ARGV5=$5   # Wurzelverzeichnis des LoxBerry
 
+# Gruppe 5 / MQTT (1.2.21, Entwurf ga E11): Uninstall-Praefix (am Geraet gemessen 08.10.2026,
+# plugininstall.pl :1570/:1603): beim Deinstallieren ruft der Installer JEDES data/system/uninstall/<name>* -
+# auch dieses Skript, wenn ein Plugin deinstalliert wird, dessen NAME ein Anfang von "gardenasmartsystem" ist
+# (etwa "gardena"); $2 ist dann DESSEN Name. Dann gehoert der Lauf nicht uns: nichts tun - vor allem keine
+# Bruecke anhalten, keine Themen leeren und nichts loeschen.
+if [ -n "$2" ] && [ "$2" != "gardenasmartsystem" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'gardenasmartsystem' und tut nichts."
+    exit 0
+fi
+
 BASE="${ARGV5:-$LBHOMEDIR}"
 # Dritter Rueckfall: der eigene Ablageort. Bewusst kein fest verdrahteter
 # Systempfad - LoxBerry laesst sich anderswohin installieren, und der
@@ -35,6 +45,51 @@ if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     fi
 fi
 PDIR="${ARGV3:-gardenasmartsystem}"
+
+# ---------- Befehlsbruecke anhalten (Gruppe 5 / MQTT, 1.2.21; Muster vb_g1_bruecke_bau/beispiel) ----------
+# VOR dem Leeren der Themen und dem Loeschen: sonst nimmt sie waehrend der Deinstallation noch Befehle an.
+# Anhalten (stop beendet Dienst und mosquitto_sub, auch ein verwaistes), argumentweise nachzaehlen, die
+# Optionsdateien mit dem Broker-Kennwort ueberschreiben und den Ordner befehle/ entfernen. Im Broker bleibt
+# nichts: Quittungen und status/befehle sind nie retained.
+BBSH="$BASE/bin/plugins/$PDIR/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PDIR/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PDIR/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop
+fi
+BB_REST=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null
+        BB_REST=$((BB_REST + 1))
+    fi
+done
+BB_ABOS=0
+for d in /proc/[0-9]*; do
+    read -r c 2>/dev/null < "$d/comm" || continue
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; BB_ABOS=$((BB_ABOS + 1)); fi
+    done
+done
+[ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+[ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$f" ]; then
+            n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+            head -c "$n" /dev/zero > "$f" 2>/dev/null
+        fi
+    done
+    rm -rf "${BBDIR:?}"
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+elif [ -f "$BBSH" ]; then
+    echo "<OK> Befehlsbruecke angehalten, ihre Zugangsdaten entfernt."
+fi
 
 # ---------- Zurueckbehaltene MQTT-Themen leeren ----------
 # Bis 1.2.7 ging jeder Geraetewert retained hinaus, seitdem die Zustaende

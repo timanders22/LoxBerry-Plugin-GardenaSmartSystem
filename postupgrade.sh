@@ -204,6 +204,20 @@ fi
 rm -f "$BASE/config/plugins/$PFOLDER/gardena_token.json" 2>/dev/null
 rm -f "${5:-$LBHOMEDIR}/config/plugins/${3:-gardenasmartsystem}.backup.gardena_token.json" 2>/dev/null
 
+# ---------- Befehlsbruecke (Gruppe 5 / MQTT, 1.2.21) ----------
+# Am Ende: die Marke "Aktualisierung laeuft" hat postinstall.sh (trap) schon entfernt - sonst startete
+# befehlsbruecke.sh nicht. Sie startet nur mit dem Haken "Befehle ueber MQTT annehmen".
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+    case "$BB_AUS" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+        Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+        *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Waechter (jede Minute) versucht es erneut." ;;
+    esac
+fi
+
 if [ "$RUECK_OK" = "1" ]; then
     rm -rf "$BASE/data/plugins/$PFOLDER.upgrade_sicherung" 2>/dev/null
     rm -rf "/tmp/uploads/${ARGV1}_upgrade" "/tmp/${ARGV1}_upgrade" 2>/dev/null

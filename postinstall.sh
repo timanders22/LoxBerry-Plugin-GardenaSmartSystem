@@ -266,6 +266,23 @@ else
     echo "<INFO> Neuinstallation - aus Zweitschriften wird nichts eingespielt."
 fi
 
+# ---------- Befehlsbruecke (Gruppe 5 / MQTT, 1.2.21) ----------
+# Nur bei einer Neuinstallation: sie startet nur mit dem Haken "Befehle ueber MQTT annehmen" (ab Werk aus).
+# Bei einer Aktualisierung liegt die Marke noch (der trap oben raeumt sie erst am Ende) - dann startet sie
+# postupgrade.sh, das nach diesem Skript laeuft (Entwurf ga 3.3, Bauart EVCC 0.9.45).
+if [ "$UPGRADE" = "0" ]; then
+    BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+    if [ -f "$BBSH" ]; then
+        BB_AUS=$(timeout 40 bash "$BBSH" start 2>&1 | head -n 1)
+        case "$BB_AUS" in
+            *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $BB_AUS" ;;
+            "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken 'Befehle ueber MQTT annehmen')." ;;
+            Aktualisierung*) echo "<INFO> Befehlsbruecke: $BB_AUS" ;;
+            *) echo "<WARNING> Befehlsbruecke: $BB_AUS - der Waechter (jede Minute) versucht es erneut." ;;
+        esac
+    fi
+fi
+
 # Der Hinweis auf die Ersteinrichtung NACH der Rueckspielung und nur, wenn
 # danach wirklich noch keine Zugangsdaten eingetragen sind. Bis 1.2.7 stand er
 # unbedingt und VOR der Rueckspielung - auch nach jedem Update einer fertig
