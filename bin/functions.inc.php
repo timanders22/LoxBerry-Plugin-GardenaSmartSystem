@@ -3383,7 +3383,21 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
                 continue;
             }
             $tj = gardena_tts();
-            list($tv) = ansage_vervollstaendigen($tp + $tj);
+            /* Welle Mehrfach-Ziele (1.2.22): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
+             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis
+             * (EINST.SICH_BEHALTEN) nennt sie. */
+            $ga_tsneu = array('tts' => $tp);
+            $ga_tsjetzt = array('tts' => $tj);
+            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
+             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
+             * heisst "keine weiteren Ziele" und wird so uebernommen. */
+            $ga_spaete = array();
+            if (is_array($ga_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
+                list($ga_tsneu['tts'], $ga_spaete) = ansage_sicherung_spaet($ga_tsneu['tts'],
+                    (isset($ga_tsjetzt['tts']) && is_array($ga_tsjetzt['tts'])) ? $ga_tsjetzt['tts'] : null);
+            }
+            foreach ($ga_spaete as $ga_sn) { $behalten[] = $ga_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
+            list($tv) = ansage_vervollstaendigen($ga_tsneu['tts'] + $tj);
             $neu['TTS'] = gardena_tts_kodieren(ansage_sicherung_tokens_behalten($tv, $tj));
             $anzahl++;
             continue;
@@ -3521,8 +3535,40 @@ function gardena_ansage_gesucht()
 /** Erlaubte Ausgabearten: alle des Moduls ausser 'audioserver' (kein Antwortweg, auf dem Loxone den Text abholt). */
 function gardena_ansage_modi()
 {
-    return array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox');
+    /* Nachtwelle N6 (1.2.22, Pflegewelle 22): dazu Sonos4Lox und, ab Modul 1.1.4, SonoX (ungemessen, kein Sonos im
+     * Haus; das Modul prueft Installation und Zone bzw. Raum). Weitere Ausgabeziele (Tabelle, 'ziele') seit 1.2.22
+     * mit Stamm 1.2.1 - ga_mit_zielen() unten; ohne Tabelle wie 1.1.4. Die Fassungspruefung schuetzt vor einer zuerst
+     * geladenen aelteren Abschrift (Modul 1.1.4, Kopf "Wer 'sonox' anbietet"). */
+    $m = array('aus', 'musicserver', 'ms4h', 'custom', 'alexang', 'cc4lox', 'sonos4lox');
+    if (defined('ANSAGE_FASSUNG') && version_compare(ANSAGE_FASSUNG, '1.1.4', '>=')) { $m[] = 'sonox'; }
+    return $m;
 }
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1): bietet diese Linie die Tabelle der weiteren Ausgabeziele an? Nur, wenn die
+ *  geladene Abschrift sie kann - laden zwei Abschriften im selben Prozess, gilt die zuerst geladene. */
+function ga_mit_zielen() {
+    return version_compare(ANSAGE_FASSUNG, '1.2.0', '>=') && function_exists('ansage_ziele_html')
+        && function_exists('ansage_ziele_pruefen') && function_exists('ansage_testknoepfe_html');
+}
+
+/** Welle Mehrfach-Ziele (Sprachmodul 1.2.1), X-2 mit flachen Schluesseln (name.N): die Felder der Tabelle heissen im
+ *  Formular name[N] (N = 2..6, ansage_ziel_feldnamen()). ga_ziele_x2_name() macht daraus name.N (Beanstandung und
+ *  Markierung), ga_ziele_x2_post() aus den gesammelten Eingaben wieder das POST der Tabelle (ziele_post). */
+function ga_ziele_x2_name($n) {
+    return is_string($n) ? (string) preg_replace('/^(tts_ziel_[a-z]+)\[([2-9])\]\z/', '$1.$2', $n) : $n;
+}
+function ga_ziele_x2_post(array $werte) {
+    $p = array();
+    foreach ($werte as $k => $v) {
+        if (is_string($v) && preg_match('/^(tts_ziel_[a-z]+)\.([2-9])\z/', (string) $k, $m)) { $p[$m[1]][(int) $m[2]] = $v; }
+    }
+    return isset($p['tts_ziel_art']) ? $p : null;
+}
+
+/** Welle Mehrfach-Ziele (1.2.22): die gemeinsamen Stuecke rufen <px>_ansage_k() und <px>_log($text) mit dem Praefix ga -
+ *  zwei Einzeiler auf die Funktionen der Linie (gardena_log() nimmt Stufe und Text). */
+function ga_ansage_k() { return gardena_ansage_k(); }
+function ga_log($text) { gardena_log('INF', $text); }
 
 /** Optionen fuer Formular-Baustein und Formular-Lesen. */
 function gardena_ansage_opt()
@@ -3807,7 +3853,8 @@ function gardena_ansage_quelle_lesen()
     return $aus;
 }
 
-/* Die Abschrift laden. Fehlt sie, laeuft alles andere unveraendert weiter;
+/* Die Abschrift laden (seit 1.2.22 Stamm 1.2.1 mit weiteren Ausgabezielen, ga_mit_zielen(), Welle Mehrfach-Ziele).
+ * Fehlt sie, laeuft alles andere unveraendert weiter;
  * die Zeile steht einmal je Stunde im Protokoll, Oberflaeche und Reiter Test
  * nennen die gesuchten Orte. */
 if (!function_exists('ansage_sprechen')) {
@@ -3914,16 +3961,25 @@ function gardena_mqtt_einheit_text($e)
     return trim(preg_replace('/<v(\.\d)?>/', '', (string) $e));
 }
 
+/** Noncached unter Gateway V2 (Nachtwelle N6, Nachtrag 29.10.): das Lebenszeichen Plugin/STATUS/ok und status/befehle
+ *  unter der Basis - V2 reicht einen gleichbleibenden Wert nach einem Neustart des Miniservers sonst nicht neu weiter.
+ *  EINE Quelle fuer Namenstabelle, Hakenliste (Spalte Noncached) und Selbsttest. Volle Themen. */
+function gardena_mqtt_noncached($basis)
+{
+    return array(gardena_wert_thema($basis, 'Plugin', 'STATUS', 'ok'), $basis . '/status/befehle');
+}
+
 /**
  * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste und
  * Pruefzeile (Entwurf ga 2.4). Dieselbe Schleife wie die Themenliste im Reiter MQTT: ausgenommene Geraete
  * fehlen, die Zahlenfelder ueber gardena_mit_zahlen(); dazu das Lebenszeichen und status/befehle (sendet die
  * Befehlsbruecke). Je Zeile: thema, name (Gateway-Name), geraet, dienst, attribut, zahl, bedeutung (Text),
- * bereich, fehlwert (null = keiner), retained, haken (V2), im_muster.
+ * bereich, fehlwert (null = keiner), retained, haken (V2), im_muster, noncached (seit 1.2.22).
  */
 function gardena_mqtt_namen($cache, $cfg)
 {
     $basis = gardena_mqtt_basis($cfg);
+    $nc = gardena_mqtt_noncached($basis);
     $grenzen = gardena_vorlage_grenzen();
     $haken = gardena_v2_haken();
     $ausg = gardena_ausgenommen($cfg);
@@ -3953,7 +4009,8 @@ function gardena_mqtt_namen($cache, $cfg)
                                'geraet' => $name, 'dienst' => (string) $typ, 'attribut' => $a, 'zahl' => $zahl,
                                'bedeutung' => gardena_mqtt_bedeutung($a), 'bereich' => $bereich,
                                'fehlwert' => ($fw === '-' ? null : $fw), 'retained' => gardena_retain($name, $typ, $a),
-                               'haken' => $h, 'im_muster' => $h);
+                               'haken' => $h, 'im_muster' => $h,
+                               'noncached' => in_array(gardena_wert_thema($basis, $name, $typ, $a), $nc, true));
             }
         }
     }
@@ -3964,17 +4021,21 @@ function gardena_mqtt_namen($cache, $cfg)
                        'name' => gardena_wert_eingang($basis, 'Plugin', 'STATUS', $a),
                        'geraet' => 'Plugin', 'dienst' => 'STATUS', 'attribut' => $a, 'zahl' => $d[1],
                        'bedeutung' => gardena_t($d[0]), 'bereich' => $bereich, 'fehlwert' => null, 'retained' => false,
-                       'haken' => $d[2], 'im_muster' => $d[2]);
+                       'haken' => $d[2], 'im_muster' => $d[2],
+                       'noncached' => in_array(gardena_wert_thema($basis, 'Plugin', 'STATUS', $a), $nc, true));
     }
     $aus[] = array('thema' => $basis . '/status/befehle', 'name' => str_replace('/', '_', $basis . '/status/befehle'),
                    'geraet' => 'Plugin', 'dienst' => 'status', 'attribut' => 'befehle', 'zahl' => true,
                    'bedeutung' => gardena_t('BEFEHL.TH_STATUS'), 'bereich' => "-1 \u{2026} 1", 'fehlwert' => null,
-                   'retained' => false, 'haken' => true, 'im_muster' => false);
+                   'retained' => false, 'haken' => true, 'im_muster' => false,
+                   'noncached' => in_array($basis . '/status/befehle', $nc, true));
     return $aus;
 }
 
 /** Hakenliste fuer Gateway V2 (Entwurf ga 2.4): die Werte der Musterseiten je vorhandenem Geraet und
- *  status/befehle - mit den vier Beispielgeraeten 26 Zahlen + 5 Texte + status/befehle = 32 Haken. */
+ *  status/befehle - mit den vier Beispielgeraeten 26 Zahlen + 5 Texte (alle mit Texteingang auf den Musterseiten)
+ *  + status/befehle = 32 Haken. Noncached seit 1.2.22: Plugin/STATUS/ok und status/befehle
+ *  (gardena_mqtt_noncached()). */
 function gardena_mqtt_hakenliste($cache, $cfg)
 {
     $aus = array();
@@ -3982,6 +4043,133 @@ function gardena_mqtt_hakenliste($cache, $cfg)
         if ($z['haken']) { $aus[] = $z; }
     }
     return $aus;
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N6, 1.2.22) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest gardena_v2_haken_lage().
+ */
+function gardena_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter; steht es zu viel, geht
+ * jeder Wert erneut an den Miniserver.
+ */
+function gardena_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: gardena_mqtt_hakenliste() - DIESELBE Funktion wie die Hakenliste im Reiter "Einbindung in Loxone"
+ * (Regeln/07), mit ihren Textthemen (die Musterseiten haben dafuer Texteingaenge) und Noncached aus gardena_mqtt_noncached().
+ */
+function gardena_v2_haken_soll($cache, $cfg)
+{
+    $aus = array();
+    foreach (gardena_mqtt_hakenliste($cache, $cfg) as $z) {
+        $aus[] = array('thema' => $z['thema'], 'name' => $z['name'], 'noncached' => !empty($z['noncached']));
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N6, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar). Liest nur.
+ */
+function gardena_v2_haken_lage($cache, $cfg)
+{
+    if ((string) $cfg['MQTT_ENABLED'] !== '1') {
+        return array(2, gardena_t('TEST.V2_AUS'));
+    }
+    $fassung = (int) gardena_gateway_fassung();
+    $home = rtrim((string) gardena_lbhome(), '/');
+    if ($fassung === 0 || $home === '') {
+        return array(2, gardena_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, gardena_t('TEST.V2_V1'));
+    }
+    $abo = gardena_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, gardena_t('TEST.V2_UNKLAR'));
+    }
+    $liste = gardena_v2_haken_soll($cache, $cfg);
+    if (!$liste) {
+        return array(2, gardena_t('TEST.V2_LEER'));   // leere Hakenliste: kein Urteil (Hausform wie N7)
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = gardena_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(gardena_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(gardena_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(gardena_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(gardena_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
 }
 
 /**
@@ -4599,6 +4787,8 @@ function gardena_befehle_tabelle($cache, $cfg)
  * (bb_vorlage() ueberspringt sie) - die Linie baut die Vorlage selbst aus dem Abbild (Bauart Govee): eigener
  * Virtueller Ausgang an den UDP-Eingang des Gateways, je Geraet und Dienst die Befehle mit fester Dauer wie bisher
  * (maehen 60, bewaessern 30, einschalten 60 Minuten), Titel "Gardena <Geraet> <Aktion> (MQTT)", nie retain.
+ * Seit 1.2.22 (Nachtwelle N6) mit Windows-Zeilenenden (CRLF) wie bb_vorlage() der Bruecke 1.0.2 und die Ausfuhren
+ * der Loxone Config (Regeln/07); Inhalt sonst unveraendert.
  * Rueckgabe array(Dateiname, Inhalt) oder null (keine Bruecke, kein Abbild).
  */
 function gardena_befehle_vorlage($cache, $cfg, $host, $port)
@@ -4617,7 +4807,7 @@ function gardena_befehle_vorlage($cache, $cfg, $host, $port)
                                  $b['aktion'] . ' ' . $b['wert'] . ', eingreifend, nie retain', $b['loxone'], '', false);
     }
     $z[] = '</VirtualOut>';
-    return array('VQ_gardena_mqtt.xml', implode("\n", $z) . "\n");
+    return array('VQ_gardena_mqtt.xml', implode("\r\n", $z) . "\r\n");
 }
 
 /** Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11): array(1|0|-1, Text). Gemessen wird das Erzeugnis
