@@ -12,5 +12,10 @@
 # Die Platzhalter fuer bin- und Log-Ordner setzt der Installer ein; sie stehen deshalb NUR in den Befehlszeilen und
 # nicht in diesem Kommentar.
 mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
-touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
-bash "REPLACELBPBINDIR/befehlsbruecke.sh" waechter >/dev/null 2>>"REPLACELBPLOGDIR/cron.err"
+ERR="REPLACELBPLOGDIR/cron.err"
+touch "$ERR" 2>/dev/null
+# 1.2.23 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 1.2.22 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+[ -f "$ERR" ] && [ -w "$ERR" ] || ERR=/dev/null
+bash "REPLACELBPBINDIR/befehlsbruecke.sh" waechter >/dev/null 2>>"$ERR"

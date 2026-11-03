@@ -275,7 +275,7 @@ function gardena_ansage_pruefzeilen($cfg, $netz)
     $tts = gardena_tts_aus_cfg($cfg, $kaputt);
     $k = gardena_ansage_k();
     $k['e'] = function ($s) { return (string) $s; };      // die Tabelle maskiert selbst
-    list($st, $text) = ansage_pruefzeile($tts, (bool) $netz, $k);
+    list($st, $text) = ansage_pruefzeile(gardena_ansage_pruefblock(), (bool) $netz, $k);
     $stand = ($st === 1) ? 1 : (($st === 0) ? -1 : 0);
     if ($kaputt) {
         $stand = -1;
@@ -888,7 +888,7 @@ function gardena_eingaben_sammeln($form)
     );
     if (function_exists('ansage_x2_felder')) {
         // Nr. 36 b: nie die Sprechtoken (ansage_x2_felder()).
-        $felder['ansage'] = array_merge(ansage_x2_felder(gardena_ansage_opt()), array_keys(gardena_ansage_anlaesse()));
+        $felder['ansage'] = array_merge(ansage_x2_felder(gardena_ansage_opt()), array_keys(gardena_ansage_anlaesse()), ansage_regeln_x2_felder());     // 1.2.23: Regeln
     }
     if (!isset($felder[$form])) { return array(); }
     $aus = array();
@@ -1180,7 +1180,8 @@ if ($gpost && isset($_POST['ansage_save'])) {
         $ga_thl = array();     // Welle Mehrfach-Ziele (1.2.22): Hinweise des Moduls, nach dem Speichern als Hinweis
         $ga_thinw = array();     // Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Hinweise des Moduls, die das Speichern nicht verhindern
         $ga_tts = ansage_formular_lesen($_POST, gardena_tts(), $ga_mangel, $ga_bean,
-                                        gardena_ansage_opt() + array('ziele' => ga_mit_zielen()), ga_ansage_k(), $ga_thinw);
+                                        gardena_ansage_opt() + array('ziele' => ga_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ga_ansage_k(), $ga_thinw);
+        list($ga_rneu) = ansage_regeln_formular($_POST, gardena_ansage_regeln(gardena_ansage_conf()), array(), $ga_mangel, $ga_bean, ga_ansage_k());     // 1.2.23: Wann gesprochen wird (Stamm)
         foreach ($ga_mangel as $ga_m) { $gfehler[] = gardena_t('EINST.H_ANSAGE_KURZ') . ': ' . $ga_m['text']; }
         foreach ($ga_bean as $ga_b) { $gneu_mark[] = ga_ziele_x2_name($ga_b); }     // 1.2.22: name[N] -> name.N
         $ga_neu = array();
@@ -1196,6 +1197,7 @@ if ($gpost && isset($_POST['ansage_save'])) {
         }
         if (!$gfehler) {
             $ga_neu['TTS'] = gardena_tts_kodieren($ga_tts);
+            $ga_neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rneu);     // 1.2.23
             if (gardena_cfg_write($gconfigfile, $ga_neu)) {
                 $gsaved = gardena_t('EINST.ANSAGE_GESPEICHERT');
                 foreach ($ga_thinw as $ga_th) { $ga_thl[] = $ga_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern
@@ -1224,9 +1226,9 @@ if ($gpost && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel'])
         if (isset($_POST['ansage_test_ziel']) && $ga_tnur === 0) {
             $ga_tr = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
         } elseif ($ga_tnur >= 1) {
-            $ga_tr = ansage_testansage(gardena_tts(), $ga_tk, $ga_tnur);
+            $ga_tr = ansage_testansage(gardena_ansage_vor_ort(), $ga_tk, $ga_tnur);
         } else {
-            $ga_tr = ansage_testansage(gardena_tts(), $ga_tk);
+            $ga_tr = ansage_testansage(gardena_ansage_vor_ort(), $ga_tk);
         }
         ga_log('Testansage' . ($ga_tnur >= 1 ? ' an Ziel ' . $ga_tnur : '') . ': ' . ansage_kurz($ga_tr));
         if ($ga_tr['stand'] === 1) {
@@ -2479,6 +2481,11 @@ if ($gmesser_int > 0) {
     /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): Tabelle der weiteren Ausgabeziele; nach einer Beanstandung traegt sie das Eingetippte. */
     'ziele' => ga_mit_zielen(),
     'ziele_post' => $geingaben_form === 'ansage' ? ga_ziele_x2_post($geingaben) : null), ga_ansage_k()); ?>
+<?= ansage_regeln_html(gardena_ansage_regeln(gardena_ansage_conf()), array(), array(), array(
+    'w' => function ($n, $g) { return gfeld('ansage', $n, $g); },
+    'm' => function ($n) { return gmark('ansage', $n); },
+    'c' => function ($n, $g) { global $geingaben, $geingaben_form; return $geingaben_form === 'ansage' ? isset($geingaben[$n]) : (bool) $g; },
+    'token_vor_ort' => true), ga_ansage_k()) ?>
 <label><?= gardena_t('EINST.ANSAGE_ANLAESSE') ?></label>
 <?php foreach (gardena_ansage_anlaesse() as $ga_feld => $ga_schl) {
     $ga_an = ($geingaben_form === 'ansage') ? isset($geingaben[$ga_feld]) : ((string) $gc[$ga_schl] === '1'); ?>
@@ -3259,6 +3266,7 @@ $gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $gbind
    ohne weitere Ziele nichts. */
 if (ga_mit_zielen()) { echo ansage_testknoepfe_html(gardena_tts_aus_cfg($gc), ga_ansage_k(), array('klasse' => 'sm-btn sm-b-aktion')); } ?>
 </form>
+<?= gardena_ansage_lage_html() ?>
 </div>
 <div class="sm-small"><?= gardena_t('TEST.ABRUF_HINWEIS') ?></div>
 <div class="sm-small"><?= gardena_t('TEST.ANSAGE_TEST_HINWEIS') ?></div>

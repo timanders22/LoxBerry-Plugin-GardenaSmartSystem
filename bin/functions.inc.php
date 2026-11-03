@@ -576,7 +576,10 @@ function gardena_mqtt_behalten_liste(array $themen)
     /* Genau $n Bytes lesen oder null - bei Zeitablauf und Verbindungsende. */
     $lies = function ($n) use ($s) {
         $d = '';
+        /* bis 1.2.22 ohne Frist: ein Broker, der ein Paket ankuendigt und nur tropfenweise liefert, hielt den Leser fest. Schweigt er ganz, greift schon stream_set_timeout(). */
+        $lies_bis = microtime(true) + 5.0;
         while (strlen($d) < $n) {
+            if (microtime(true) >= $lies_bis) { return null; }
             $t = @fread($s, $n - strlen($d));
             if ($t === false || $t === '') {
                 $meta = stream_get_meta_data($s);
@@ -3154,7 +3157,7 @@ function gardena_sicherung_stand()
      * anderen Linien - OHNE Sprechtoken (ansage_sicherung_bereinigen()). Der
      * INI-Schluessel TTS traegt sie und geht deshalb nie hinaus. */
     unset($s['TTS']);
-    if (function_exists('ansage_sicherung_bereinigen')) { $s['tts'] = ansage_sicherung_bereinigen(gardena_tts()); }
+    if (function_exists('ansage_sicherung_bereinigen')) { $s['tts'] = ansage_sicherung_bereinigen(gardena_tts()); $s['ansage_regeln'] = gardena_ansage_regeln(gardena_ansage_conf()); }     // 1.2.23: die Regeln reisen mit, kein Token, kein Vermerk
     return $s;
 }
 
@@ -3209,10 +3212,10 @@ function gardena_cfg_vervollstaendigen($cfgfile)
     }
     /* Nr. 36 b (1.2.15): der Block der Sprachausgabe steht nicht in den
      * Vorgaben (sie sind die Schluesselliste der Sicherung); fehlt er, kommt
-     * seine Vorgabe 'aus' hinzu - nur mit geladener Abschrift, sonst kein
+     * seine Vorgabe (seit 1.2.23 ab Werk EIN) hinzu - nur mit geladener Abschrift, sonst kein
      * leerer Schluessel. */
-    if (!in_array('TTS', $da, true) && function_exists('ansage_vorgaben')) {
-        $fehlt['TTS'] = gardena_tts_kodieren(ansage_vorgaben('aus'));
+    if (!in_array('TTS', $da, true) && function_exists('ansage_werk_block')) {     // 1.2.23: nie gesetzt = ab Werk EIN; eine vorhandene Zeile bleibt
+        $fehlt['TTS'] = gardena_tts_kodieren(ansage_werk_block());
     }
     if (!$fehlt) { return array(); }
     if (!gardena_cfg_write($cfgfile, $fehlt)) { return array(); }
@@ -3402,6 +3405,15 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
             $anzahl++;
             continue;
         }
+        if ((string) $k === 'ansage_token_herkunft' || (string) $k === 'ANSAGE_HERKUNFT') { continue; }     // 1.2.23: nie aus einer Datei
+        if ((string) $k === 'ansage_regeln') {     // 1.2.23
+            $ga_rg = '';
+            $ga_rw = ansage_regeln_wert($w, $ga_rg);
+            if ($ga_rw === null) { $namen[] = 'ansage_regeln'; $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), 'ansage_regeln'); continue; }
+            $neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rw);
+            $anzahl++;
+            continue;
+        }
         if ((string) $k === 'TTS') {
             // Der INI-Schluessel gehoert in keine Sicherung (er traegt die Sprechtoken).
             $namen[] = 'TTS';
@@ -3526,6 +3538,216 @@ function gardena_ansage_kandidaten()
     return array_values(array_unique($k));
 }
 
+/** Der Datenordner der Sprachansagen. */
+function gardena_ansage_ordner()
+{
+    return isset($GLOBALS['lbpdatadir']) ? (string) $GLOBALS['lbpdatadir'] : '';
+}
+
+/** Eine Protokollzeile der Sprachansagen. */
+function gardena_ansage_zeile($t)
+{
+    gardena_log('INF', $t);
+}
+
+/** Der Block tts: aus dem gelesenen Stand oder der INI-Zeile. */
+function gardena_ansage_tts($c)
+{
+    return (is_array($c) && isset($c['tts']) && is_array($c['tts'])) ? ansage_block_oder_aus($c['tts'], gardena_ansage_modi()) : gardena_tts_aus_cfg($c);
+}
+
+/** Die Konfiguration fuer die Sprachansagen: die INI-Zeilen als Felder. */
+function gardena_ansage_conf()
+{
+    $c = gardena_config();
+    $c['tts'] = gardena_tts_aus_cfg($c);
+    $r = isset($c['ANSAGE_REGELN']) ? json_decode((string) $c['ANSAGE_REGELN'], true) : null;
+    if (is_array($r)) { $c['ansage_regeln'] = $r; }
+    $h = isset($c['ANSAGE_HERKUNFT']) ? json_decode((string) $c['ANSAGE_HERKUNFT'], true) : null;
+    $c['ansage_token_herkunft'] = is_array($h) ? $h : array();
+    return $c;
+}
+
+/** Zurueck in die INI-Zeilen. Felder werden kodiert, Zeichenketten bleiben. */
+function gardena_ansage_conf_schreiben(array $c)
+{
+    if (isset($c['tts']) && is_array($c['tts'])) { $c['TTS'] = gardena_tts_kodieren($c['tts']); }
+    if (isset($c['ansage_regeln']) && is_array($c['ansage_regeln'])) { $c['ANSAGE_REGELN'] = gardena_tts_kodieren($c['ansage_regeln']); }
+    if (isset($c['ansage_token_herkunft']) && is_array($c['ansage_token_herkunft'])) { $c['ANSAGE_HERKUNFT'] = gardena_tts_kodieren($c['ansage_token_herkunft']); }
+    unset($c['tts'], $c['ansage_regeln'], $c['ansage_token_herkunft']);
+    return (bool) gardena_cfg_write(gardena_konfigdatei(), $c);
+}
+
+/* ---------------- Sprachansagen: Regeln aus dem Stamm (1.2.23, Welle S2, Stamm sprachausgabe.php 1.3.2) ----------------
+ *
+ * Nachtruhe, Sperre und Schalter "Ansagen aus" stehen im Stamm. Ab Werk EIN: ansage_werk_block() in den Vorgaben, also nur fuer einen
+ * nie gespeicherten Block; ein gespeicherter bleibt, auch 'aus'. Ein Minutenlauf und ein Dienst sprechen nie selbst: Sie legen den Anlass
+ * in <Daten>/ansage_warte.json, ein abgekoppelter Sender (php -r, eigene Sperre) spricht und wartet auf die Lautsprecher.
+ */
+
+/** So alt darf ein wartender Anlass werden (nach einem Update oder Hang wird nichts Aufgestautes angesagt). */
+if (!defined('GARDENA_ANSAGE_HOECHSTALTER')) { define('GARDENA_ANSAGE_HOECHSTALTER', 600); }
+
+/** Die Regeln: gespeichert und gueltig, sonst aus einer alten Einstellung dieser Linie, sonst die Vorgabe (mit Nachtruhe). */
+function gardena_ansage_regeln($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $g = '';
+    if (!empty($cfg['ansage_regeln'])) {
+        $r = ansage_regeln_wert($cfg['ansage_regeln'], $g);
+        return $r === null ? ansage_regeln_vorgaben() : $r;
+    }
+    $r = ansage_regeln_vorgaben();
+    $p = ansage_regeln_wert($r, $g);
+    return $p === null ? ansage_regeln_vorgaben() : $p;
+}
+
+/** Die Warteliste unter einer Dateisperre aendern: $fn(Liste) -> array(neue Liste, Ergebnis). */
+function gardena_ansage_warte($fn)
+{
+    $d = gardena_ansage_ordner();
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $f = $d . '/ansage_warte.json';
+    $h = @fopen($f, 'c+');
+    if ($h === false) { return null; }
+    if (!flock($h, LOCK_EX)) { fclose($h); return null; }
+    $alt = json_decode((string) stream_get_contents($h), true);
+    list($neu, $erg) = call_user_func($fn, is_array($alt) ? $alt : array());
+    rewind($h);
+    ftruncate($h, 0);
+    fwrite($h, (string) json_encode($neu));
+    fflush($h);
+    flock($h, LOCK_UN);
+    fclose($h);
+    @chmod($f, 0600);
+    return $erg;
+}
+
+/**
+ * Anlaesse hinlegen und den Sender starten; wartet auf nichts. $l: Eintraege fuer ansage_regel_sprechen() (schluessel, text, dringend,
+ * sperre_min, nur_nach). Die Schale schliesst vor dem exec jede Deskriptor-Nummer ueber 2, sonst erbte der Sender die Sperren des Rufers.
+ */
+function gardena_ansage_legen(array $l, $jetzt = null)
+{
+    if (!$l) { return 'nichts'; }
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    gardena_ansage_warte(function ($alt) use ($l, $jetzt) {
+        foreach ($l as $e) { $alt[] = $e + array('zeit' => $jetzt); }
+        return array(array_slice($alt, -50), null);
+    });
+    $php = (defined('PHP_BINARY') && PHP_BINARY !== '' && is_executable(PHP_BINARY) && stripos(basename(PHP_BINARY), 'php') === 0 && stripos(basename(PHP_BINARY), 'fpm') === false) ? PHP_BINARY : 'php';
+    $befehl = 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+            . 'exec ' . escapeshellarg($php) . ' -r ' . escapeshellarg('chdir(dirname($argv[1])); $_SERVER["SCRIPT_FILENAME"] = $_SERVER["PHP_SELF"] = $argv[1]; require $argv[1]; gardena_ansage_senden();') . ' -- ' . escapeshellarg(__DIR__ . '/header.inc.php');
+    $aus = array();
+    $rc = 1;
+    @exec('bash -c ' . escapeshellarg($befehl) . ' </dev/null >/dev/null 2>&1 &', $aus, $rc);
+    return $rc === 0 ? 'gestartet' : 'kein_start';
+}
+
+/** Das Sprechtoken aus Alexa-NG und Chromecast4lox uebernehmen (Stamm 1.3.1). Schreibt NUR bei einer Aenderung, nennt nie das Token. */
+function gardena_ansage_token_pflegen($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    list($neu, $her2, $g) = ansage_token_abgleich(gardena_ansage_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), gardena_ansage_k());
+    if (!$g) { return false; }
+    $cfg = gardena_ansage_conf();
+    $cfg['tts'] = $neu;
+    $cfg['ansage_token_herkunft'] = $her2;
+    if (!gardena_ansage_conf_schreiben($cfg)) { return false; }
+    gardena_ansage_zeile('Ansage: Sprechtoken uebernommen (' . implode(', ', $g) . ').');
+    return true;
+}
+
+/** Der Block fuer Testansage und Pruefzeile: uebernommene Token aufgeloest. Nur im Speicher. */
+function gardena_ansage_vor_ort($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    return ansage_token_fuer_lauf(gardena_ansage_tts($cfg), isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array(), gardena_ansage_k());
+}
+
+/** Der Block fuer die Pruefzeile: nur die eingerichteten Ziele; ist keines eingerichtet, sagt die Zeile "aus" statt eines Kreuzes. */
+function gardena_ansage_pruefblock($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $t = gardena_ansage_tts($cfg);
+    if ($t['mode'] === 'aus') { return $t; }
+    list($b) = ansage_ziele_bereit(gardena_ansage_vor_ort($cfg), gardena_ansage_k());
+    if ($b === null) { $t['mode'] = 'aus'; return $t; }
+    return $b;
+}
+
+/** Die Lage im Reiter Test: Ziele, Nachtruhe, Schalter. Nur im geoeffneten Reiter (der Schalter fragt den Broker). */
+function gardena_ansage_lage_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $k = gardena_ansage_k();
+    $o = array();
+    foreach (ansage_regel_lage(gardena_ansage_tts($cfg), gardena_ansage_regeln($cfg), $k, true) as $z) {
+        $o[] = '<div class="sm-hilfe">' . htmlspecialchars((string) $z[1], ENT_QUOTES, 'UTF-8') . '</div>';
+    }
+    return implode("\n", $o) . "\n";
+}
+
+/** Die Felder der Regeln fuer die Einmalmeldung (X-2). */
+function gardena_ansage_regel_felder(array $anlaesse = array())
+{
+    return ansage_regeln_x2_felder($anlaesse);
+}
+
+/**
+ * Im Vorgang sprechen, wo der Rufer das Ergebnis braucht (Antwort an Loxone, Befehl): Regeln aus dem Stamm mit "dringend, ohne Sperre" - es zaehlt nur der Schalter.
+ * Schalter gesetzt: stand -1, Kennung SCHALTER. Nichts bereit oder Original-Audioserver: wie bisher ansage_sprechen(), damit die Antwort sagt, was fehlt.
+ */
+function gardena_ansage_direkt($text, array $e = array(), $tts = null)
+{
+    $conf = gardena_ansage_conf();
+    $k = gardena_ansage_k();
+    $t = $tts === null ? gardena_ansage_tts($conf) : $tts;
+    $a = ansage_regel_sprechen(array($e + array('schluessel' => 'direkt', 'text' => (string) $text, 'dringend' => true, 'sperre_min' => 0)), $t, gardena_ansage_regeln($conf), $k);
+    if ($a['r'] !== null) { return $a['r']; }
+    if ($a['regel'] === 'SCHALTER') {
+        return array('stand' => -1, 'kennung' => 'SCHALTER', 'art' => isset($t['mode']) ? (string) $t['mode'] : '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    }
+    return ansage_sprechen((string) $text, $t, $k);
+}
+
+/**
+ * Der Sender: eigene Sperre, nimmt die Warteliste und spricht nach den Regeln. "aus" und "kein Ziel eingerichtet" hinterlassen keine Zeile;
+ * ein gescheitertes Ziel genau eine je Aenderung (ab Werk EIN darf kein Protokoll vollaufen). Text und Token stehen nie im Protokoll.
+ */
+function gardena_ansage_senden($jetzt = null)
+{
+    $d = gardena_ansage_ordner();
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($d . '/ansage_senden.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) { return 'laeuft'; }
+    $erg = 'nichts';
+    $l = gardena_ansage_warte(function ($alt) { return array(array(), $alt); });
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    $frisch = array();
+    foreach (is_array($l) ? $l : array() as $e) {
+        if (is_array($e) && isset($e['zeit']) && $jetzt - (int) $e['zeit'] <= GARDENA_ANSAGE_HOECHSTALTER) { $frisch[] = $e; }
+    }
+    if ($frisch) {
+        $conf = gardena_ansage_conf();
+        gardena_ansage_token_pflegen($conf);
+        $conf = gardena_ansage_conf();
+        $a = ansage_regel_sprechen($frisch, gardena_ansage_tts($conf), gardena_ansage_regeln($conf), gardena_ansage_k());
+        $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
+        if ($a['r'] !== null) {
+            $merk = $d . '/ansage_lage.txt';
+            $lage = $a['r']['stand'] === 1 ? 'gesprochen' : ansage_kurz($a['r']);
+            if ($a['r']['stand'] === 1 || (string) @file_get_contents($merk) !== $lage) { gardena_ansage_zeile('Ansage: ' . ansage_regel_kurz($a)); }
+            @file_put_contents($merk, $lage);
+        } elseif ($a['regel'] !== 'AUS' && $a['regel'] !== 'KEIN_ZIEL') {
+            gardena_ansage_zeile('Ansage entfaellt: ' . ansage_regel_kurz($a));
+        }
+    }
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $erg;
+}
+
 /** Die Orte, an denen vergeblich gesucht wurde (leer, wenn die Abschrift geladen ist). */
 function gardena_ansage_gesucht()
 {
@@ -3605,6 +3827,7 @@ function gardena_tts_aus_cfg($cfg, &$kaputt = null)
         if (!is_array($d)) { $d = array(); $kaputt = true; }
     }
     if (!function_exists('ansage_vervollstaendigen')) { return $d; }
+    if ($roh === '') { $d = ansage_werk_block(); }     // 1.2.23: nie gesetzt = ab Werk EIN
     list($t) = ansage_vervollstaendigen($d, 'aus');
     return $t;
 }
@@ -3628,6 +3851,7 @@ function gardena_ansage_k()
     $home = gardena_lbhome();
     $d = isset($GLOBALS['lbpdatadir']) ? (string) $GLOBALS['lbpdatadir'] : '';
     return array(
+        'werk' => ansage_werk_modus(),
         'port' => ansage_webport($home !== '' ? $home . '/config/system/general.json' : ''),
         'kopf' => array('User-Agent: LoxBerry GardenaSmartSystem'),
         'ordner' => ($d !== '' && gardena_lage() !== '' && @is_dir($d)) ? $d : '',
@@ -3761,7 +3985,7 @@ function gardena_ansage_lauf($cache, $g)
             }
             foreach ($flanken as $anlass => $satz) {
                 if (!$haken[$anlass]) { $abgewaehlt++; continue; }
-                $saetze[] = $satz;
+                $saetze[] = array('schluessel' => $anlass . '|' . $id, 'text' => $satz);     // 1.2.23: je Anlass und Geraet (Sperre, Nachtruhe aus dem Stamm)
                 $zahl[$anlass]++;
                 $neu['gesagt'][$anlass . '|' . $id] = $jetzt;
             }
@@ -3769,17 +3993,13 @@ function gardena_ansage_lauf($cache, $g)
         }
     }
     $neu['t'] = $jetzt;
-    $text = '';
-    $weg = 0;
-    foreach ($saetze as $satz) {
-        $probe = ($text === '') ? $satz : $text . ' ' . $satz;
-        if (ansage_zeichen($probe) > ANSAGE_TEXT_MAX) { $weg++; continue; }
-        $text = $probe;
-    }
+    /* 1.2.23: Regeln aus dem Stamm, gesprochen wird in einem eigenen Vorgang. Nichts hiervon ist dringend. */
     $r = null;
-    if ($text !== '') {
-        $r = ansage_sprechen($text, $tts, gardena_ansage_k());
-        $neu['letzte'] = array('t' => $jetzt, 'stand' => (int) $r['stand'],
+    if ($saetze) {
+        gardena_ansage_token_pflegen();
+        gardena_ansage_legen($saetze, $jetzt);
+        $r = 1;
+        $neu['letzte'] = array('t' => $jetzt, 'stand' => 1,
                                'anlaesse' => implode(',', array_keys(array_filter($zahl))));
     }
     if (!gardena_json_write($datei, $neu, 0600)) {
@@ -3787,9 +4007,7 @@ function gardena_ansage_lauf($cache, $g)
             . ' liess sich nicht schreiben - dieselben Ereignisse koennen erneut angesagt werden.');
     }
     if ($r !== null) {
-        gardena_log($r['stand'] === 0 ? 'ERR' : 'INF', 'Ansage (beendet ' . $zahl['beendet'] . ', Stoerung '
-            . $zahl['stoerung'] . ', Batterie ' . $zahl['batterie'] . ($weg > 0 ? ', ' . $weg . ' Saetze ueber 1000 Zeichen entfallen' : '')
-            . '): ' . ansage_kurz($r));
+        gardena_log('INF', 'Ansage hingelegt (beendet ' . $zahl['beendet'] . ', Stoerung ' . $zahl['stoerung'] . ', Batterie ' . $zahl['batterie'] . ').');
     }
     if ($abgewaehlt > 0 || $gesperrt > 0) {
         gardena_log('INF', 'Sprachausgabe: ' . $abgewaehlt . ' Ereignis(se) mit abgewaehltem Haken, ' . $gesperrt

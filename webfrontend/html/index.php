@@ -418,7 +418,9 @@ if (!in_array($action, $gerlaubt, true)) {
  * Loxone nicht mehr). Er liest ausschliesslich - kein API-Aufruf, kein
  * Versand, kein Schreiben.
  */
-if (isset($_GET['selftest'])) {
+/* 1.2.23 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.2.22 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+ * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+if (!empty($_GET['selftest'])) {
     $gsoll = isset($g['TOKEN']) ? (string) $g['TOKEN'] : '';
     $gist = $gpar['token'];
     if ($gsoll === '') {
