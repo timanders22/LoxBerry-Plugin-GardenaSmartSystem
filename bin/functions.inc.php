@@ -4471,6 +4471,17 @@ function gardena_abo_datei($cfg, $schreiben = false)
  * Protokollzeile wortgleich wie bis 1.2.20, Grund ASCII fuer die Quittung der Bruecke. */
 
 /** Gemeinsamer Ausgang: auf dem MQTT-Weg ins Plugin-Protokoll (der Endpunkt schreibt sein eigenes). */
+/**
+ * 1.2.26 (GA-1): Befehle, die etwas ANHALTEN: Ventil und Steckdose aus, Maeher parken. Bis 1.2.25 hingen sie hinter denselben
+ * Bremsen wie das Oeffnen: nach einem 429 auf einen Abruf oder bei 30 Befehlen in der Stunde kam auf STOP "503, NICHT gesendet",
+ * und das Wasser lief bis zu 3 h. Regeln/05 "ein Schutz faellt geschlossen aus" meint den Schutz vor dem Schalten, nicht
+ * das Abschalten. Antwortet die Wolke selbst mit 429, kostet der Versuch nichts, und die Antwort sagt es.
+ */
+function gardena_befehl_haelt_an($cmd)
+{
+    return in_array((string) $cmd, array('STOP_UNTIL_NEXT_TASK', 'PARK_UNTIL_NEXT_TASK', 'PARK_UNTIL_FURTHER_NOTICE'), true);
+}
+
 function gardena_befehl_ende($quelle, $code, $text, $protokoll, $grund)
 {
     if ($quelle === 'mqtt') {
@@ -4661,7 +4672,7 @@ function gardena_befehl_ausfuehren($type_roh, $cmd_roh, $device_roh, $seconds_ro
     if (gardena_gleichwert_gilt($type)) {
         $gw_wert = gardena_gleichwert_wert($cmd, $seconds);
         $ggw = gardena_gleichwert_oeffnen();
-        if ($ggw === null) {
+        if ($ggw === null && !gardena_befehl_haelt_an($cmd)) {
             gardena_log_gebremst('gleichwert_merker', 'ERR', 'Der Merker der Gleichwert-Unterdrueckung ('
                 . gardena_log_datei('gardena_gleichwert.merker') . ') laesst sich nicht oeffnen - Ventil- und '
                 . 'Steckdosenbefehle werden abgewiesen, bis das behoben ist (Platz und Rechte im Protokollordner).');
@@ -4669,7 +4680,7 @@ function gardena_befehl_ausfuehren($type_roh, $cmd_roh, $device_roh, $seconds_ro
                 . "Protokollordner) - der Befehl wurde NICHT gesendet.\n",
                 'command abgewiesen: Merker der Gleichwert-Unterdrueckung nicht nutzbar', 'BREMSE_MERKER');
         }
-        $gw_seit = gardena_gleichwert_seit($ggw, $serviceId, $gw_wert);
+        $gw_seit = ($ggw === null) ? -1 : gardena_gleichwert_seit($ggw, $serviceId, $gw_wert);     // 1.2.26: STOP ohne Merker
         if ($gw_seit >= 0) {
             gardena_gleichwert_schliessen($ggw);
             return gardena_befehl_ende($quelle, 200, 'OK: ' . $cmd . ' an ' . $serviceId . ' nicht erneut gesendet - derselbe Befehl wurde vor '
@@ -4685,14 +4696,15 @@ function gardena_befehl_ausfuehren($type_roh, $cmd_roh, $device_roh, $seconds_ro
     /*
      * Bremsen VOR dem Netzzugriff (seit 1.2.8, Regeln/03).
      */
-    $gsperre_bis = gardena_sperre_bis($lbpconfigdir);
+    $ghalt = gardena_befehl_haelt_an($cmd);     // 1.2.26 (GA-1): vorbei an Abrufsperre und Stundengrenze
+    $gsperre_bis = $ghalt ? 0 : gardena_sperre_bis($lbpconfigdir);
     if ($gsperre_bis > 0) {
         $frei();
         return gardena_befehl_ende($quelle, 503, "FEHLER: Abrufsperre nach HTTP 429 bis " . date('H:i', $gsperre_bis)
             . " - der Befehl wurde NICHT gesendet.\n",
             'command abgewiesen: Abrufsperre bis ' . date('H:i', $gsperre_bis), 'ABRUFSPERRE');
     }
-    $gzuviel = gardena_bremse_befehl();
+    $gzuviel = $ghalt ? 0 : gardena_bremse_befehl();
     if ($gzuviel < 0) {
         // Die Bremse faellt geschlossen aus (1.2.11, C2).
         gardena_log_gebremst('bremse_merker', 'ERR', 'Der Merker der Befehlsbremse ('

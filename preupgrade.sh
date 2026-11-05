@@ -11,6 +11,10 @@ LBHOMEDIR="${LBHOMEDIR:-$5}"
 
 BASE="${ARGV5:-$LBHOMEDIR}"
 PFOLDER="${ARGV3:-gardenasmartsystem}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 # Ohne eine brauchbare Wurzel wird NICHTS angefasst.
 # Sind $5 und LBHOMEDIR beide leer, entstuenden sonst absolute Pfade ab der
 # Wurzel: mkdir -p /config/plugins/... und rm -rf /data/plugins/... . Der
@@ -20,7 +24,7 @@ PFOLDER="${ARGV3:-gardenasmartsystem}"
 if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
     echo "<WARNING> LoxBerry-Wurzel nicht bestimmbar (weder Argument 5 noch LBHOMEDIR)."
     echo "<WARNING> Es wurde nichts geaendert."
-    exit 0
+    exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -35,9 +39,35 @@ MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if date +%s > "$MARKE" 2>/dev/null; then
     chmod 0600 "$MARKE" 2>/dev/null
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - dieses Update wird dann wie eine"
-    echo "<WARNING> Neuinstallation behandelt (Zweitschriften werden beiseitegelegt, nicht eingespielt)."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if ( : > "$zs_neu" ) 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
+}
 
 # Ist eine gardena.cfg fuer das PLUGIN lesbar? (1.2.11, I4)
 # Dieselbe Pruefung wie gardena_cfg_zustand() in bin/functions.inc.php:
@@ -178,6 +208,7 @@ if [ -d "$BASE/config/plugins/$PFOLDER" ]; then
     else
         echo "<WARNING> Die Konfiguration liess sich NICHT vollstaendig sichern"
         echo "<WARNING> (cp Rueckgabewert $CP_RC; nicht in der Sicherung: ${ABWEICHEND:-keine})."
+        ZS_FEHL="$ZS_FEHL Konfiguration"
     fi
 else
     echo "<INFO> Keine Konfiguration vorhanden."
@@ -200,6 +231,7 @@ if [ "$SICHER_OK" = "1" ]; then
         echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen (Platz und Rechte in"
         echo "<WARNING> $BASE/data/plugins pruefen). Aus einer Upgrade-Sicherung wird bei diesem Update nichts"
         echo "<WARNING> eingespielt; den Rueckweg bildet die Zweitschrift neben dem Konfigordner."
+        ZS_FEHL="$ZS_FEHL Update-Sicherung"
     fi
 else
     rm -rf "$NEU" 2>/dev/null
@@ -276,7 +308,7 @@ fi
 # Rechten scheiterte. Der Verlust faellt dann erst auf, wenn Key, Secret und
 # Token weg sind.
 if [ "$ZWEIT_SCHREIBEN" = "1" ]; then
-    if cp -p "$NETZ_CFG/gardena.cfg" "$NETZ_ZWEIT" 2>/dev/null; then
+    if zs_hinlegen "$NETZ_CFG/gardena.cfg" "$NETZ_ZWEIT" 2>/dev/null; then
         # 0600 wie das Original (1.2.11, I5/C8; Regeln/05: dieselben Rechte an
         # der Zweitschrift). Die 0640 bis 1.2.10 hatte keine gemessene
         # Begruendung - der Webserver laeuft als loxberry (mod_php).
@@ -284,6 +316,7 @@ if [ "$ZWEIT_SCHREIBEN" = "1" ]; then
         echo "<INFO> Zweitschrift der Einstellungen angelegt."
     else
         echo "<WARNING> Die Zweitschrift der Einstellungen liess sich NICHT anlegen."
+        ZS_FEHL="$ZS_FEHL gardena.cfg"
         echo "<WARNING> Platz und Rechte in $NETZ_BASE/config/plugins pruefen."
     fi
 elif [ "$ZWEIT_GRUND" = "unlesbar" ]; then
@@ -337,10 +370,11 @@ netz_json_zweitschrift() {   # $1 Dateiname, $2 Rechte
         echo "<WARNING> bleibt unveraendert."
         return 0
     fi
-    if cp -p "$quelle" "$ziel" 2>/dev/null; then
+    if zs_hinlegen "$quelle" "$ziel" 2>/dev/null; then
         chmod "$2" "$ziel" 2>/dev/null
     else
         echo "<WARNING> Die Zweitschrift von $1 liess sich NICHT anlegen."
+        ZS_FEHL="$ZS_FEHL $1"
     fi
 }
 # Alle Zweitschriften 0600 (1.2.11, I5/C8).
@@ -362,4 +396,5 @@ if [ -f "$BBSH" ]; then
     echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
 fi
 
+zs_schluss
 exit 0

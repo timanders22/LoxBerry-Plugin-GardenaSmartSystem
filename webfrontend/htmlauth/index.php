@@ -888,7 +888,7 @@ function gardena_eingaben_sammeln($form)
     );
     if (function_exists('ansage_x2_felder')) {
         // Nr. 36 b: nie die Sprechtoken (ansage_x2_felder()).
-        $felder['ansage'] = array_merge(ansage_x2_felder(gardena_ansage_opt()), array_keys(gardena_ansage_anlaesse()), ansage_regeln_x2_felder());     // 1.2.23: Regeln
+        $felder['ansage'] = array_merge(ansage_x2_felder(gardena_ansage_opt()), array_keys(gardena_ansage_anlaesse()), ansage_regeln_x2_felder(), array('ansage_tafel_ein', 'ansage_tafel_namen', 'ansage_homepod_ein', 'ansage_homepod_geraet'));     // 1.2.23: Regeln; 1.2.26: Tafel und HomePod dazu
     }
     if (!isset($felder[$form])) { return array(); }
     $aus = array();
@@ -1198,6 +1198,9 @@ if ($gpost && isset($_POST['ansage_save'])) {
         if (!$gfehler) {
             $ga_neu['TTS'] = gardena_tts_kodieren($ga_tts);
             $ga_neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rneu);     // 1.2.23
+            // 1.2.26: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.2.25 ueberschrieb es der naechste Abgleich.
+            $ga_alt_conf = gardena_ansage_conf();
+            $ga_neu['ANSAGE_HERKUNFT'] = gardena_tts_kodieren(ansage_token_herkunft_formular($_POST, $ga_alt_conf['ansage_token_herkunft']));
             if (gardena_cfg_write($gconfigfile, $ga_neu)) {
                 $gsaved = gardena_t('EINST.ANSAGE_GESPEICHERT');
                 foreach ($ga_thinw as $ga_th) { $ga_thl[] = $ga_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern

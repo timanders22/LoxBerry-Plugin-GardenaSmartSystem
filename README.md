@@ -1,5 +1,12 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.26
+
+- **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Formular:** Tafel- und HomePod-Felder gehören jetzt zu den Feldern, die eine Beanstandung im Formular mitführt und markiert. Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
+- **Abschalten:** Ventil und Steckdose aus sowie Mäher parken gehen auch während der Sperre nach einem 429 und über der Grenze von 30 Befehlen je Stunde hinaus. Nur das Öffnen und Starten bleibt gebremst.
+
 ## Neu in 1.2.25
 
 - Vor einem Download wird jeder offene Ausgabepuffer geleert: PHP-Warnungen oder Reste landen nicht mehr in der heruntergeladenen Datei.
