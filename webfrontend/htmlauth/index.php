@@ -1371,6 +1371,7 @@ if ($gpost && isset($_POST['vorlage'])) {
         $gfehler[] = gardena_t('LOX.VORLAGE_UNBEKANNT');
     }
     if ($g_vname !== '') {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/x-download');
         header('Content-Disposition: attachment; filename="' . $g_vname . '"');
         echo $g_vinhalt;
@@ -1842,6 +1843,7 @@ if ($gpost && isset($_POST['gardena_sichern'])) {
     $gardena_js = json_encode($gardena_stand,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($gardena_js !== false) {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="gardenasmartsystem_einstellungen_'
                . date('Ymd_His') . '.json"');
