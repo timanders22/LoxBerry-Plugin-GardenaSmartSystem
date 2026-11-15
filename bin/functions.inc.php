@@ -1015,8 +1015,9 @@ function gardena_retain($geraet, $dienst, $attribut)
  * Nur ein Name aus reinen ASCII-Buchstaben, Ziffern und Bindestrich traf.
  * Bei jedem anderen legte die Vorlage Eingaenge an, die NIE einen Wert
  * bekommen und auf DefVal="0" stehenbleiben - in Loxone sieht das aus wie
- * "Akku 0 %". Das Gateway legte daneben einen zweiten Satz unter den
- * wirklichen Namen an. Der Anwender sucht den Fehler dann in Loxone Config.
+ * "Akku 0 %". Das Gateway reichte die Werte unter den wirklichen Namen
+ * weiter und ordnet nur ueber den Namen zu - an diesen Eingaengen kamen sie
+ * nie an. Der Anwender sucht den Fehler dann in Loxone Config.
  *
  * Seit 1.2.0 bauen beide Seiten ueber diese zwei Funktionen. Der Aufruf von
  * gardena_mqtt_thema() in mqttPublish() bleibt stehen und schadet nicht: das
@@ -1069,8 +1070,11 @@ function gardena_wert_thema($basis, $geraet, $dienst, $attribut)
 }
 
 /**
- * Der Name, unter dem das MQTT-Gateway den virtuellen Eingang anlegt:
- * das Thema mit '/' als '_'. Genau dieser Name gehoert in die Loxone-Vorlage.
+ * Der Name, unter dem das MQTT-Gateway den Wert dieses Themas an den
+ * Miniserver gibt: das Thema mit '/' als '_'. Das Gateway ordnet nur ueber
+ * diesen Namen zu; angelegt wird der Virtuelle Eingang in Loxone Config mit
+ * genau diesem Titel (Regeln/07). Genau dieser Name gehoert in die
+ * Loxone-Vorlage.
  */
 function gardena_wert_eingang($basis, $geraet, $dienst, $attribut)
 {
@@ -3090,35 +3094,24 @@ function gardena_spaete_schluessel()
 /**
  * Wuerde die eigene Sicherung das eigene Zurueckspielen bestehen?
  *
- * Geprueft mit DERSELBEN Funktion wie das Zurueckspielen
- * (gardena_sicherung_lesen()), dazu die Miniserver-Nummer wie dort im
- * Handler. Rueckgabe: die Namen der beanstandeten Einstellungen, nie ihre
- * Werte. Der Funktionsname traegt bewusst kein "sicherung": das
+ * Seit 1.2.29 dieselbe Pruefung wie beim Zurueckspielen ueber das gemeinsame
+ * Sicherungsmodul (sicherung_selbstpruefung()) an genau der Datei, die
+ * "Einstellungen sichern" liefert - samt der Miniserver-Nummer
+ * (gardena_sicherung_quer()). Rueckgabe: die Namen der beanstandeten
+ * Einstellungen, nie ihre Werte; leer = die Sicherung liesse sich
+ * zurueckspielen. Der Funktionsname traegt bewusst kein "sicherung": das
  * Kettenwerkzeug sicherung_pruefen sucht nach diesem Wort (Lehre aus vb_hk).
- * Bis 1.2.12 verweigerte der Knopf die Datei in diesem Fall ganz (rot); jetzt
- * kommt sie vollstaendig, mit der Kopfzeile _warnung und einer gelben
- * Warnung am Knopf.
+ * Seit 1.2.13 kommt die Datei trotzdem vollstaendig, mit der Kopfzeile
+ * _warnung und einer gelben Warnung am Knopf.
  */
 function gardena_rueckspiel_altwerte()
 {
-    $stand = gardena_sicherung_stand();
-    $js = json_encode($stand);
-    if (!is_string($js)) {
-        $namen = array();
-        foreach ($stand as $k => $v) {
-            if (!is_string(json_encode($v))) { $namen[] = (string) $k; }
-        }
-        return $namen ? $namen : array_keys($stand);
-    }
-    $namen = array();
-    list($neu) = gardena_sicherung_lesen($js, $namen);
-    if ($neu !== null && class_exists('LBSystem', false) && method_exists('LBSystem', 'get_miniservers')) {
-        $ms = LBSystem::get_miniservers();
-        if (is_array($ms) && $ms && !isset($ms[(int) $neu['MINISERVER']])) { $namen[] = 'MINISERVER'; }
-    }
-    return array_values(array_unique($namen));
+    $b = gardena_sicherung_beschreibung();
+    $j = gardena_sicherung_jetzt();
+    $d = sicherung_bauen($b, $j);
+    unset($d['_warnung']);
+    return sicherung_selbstpruefung($b, $d, $j);
 }
-
 /**
  * Der Ort der gardena.cfg - an EINER Stelle.
  *
@@ -3137,28 +3130,6 @@ function gardena_konfigdatei()
 function gardena_config()
 {
     return gardena_cfg_read(gardena_konfigdatei());
-}
-
-/**
- * Der Stand, wie er in die Sicherungsdatei gehoert.
- *
- * Genau die Schluessel, die gardena_sicherung_lesen() auch wieder annimmt -
- * nicht mehr. Bis 1.2.5 ging alles hinaus, was in der gardena.cfg stand; eine
- * gewachsene Datei mit einem Rest aus einer alten Fassung (postupgrade.sh
- * nennt LOCALTIME) erzeugte damit eine Sicherung, die das Plugin beim
- * Zurueckspielen als "Unbekannte Einstellung" ABLEHNTE. Die eigene Sicherung
- * war unbrauchbar - und genau fuer den Umzug auf einen zweiten LoxBerry ist
- * sie gedacht.
- */
-function gardena_sicherung_stand()
-{
-    $s = array_intersect_key(gardena_config(), gardena_vorgaben());
-    /* Seit 1.2.15 (Nr. 36 b): die Sprachausgabe als Block 'tts' wie in den
-     * anderen Linien - OHNE Sprechtoken (ansage_sicherung_bereinigen()). Der
-     * INI-Schluessel TTS traegt sie und geht deshalb nie hinaus. */
-    unset($s['TTS']);
-    if (function_exists('ansage_sicherung_bereinigen')) { $s['tts'] = ansage_sicherung_bereinigen(gardena_tts()); $s['ansage_regeln'] = gardena_ansage_regeln(gardena_ansage_conf()); }     // 1.2.23: die Regeln reisen mit, kein Token, kein Vermerk
-    return $s;
 }
 
 /**
@@ -3224,26 +3195,6 @@ function gardena_cfg_vervollstaendigen($cfgfile)
     return array_keys($fehlt);
 }
 
-/** Den ganzen Stand ablegen und sagen, ob es geklappt hat. */
-function gardena_config_speichern($cfg)
-{
-    return (bool) gardena_cfg_write(gardena_konfigdatei(), $cfg);
-}
-
-
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Der wichtigste Punkt: eine halb gueltige Datei ueberschreibt GAR NICHTS.
- * Wer eine Sicherung zurueckspielt, will entweder den ganzen Stand oder
- * gar keinen - eine zur Haelfte uebernommene Konfiguration ist schlimmer
- * als die alte, und man sieht es ihr nicht an.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
- */
 /**
  * Taugt der Wert ueberhaupt fuer eine Zeile dieser Datei?
  *
@@ -3337,168 +3288,364 @@ function gardena_wert_pruefen($k, $v)
     return (strlen($v) <= 512) ? '' : gardena_t('EINST.PRUEF_LANG');
 }
 
-/*
- * $namen (1.2.13, X-3): die Namen der beanstandeten Einstellungen - nie ihre
- * Werte. "Einstellungen sichern" fragt damit dieselbe Pruefung wie das
- * Zurueckspielen (gardena_rueckspiel_altwerte()).
- * $behalten (1.2.13): Schluessel, die eine aeltere Sicherung noch nicht
- * kannte; fuer sie bleibt der laufende Wert (gardena_spaete_schluessel()).
+/**
+ * 1.2.29: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul
+ * (webfrontend/htmlauth/sicherung.php, byte-gleiche Abschrift der Stammfassung
+ * Werkzeuge/gemeinsam/sicherung.php; Auftrag des Hausherrn 12.11.2026, Regeln/05).
+ * Lesen, Pruefen und Zurueckspielen macht das Modul. Bis 1.2.28 stand hier eine
+ * eigene Lesefunktion (gardena_sicherung_lesen()): die Sicherung trug keinen
+ * Kopf mit Kennzeichen, eine fremde Datei wurde nur an ihren unbekannten
+ * Schluesseln erkannt, ein unbekannter Schluessel oben oder in einem Block der
+ * Sprachausgabe wies die ganze Datei ab, ein leerer Wert ueberschrieb den
+ * bestehenden (ausser beim Zugriffs- und Ventil-Token), und der Knopf wirkte
+ * ohne Haken (gemessen 15.11.2026 an 1.2.29 vor dem Umbau mit
+ * Werkzeuge/sicherung_pruefstand.py --profil ist).
+ *
+ * Seither: der Kopf traegt _plugin = LoxBerry-Plugin-GardenaSmartSystem (Name
+ * des Repositorys) und _fassung; eine Datei mit fremdem Kennzeichen wird
+ * abgewiesen. Keine Fassung bis 1.2.28 schrieb _plugin; eine solche Sicherung
+ * erkennt gardena_sicherung_alt_erkennen() an den Schluesseln, die jede von
+ * ihnen schrieb und die keine andere Linie zusammen fuehrt (Entscheidung des
+ * Hausherrn 14.11.2026 "Ja, erkennen", Regeln/05 Regel 1). Unbekannte
+ * Schluessel oben und in den Bloecken tts und ansage_regeln werden verworfen und
+ * mit Namen gemeldet; ein leerer Wert ueberschreibt keinen bestehenden.
+ *
+ * Wie bisher: die Schluessel aus gardena_vorgaben() samt Zugriffstoken,
+ * Application Key und Secret und Ventil-Token, dazu die Sprachansagen als Block
+ * tts (ohne Sprechtoken) und ansage_regeln. Nie aus einer Datei: der Vermerk
+ * ansage_token_herkunft (ANSAGE_HERKUNFT). Jeder Wert geht durch
+ * gardena_wert_taugt() und gardena_wert_pruefen() (dieselbe Positivliste wie das
+ * Formular), die Sprachausgabe durch ansage_wert_pruefen() (eine Datei mit
+ * Sprechtoken wird abgewiesen), die Miniserver-Nummer gegen die eingerichteten
+ * Miniserver; eine halb gueltige Datei aendert nichts, alle Beanstandungen
+ * werden gesammelt. Ein fehlender Schluessel ist eine Beanstandung, ausser
+ * denen, die eine fruehere Fassung nicht kannte (gardena_spaete_schluessel(),
+ * tts, ansage_regeln, tts.ziele): sie behalten den geltenden Wert, und die
+ * Meldung nennt sie. Maskiert wird erst bei der Ausgabe (gardena_e()); der Knopf
+ * gibt dem Modul deshalb die Beschreibung mit 'e' = Klartext
+ * (gardena_sicherung_klartext()). Die Haken-Zeile bekommt diese Beschreibung
+ * unveraendert und bleibt maskiert.
  */
-function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
+function gardena_sicherung_beschreibung()
 {
-    $namen = array();
-    $behalten = array();
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(gardena_t('EINST.SICH_KEIN_JSON')), 0);
+    $vorgaben = gardena_vorgaben();
+    $schluessel = array();
+    foreach (array_keys($vorgaben) as $k) {
+        $schluessel[$k] = array('wandeln' => 'strval');     // wie bisher: jeder Wert als Zeichenkette in die Zeile
     }
-    $neu = gardena_vorgaben();
-    $bekannt = array_keys($neu);
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        /* Kopfzeilen einer Sicherung (1.2.13, X-3; Regeln/04): "_warnung" setzt
-         * "Einstellungen sichern" selbst, wenn ein Wert das Zurueckspielen nicht
-         * bestuende. Sie tragen keine Einstellung und werden uebergangen. */
-        if (in_array((string) $k, array('_warnung', '_hinweis', '_stand'), true)) { continue; }
-        if ((string) $k === 'tts') {
-            /* Nr. 36 b (1.2.15): eine Sicherung dieses Plugins traegt nie ein
-             * Sprechtoken - traegt die Datei eines (auch als Liste, Zahl oder null),
-             * stammt sie nicht aus "Einstellungen sichern" und wird abgewiesen.
-             * Ausgabeart, Adresse und Vorlage werden wie im Formular geprueft
-             * (Heimnetz); die geltenden Sprechtoken bleiben. */
-            if (!function_exists('ansage_wert_pruefen')) {
-                $namen[] = 'tts';
-                $mangel[] = gardena_t('EINST.SICH_TTS_OHNE_MODUL');
-                continue;
-            }
-            $tm = ansage_sicherung_mangel($w);
-            if ($tm) {
-                $namen = array_merge($namen, $tm);
-                $mangel[] = sprintf(gardena_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm));
-                continue;
-            }
-            $tg = '';
-            $tp = ansage_wert_pruefen($w, $tg, gardena_ansage_modi());
-            if ($tp === null) {
-                $namen[] = 'tts';
-                $mangel[] = sprintf(gardena_t('EINST.SICH_TTS'), ansage_kennung_text($tg, gardena_ansage_k()));
-                continue;
-            }
-            $tj = gardena_tts();
-            /* Welle Mehrfach-Ziele (1.2.22): "$tp + $tj" behielt die geltenden weiteren Ziele einer Sicherung ohne
-             * Liste schon bisher - still. Jetzt geht der Block vorher durch die Spaetliste, und der Hinweis
-             * (EINST.SICH_BEHALTEN) nennt sie. */
-            $ga_tsneu = array('tts' => $tp);
-            $ga_tsjetzt = array('tts' => $tj);
-            /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1, Spaetliste): fehlt die Liste der weiteren Ziele in der Sicherung (Datei einer
-             * aelteren Fassung), gelten die jetzigen weiteren Ziele weiter - genannt im Hinweis. Eine Sicherung MIT leerer Liste
-             * heisst "keine weiteren Ziele" und wird so uebernommen. */
-            $ga_spaete = array();
-            if (is_array($ga_tsneu['tts']) && function_exists('ansage_sicherung_spaet')) {
-                list($ga_tsneu['tts'], $ga_spaete) = ansage_sicherung_spaet($ga_tsneu['tts'],
-                    (isset($ga_tsjetzt['tts']) && is_array($ga_tsjetzt['tts'])) ? $ga_tsjetzt['tts'] : null);
-            }
-            foreach ($ga_spaete as $ga_sn) { $behalten[] = $ga_sn; }     // Welle Mehrfach-Ziele: tts.ziele (Spaetliste)
-            list($tv) = ansage_vervollstaendigen($ga_tsneu['tts'] + $tj);
-            $neu['TTS'] = gardena_tts_kodieren(ansage_sicherung_tokens_behalten($tv, $tj));
-            $anzahl++;
-            continue;
-        }
-        if ((string) $k === 'ansage_token_herkunft' || (string) $k === 'ANSAGE_HERKUNFT') { continue; }     // 1.2.23: nie aus einer Datei
-        if ((string) $k === 'ansage_regeln') {     // 1.2.23
-            $ga_rg = '';
-            $ga_rw = ansage_regeln_wert($w, $ga_rg);
-            if ($ga_rw === null) { $namen[] = 'ansage_regeln'; $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), 'ansage_regeln'); continue; }
-            $neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rw);
-            $anzahl++;
-            continue;
-        }
-        if ((string) $k === 'TTS') {
-            // Der INI-Schluessel gehoert in keine Sicherung (er traegt die Sprechtoken).
-            $namen[] = 'TTS';
-            $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), 'TTS');
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            // NICHT maskieren: die Bibliothek liefert Daten, die Oberflaeche
-            // maskiert. Bis 1.2.5 lief der Name durch beide Stellen und der
-            // Anwender las "A&amp;B" statt "A&B" - ausgerechnet dort, wo er
-            // erkennen soll, WELCHER Schluessel stoert.
-            $namen[] = (string) $k;
-            $mangel[] = sprintf(gardena_t('EINST.SICH_FREMD'), (string) $k);
-            continue;
-        }
-        // Der Schluessel allein sagt nichts ueber den Wert. Bis 1.2.5 wurde
-        // jeder Wert ungeprueft uebernommen und roh in die INI-Zeile
-        // geschrieben - damit liess sich ueber einen Zeilenumbruch das
-        // Aktionstoken setzen. Jetzt zwei Tore: taugt der Wert ueberhaupt fuer
-        // eine Zeile dieser Datei, und ist er fuer DIESE Einstellung zulaessig.
-        if (!gardena_wert_taugt($w)) {
-            $namen[] = (string) $k;
-            $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_FORM'), (string) $k);
-            continue;
-        }
-        $grund = gardena_wert_pruefen($k, (string) $w);
-        if ($grund !== '') {
-            $namen[] = (string) $k;
-            $mangel[] = sprintf(gardena_t('EINST.SICH_WERT_UNZULAESSIG'), (string) $k, $grund);
-            continue;
-        }
-        $neu[$k] = (string) $w;
-        $anzahl++;
+    foreach (gardena_spaete_schluessel() as $k) {
+        if (isset($schluessel[$k])) { $schluessel[$k]['fehlt'] = 'behalten'; }
     }
-    if ($anzahl === 0) {
-        $mangel[] = gardena_t('EINST.SICH_LEER');
+    if (function_exists('ansage_werk_block') && function_exists('ansage_regeln_vorgaben')) {
+        $vorgaben['tts'] = ansage_werk_block();
+        $vorgaben['ansage_regeln'] = ansage_regeln_vorgaben();
+        $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+        $schluessel['tts'] = sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
+                                                                    + array('fehlt' => 'behalten')))
+            + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen',
+                    'pruefen' => 'gardena_sicherung_tts_pruefen', 'wandeln' => 'gardena_sicherung_tts_wandeln');
+        $schluessel['ansage_regeln'] = sicherung_block(array_keys(ansage_regeln_vorgaben()))
+            + array('fehlt' => 'behalten', 'pruefen' => 'gardena_sicherung_regeln_pruefen',
+                    'wandeln' => 'gardena_sicherung_regeln_wandeln');
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    /* Nr. 36 b (1.2.15): ohne Block 'tts' (Sicherung vor 1.2.15) bleibt die
-     * geltende Sprachausgabe samt Sprechtoken - $neu traegt keinen Schluessel
-     * TTS, und gardena_cfg_write() laesst ihn in der Datei stehen. */
-    if (function_exists('ansage_vorgaben') && !array_key_exists('tts', $daten)) { $behalten[] = 'tts'; }
-    $fehlend = array();
-    $jetzt = null;
-    foreach (array_keys(gardena_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
-            /* Ein Schluessel, den die Fassung der Sicherung noch nicht kannte
-             * (1.2.13): der LAUFENDE Wert bleibt, und die Meldung nennt ihn.
-             * Ohne diese Ausnahme wiese das Plugin jede Sicherung aus 1.2.12
-             * und frueher als unvollstaendig ab. */
-            if (in_array($fk, gardena_spaete_schluessel(), true)) {
-                if ($jetzt === null) { $jetzt = gardena_config(); }
-                if (isset($jetzt[$fk]) && !is_array($jetzt[$fk])) { $neu[$fk] = (string) $jetzt[$fk]; }
-                $behalten[] = $fk;
-                continue;
-            }
-            $fehlend[] = $fk;
-        }
-    }
-    if ($fehlend) {
-        $namen = array_merge($namen, $fehlend);
-        // Roh: die Oberflaeche maskiert die Beanstandungsliste bei der Ausgabe
-        // EINMAL. Bis 1.2.7 stand hier htmlspecialchars() - doppelt maskiert.
-        $mangel[] = sprintf(gardena_t('EINST.SICH_FEHLEND'), count($fehlend),
-            implode(', ', $fehlend));
-    }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    $ordner = isset($GLOBALS['lbpplugindir']) ? (string) $GLOBALS['lbpplugindir'] : '';
+    if ($ordner === '') { $ordner = (string) getenv('LBPPLUGINDIR'); }
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-GardenaSmartSystem',
+        /* Die Fassung im Kopf kommt aus der Plugin-Datenbank bzw. plugin.cfg - keine fuenfte Stelle neben den
+         * vier, die Werkzeuge/fassung_setzen.py pflegt. */
+        'home' => gardena_lbhome(), 'ordner' => $ordner, 'plugin_cfg' => dirname(__DIR__) . '/plugin.cfg',
+        'vorgaben' => $vorgaben,
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ANSAGE_HERKUNFT'),
+        'uebersetzer' => 'gardena_sicherung_alt_erkennen',
+        'pruefen' => 'gardena_sicherung_wert',
+        'quer' => 'gardena_sicherung_quer',
+        'vorbereiten' => 'gardena_sicherung_vorbereiten',
+        'vorbedingung' => 'gardena_sicherung_vorbedingung',
+        'speichern' => 'gardena_sicherung_speichern',
+        'zweitschrift' => 'gardena_sicherung_zweitschrift',
+        'nachziehen' => 'gardena_sicherung_nachziehen',
+        'log' => 'gardena_sicherung_log',
+        'jetzt' => 'gardena_sicherung_jetzt',
+        't' => 'gardena_t',
+    );
 }
 
+/** 1.2.29: Die Beschreibung fuer den Knopf "Einstellungen zurueckspielen": Meldungen des Moduls als Klartext ('e'), denn die Oberflaeche maskiert jede Meldung einmal bei der Ausgabe (gardena_e()). Regeln/05 "Meldungen als Klartext". */
+function gardena_sicherung_klartext()
+{
+    return array('e' => function ($s) { return (string) $s; }) + gardena_sicherung_beschreibung();
+}
+
+/**
+ * 1.2.29: Der geltende Stand fuer das Modul ('jetzt') und fuer "Einstellungen
+ * sichern": die gardena.cfg samt Vorgaben (gardena_config()), die
+ * Sprachausgabe als Block tts (vervollstaendigt, wie gardena_tts()), die Regeln
+ * in ihrer Normalform (gardena_ansage_regeln()) und der Vermerk
+ * ansage_token_herkunft. Die INI-Zeilen TTS, ANSAGE_REGELN und ANSAGE_HERKUNFT
+ * selbst stehen nicht darin - TTS traegt die Sprechtoken.
+ */
+function gardena_sicherung_jetzt()
+{
+    $c = gardena_ansage_conf();
+    if (function_exists('ansage_regeln_wert')) { $c['ansage_regeln'] = gardena_ansage_regeln($c); }
+    unset($c['TTS'], $c['ANSAGE_REGELN'], $c['ANSAGE_HERKUNFT']);
+    return $c;
+}
+
+/**
+ * 1.2.29: Woran eine Sicherung bis 1.2.28 erkannt wird (Entscheidung des
+ * Hausherrn 14.11.2026, "Ja, erkennen"). Keine Fassung 1.2.3 bis 1.2.28 schrieb
+ * einen Kopf mit _plugin, jede aber diese dreizehn Schluessel. Gemessen
+ * 15.11.2026 mit dem Code aller 27 Fassungen 1.2.3 bis 1.2.29 vor dem Umbau (je
+ * drei Lagen, PHP 7.4 und 8.4, 162 Sicherungen: jede traegt alle dreizehn) und
+ * gegen alle anderen Linien im Arbeitsordner (Vorgabenfunktionen, mitgelieferte
+ * Konfiguration, Sicherungen ueber den Pruefstand, die Sicherungen aller
+ * Vorfassungen von Ecowitt-Weiche und FerienFeiertage): keine fuehrt sie
+ * zusammen. Belege im Pruefordner Pruefung-GardenaSmartSystem-1.2.29/ohne_kopf/.
+ */
+function gardena_sicherung_alt_merkmal()
+{
+    return array('AUSGENOMMEN', 'CLIENT_ID', 'CLIENT_SECRET', 'ENABLED', 'INTERVALL', 'MESSER_BASIS',
+                 'MESSER_INTERVALL', 'MINISERVER', 'MQTT_ENABLED', 'MQTT_TOPIC', 'TOKEN', 'UDPPORT', 'UDP_ENABLED');
+}
+
+/**
+ * 1.2.29: Die Kopfschluessel, die eine Fassung bis 1.2.28 schreiben konnte:
+ * _warnung (seit 1.2.13, bei einem Wert, den das eigene Zurueckspielen abwiese;
+ * gemessen in 1.2.16 bis 1.2.21). Ein anderer Schluessel mit Unterstrich
+ * (_hinweis, _fassung, _stand) stammt aus einer Fassung mit Kopf, die immer
+ * _plugin schreibt - ohne _plugin ist eine solche Datei keine aeltere eigene.
+ */
+function gardena_sicherung_alt_kopf()
+{
+    return array('_warnung');
+}
+
+/**
+ * 1.2.29: Der Uebersetzer fuer das Sicherungsmodul ('uebersetzer'; das Modul
+ * ruft ihn nur fuer eine Datei ohne _plugin). Angenommen wird sie nur, wenn
+ * jeder Schluessel aus gardena_sicherung_alt_merkmal() oben steht und sie
+ * keinen anderen Kopfschluessel als die aus gardena_sicherung_alt_kopf()
+ * traegt; die Meldung sagt dann "aeltere Sicherung erkannt" (Modultext
+ * K_ALT_ERKANNT). Sonst null, und das Modul weist die Datei als Ganzes ab.
+ * Umgeschrieben wird nichts. Rueckgabe: die Daten oder null.
+ */
+function gardena_sicherung_alt_erkennen($d)
+{
+    if (!is_array($d) || array_key_exists('_plugin', $d)) { return null; }
+    foreach (array_keys($d) as $k) {
+        if (is_string($k) && $k !== '' && $k[0] === '_' && !in_array($k, gardena_sicherung_alt_kopf(), true)) { return null; }
+    }
+    foreach (gardena_sicherung_alt_merkmal() as $k) {
+        if (!array_key_exists($k, $d)) { return null; }
+    }
+    return $d;
+}
+
+/**
+ * 1.2.29: Einen einfachen Wert der Sicherung pruefen (Rueckruf 'pruefen'): wie
+ * bisher erst gardena_wert_taugt() (Skalar, nicht zu lang, keine Steuerzeichen
+ * - sonst entstuende eine zweite Zeile), dann gardena_wert_pruefen() mit der
+ * Positivliste des Formulars. Rueckgabe: '' = gueltig, sonst die Beanstandung
+ * (Klartext).
+ */
+function gardena_sicherung_wert($k, $w)
+{
+    if (!gardena_wert_taugt($w)) { return sprintf(gardena_t('EINST.SICH_WERT_FORM'), (string) $k); }
+    $g = gardena_wert_pruefen((string) $k, (string) $w);
+    return $g === '' ? '' : sprintf(gardena_t('EINST.SICH_WERT_UNZULAESSIG'), (string) $k, $g);
+}
+
+/**
+ * 1.2.29: Den Block tts pruefen (Nr. 36 b seit 1.2.15). Eine Sicherung dieses
+ * Plugins traegt nie ein Sprechtoken - traegt die Datei eines, wird sie
+ * abgewiesen; gemessen am Block der DATEI ($roh), denn Regel 3 des Moduls setzt
+ * ein leeres Feld vorher auf den geltenden Wert. Ausgabeart, Adresse und Vorlage
+ * werden wie im Formular geprueft (Heimnetz).
+ */
+function gardena_sicherung_tts_pruefen($w, $k = '', $neu = null, $roh = null)
+{
+    $tm = ansage_sicherung_mangel($roh);
+    if ($tm) { return sprintf(gardena_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm)); }
+    $g = '';
+    if (ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, gardena_ansage_modi()) === null) {
+        return sprintf(gardena_t('EINST.SICH_TTS'), ansage_kennung_text($g, gardena_ansage_k()));
+    }
+    return '';
+}
+
+/** 1.2.29: Der Block tts in der Normalform von ansage_wert_pruefen(), ohne Sprechtoken (die geltenden setzt gardena_sicherung_vorbereiten()). */
+function gardena_sicherung_tts_wandeln($w)
+{
+    $g = '';
+    return ansage_wert_pruefen(ansage_sicherung_bereinigen($w), $g, gardena_ansage_modi());
+}
+
+/** 1.2.29: Die Regeln der Sprachansagen pruefen (seit 1.2.23): ansage_regeln_wert() muss sie annehmen. */
+function gardena_sicherung_regeln_pruefen($w)
+{
+    $g = '';
+    return ansage_regeln_wert($w, $g) === null ? sprintf(gardena_t('EINST.SICH_WERT_FORM'), 'ansage_regeln') : '';
+}
+
+/** 1.2.29: Die Regeln in der Normalform von ansage_regeln_wert(). */
+function gardena_sicherung_regeln_wandeln($w)
+{
+    $g = '';
+    return ansage_regeln_wert($w, $g);
+}
+
+/**
+ * 1.2.29: Pruefungen an der ganzen Datei (Rueckruf 'quer' des Moduls).
+ *  - Die INI-Zeile TTS gehoert in keine Sicherung, denn sie traegt die
+ *    Sprechtoken. Traegt die Datei sie mit einem Sprechtoken, wird sie
+ *    abgewiesen; ohne Sprechtoken wird der Schluessel als unbekannt verworfen
+ *    und genannt (Regel 2 des Moduls; bis 1.2.28 wies er die Datei ab).
+ *  - Ohne die gemeinsame Sprachausgabe laesst sich ein Block tts nicht pruefen:
+ *    die Datei wird abgewiesen (wie bisher).
+ *  - MINISERVER gegen die eingerichteten Miniserver (1.2.11, O2) - wie das
+ *    Formular.
+ * Rueckgabe: Liste von array(Name, Text).
+ */
+function gardena_sicherung_quer($neu, $r, $daten = null)
+{
+    $q = array();
+    if (is_array($daten) && array_key_exists('TTS', $daten)) {
+        $t = is_string($daten['TTS']) ? json_decode($daten['TTS'], true) : $daten['TTS'];
+        $tm = function_exists('ansage_sicherung_mangel') ? ansage_sicherung_mangel($t) : array();
+        if ($tm) { $q[] = array('TTS', sprintf(gardena_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm))); }
+    }
+    if (is_array($daten) && array_key_exists('tts', $daten) && !function_exists('ansage_werk_block')) {
+        $q[] = array('tts', gardena_t('EINST.SICH_TTS_OHNE_MODUL'));
+    }
+    if (is_array($neu) && isset($neu['MINISERVER']) && class_exists('LBSystem', false) && method_exists('LBSystem', 'get_miniservers')) {
+        $ms = LBSystem::get_miniservers();
+        if (is_array($ms) && $ms && !isset($ms[(int) $neu['MINISERVER']])) {
+            $q[] = array('MINISERVER', sprintf(gardena_t('EINST.MS_UNBEKANNT'), (int) $neu['MINISERVER'],
+                                               implode(', ', array_keys($ms))));
+        }
+    }
+    return $q;
+}
+
+/**
+ * 1.2.29: Vor dem Speichern (Rueckruf 'vorbereiten' des Moduls). Der Block tts
+ * wird wie bis 1.2.28 aus der Datei und dem geltenden Block vervollstaendigt,
+ * und die geltenden Sprechtoken bleiben (die Sicherung traegt keine). Fehlte er
+ * in der Datei, steht dort schon der geltende.
+ */
+function gardena_sicherung_vorbereiten($neu, $jetzt, $r)
+{
+    if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])
+        && function_exists('ansage_vervollstaendigen')) {
+        $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        list($tv) = ansage_vervollstaendigen($neu['tts'] + $jt);
+        $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    return $neu;
+}
+
+/**
+ * 1.2.29: Heilweg (1.2.11, O4; Rueckruf 'vorbedingung' des Moduls): ist die
+ * gardena.cfg unlesbar, wird sie vor dem Speichern beiseitegelegt
+ * (gardena.cfg.kaputt.<Zeit>, 0600), und die Sicherung geht in eine frische
+ * Datei - in die kaputte hineinzuschreiben liesse sie unlesbar. Laesst sie sich
+ * nicht beiseitelegen, wird nichts gespeichert, und die Meldung sagt es.
+ */
+function gardena_sicherung_vorbedingung($neu, $jetzt, $r)
+{
+    $f = gardena_konfigdatei();
+    if (gardena_cfg_zustand($f) !== 'unlesbar') { return array(); }
+    $k = $f . '.kaputt.' . date('Ymd_His');
+    if (@rename($f, $k)) {
+        @chmod($k, 0600);
+        gardena_log('INF', 'Unlesbare Konfiguration beiseitegelegt: ' . $k);
+        return array();
+    }
+    return array(sprintf(gardena_t('EINST.SICH_KAPUTT_FEST'), $f));
+}
+
+/**
+ * 1.2.29: Speichern (Rueckruf 'speichern' des Moduls) ueber gardena_cfg_write():
+ * die einfachen Werte als Zeilen, die Bloecke tts und ansage_regeln als JSON
+ * ohne Semikolon (gardena_tts_kodieren()); eine Zeile, die die Datei nicht
+ * betrifft, bleibt stehen. Fehlte ein Block in der Datei, bleibt seine Zeile
+ * unberuehrt wie bis 1.2.28; ANSAGE_HERKUNFT wird nie aus einer Sicherung
+ * geschrieben. gardena_cfg_write() zieht die Zweitschrift mit (nur mit Token,
+ * nie ein Stand ohne Zugangsdaten ueber einen mit); ob sie mitzog, misst das
+ * Modul ('zweitschrift').
+ */
+function gardena_sicherung_speichern($neu, $jetzt, $r)
+{
+    $w = array();
+    foreach (array_keys(gardena_vorgaben()) as $k) {
+        if (array_key_exists($k, $neu) && !is_array($neu[$k])) { $w[$k] = (string) $neu[$k]; }
+    }
+    if (isset($neu['tts']) && is_array($neu['tts']) && !in_array('tts', $r['fehlt_behalten'], true)) {
+        $w['TTS'] = gardena_tts_kodieren($neu['tts']);
+    }
+    if (isset($neu['ansage_regeln']) && is_array($neu['ansage_regeln']) && !in_array('ansage_regeln', $r['fehlt_behalten'], true)) {
+        $w['ANSAGE_REGELN'] = gardena_tts_kodieren($neu['ansage_regeln']);
+    }
+    return (bool) gardena_cfg_write(gardena_konfigdatei(), $w);
+}
+
+/** 1.2.29: Konfiguration und Zweitschrift fuer die Messung des Moduls ('zweitschrift'), Pfad wie gardena_cfg_write(). */
+function gardena_sicherung_zweitschrift()
+{
+    $f = gardena_konfigdatei();
+    $d = dirname($f);
+    return array($f, dirname($d) . '/' . basename($d) . '.backup.gardena.cfg');
+}
+
+/**
+ * 1.2.29: Nach dem Zurueckspielen nachziehen und sagen, was geschah (Rueckruf
+ * 'nachziehen'; Regeln/05, Punkt 7). Wie bis 1.2.28:
+ *  - Der Abrufdienst ist ein Cron-Lauf alle fuenf Minuten und liest die Datei
+ *    beim naechsten Lauf ohnehin neu. Was er NICHT neu liest, ist das
+ *    zwischengespeicherte OAuth2-Token der Wolke: das gehoert zu den alten
+ *    Zugangsdaten und wird verworfen, wenn sich Application Key oder Secret
+ *    geaendert haben.
+ *  - Zugriffstoken: blieb das bisherige, weil die Sicherung keines trug, oder
+ *    gilt jetzt ein anderes, sagt es ein Satz (die Adressen in Loxone haengen
+ *    daran); ebenso ein anderes Ventil-Token.
+ *  - Neues Basisthema oder MQTT ein- bzw. ausgeschaltet: Vollversand (M2).
+ * Rueckgabe: die Saetze (Klartext).
+ */
+function gardena_sicherung_nachziehen($neu, $jetzt, $r)
+{
+    global $lbpconfigdir;
+    $h = array();
+    $j = function ($k) use ($jetzt) { return (is_array($jetzt) && isset($jetzt[$k]) && !is_array($jetzt[$k])) ? (string) $jetzt[$k] : ''; };
+    $n = function ($k) use ($neu) { return (is_array($neu) && isset($neu[$k]) && !is_array($neu[$k])) ? (string) $neu[$k] : ''; };
+    if ($j('CLIENT_ID') !== $n('CLIENT_ID') || $j('CLIENT_SECRET') !== $n('CLIENT_SECRET')) {
+        if (is_file($lbpconfigdir . '/gardena_token.json')) { @unlink($lbpconfigdir . '/gardena_token.json'); }
+        $h[] = gardena_t('EINST.SICH_DIENST_NEU');
+    } else {
+        $h[] = gardena_t('EINST.SICH_DIENST_GLEICH');
+    }
+    if (in_array('TOKEN', $r['leer_behalten'], true)) {
+        $h[] = gardena_t('EINST.SICH_TOKEN_LEER');
+    } elseif ($j('TOKEN') !== '' && $n('TOKEN') !== $j('TOKEN')) {
+        $h[] = gardena_t('EINST.SICH_TOKEN_ANDERS');
+        gardena_log('INF', 'Sicherung zurueckgespielt: Aktionstoken gewechselt.');
+    }
+    if ($j('VENTIL_TOKEN') !== '' && $n('VENTIL_TOKEN') !== '' && $n('VENTIL_TOKEN') !== $j('VENTIL_TOKEN')) {
+        $h[] = gardena_t('EINST.SICH_VTOKEN_ANDERS');
+    }
+    if ($j('MQTT_TOPIC') !== $n('MQTT_TOPIC') || $j('MQTT_ENABLED') !== $n('MQTT_ENABLED')) {
+        gardena_status_schreiben($lbpconfigdir, array('signatur' => ''));
+    }
+    return $h;
+}
+
+/** 1.2.29: Die eine Protokollzeile des Moduls (nur Zahlen und Namen, nie Werte) ins Protokoll gardena.log. */
+function gardena_sicherung_log($z)
+{
+    gardena_log('INF', (string) $z);
+}
 
 /* ==================================================================
  * Sprachausgabe (1.2.15, Nr. 36 b Stufe 2; ab Werk aus)
@@ -3517,7 +3664,7 @@ function gardena_sicherung_lesen($roh, &$namen = null, &$behalten = null)
  * JSON beginnt mit '{' und endet mit '}', und ';' wird als \u003b geschrieben.
  * Damit reisen Konfiguration, Zweitschrift und Upgrade-Sicherung den Block
  * ohne eigenen Weg mit. Die Sprechtoken stehen dort wie Secret und Token (0600);
- * in die Sicherungsdatei kommen sie nie (gardena_sicherung_stand()).
+ * in die Sicherungsdatei kommen sie nie (gardena_sicherung_beschreibung(): 'sichern' des Blocks tts).
  */
 
 /** Wo die Abschrift gesucht wird - in dieser Reihenfolge (Regeln/03, Abschnitt 2). */

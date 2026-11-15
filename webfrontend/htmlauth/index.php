@@ -44,6 +44,9 @@ if (!is_file($gbindir . '/functions.inc.php') || !is_file($gbindir . '/gardena.c
 }
 require_once $gbindir . '/functions.inc.php';
 require_once $gbindir . '/gardena.class.inc.php';
+// 1.2.29: das gemeinsame Sicherungsmodul - byte-gleiche Abschrift der Stammfassung
+// Werkzeuge/gemeinsam/sicherung.php neben dieser Datei (Regeln/05).
+require_once __DIR__ . '/sicherung.php';
 
 /*
  * Kein Protokollobjekt des SDK mehr (bis 1.2.7: LBLog::newLog 'GardenaUI').
@@ -77,7 +80,7 @@ $glogfile = $lbplogdir . '/gardena.log';   // seit 1.2.8 das eine Protokoll des 
  * Vereinheitlichung 13.08.2026): ueberall stehen die vollen Namen
  * gardena_t() und gardena_e() - BEIDE seit 1.2.6 aus bin/functions.inc.php.
  * Der Escape-Helfer stand bis dahin hier, und damit konnte keine
- * Bibliotheksfunktion ihn benutzen: gardena_sicherung_lesen() maskierte
+ * Bibliotheksfunktion ihn benutzen: die Lesefunktion der Sicherung maskierte
  * deshalb selbst, die Oberflaeche ein zweites Mal, und der Anwender las
  * "A&amp;B" statt "A&B". Die Hausform sieht ihn in der Bibliothek vor. */
 
@@ -1814,38 +1817,27 @@ $gpl = gardena_e($gordner);
  * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
 if ($gpost && isset($_POST['gardena_sichern'])) {
     /*
-      * Ausgegeben werden GENAU die Schluessel, die das Zurueckspielen auch
-      * wieder annimmt. Bis 1.2.5 ging alles hinaus, was in der gardena.cfg
-      * stand; eine gewachsene Datei mit einem Rest aus einer alten Fassung
-      * (postupgrade.sh nennt LOCALTIME) erzeugte damit eine Sicherung, die
-      * das Plugin beim Zurueckspielen als "Unbekannte Einstellung" ABLEHNTE.
-      * Die eigene Sicherung war unbrauchbar - und genau fuer den Umzug auf
-      * einen zweiten LoxBerry ist sie gedacht. Gemessen am 05.09.2026.
-      */
-    $gardena_stand = gardena_sicherung_stand();
-    /*
-     * Vor dem Ausliefern die eigene Leseseite fragen. Sonst entsteht eine
-     * Datei, die das Plugin beim Zurueckspielen ablehnt - und das merkt man
-     * genau dann, wenn man sie braucht.
+     * 1.2.29: Kopf und Inhalt baut das gemeinsame Sicherungsmodul
+     * (sicherung_bauen(), Beschreibung gardena_sicherung_beschreibung()): _hinweis,
+     * _plugin, _fassung, _stand und GENAU die Schluessel, die das Zurueckspielen
+     * auch wieder annimmt - nie ein Sprechtoken, nie der Vermerk. Bis 1.2.5 ging
+     * alles hinaus, was in der gardena.cfg stand; ein Rest aus einer alten Fassung
+     * (postupgrade.sh nennt LOCALTIME) machte die eigene Sicherung unbrauchbar
+     * (gemessen am 05.09.2026).
+     *
+     * X-3 (1.2.13; Regeln/04, Muster EVCC/AWM): bestuende ein gespeicherter Wert
+     * das eigene Zurueckspielen nicht, sagt es der Kopf _warnung - mit den Namen,
+     * nie den Werten (seit 1.2.29 der Satz des Moduls); am Knopf steht die gelbe
+     * Warnung. Geliefert wird trotzdem, vollstaendig.
      */
-    /*
-     * X-3 (1.2.13; Regeln/04, Muster EVCC/AWM): gefragt wird DIESELBE
-     * Pruefung wie beim Zurueckspielen (gardena_rueckspiel_altwerte()). Die
-     * Datei kommt trotzdem vollstaendig; im Kopf steht "_warnung" mit den
-     * Namen, nie den Werten, und am Knopf steht die gelbe Warnung. Bis 1.2.12
-     * verweigerte der Knopf die Datei in diesem Fall ganz - wer seinen Stand
-     * vor einem Umbau sichern wollte, bekam nichts.
-     */
-    $gardena_unrueck = gardena_rueckspiel_altwerte();
-    if ($gardena_unrueck) {
-        $gardena_stand = array('_warnung' => sprintf(gardena_t('EINST.SICH_ALTWERT_KOPF'),
-                                                    implode(', ', $gardena_unrueck))) + $gardena_stand;
+    $gardena_b = gardena_sicherung_beschreibung();
+    $gardena_daten = sicherung_bauen($gardena_b, gardena_sicherung_jetzt());
+    if (isset($gardena_daten['_warnung'])) {
         gardena_log('INF', 'Sicherung mit Warnung ausgeliefert: diese Werte bestuenden das Zurueckspielen '
-            . 'nicht - ' . implode(', ', $gardena_unrueck));
+            . 'nicht - ' . implode(', ', gardena_rueckspiel_altwerte()));
     }
-    $gardena_js = json_encode($gardena_stand,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($gardena_js !== false) {
+    $gardena_js = sicherung_json($gardena_daten);
+    if ($gardena_js !== '') {
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="gardenasmartsystem_einstellungen_'
@@ -1858,130 +1850,43 @@ if ($gpost && isset($_POST['gardena_sichern'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei
- * des Servers unterschieben. Dann die Groessengrenze - eine Sicherung
- * dieses Plugins ist wenige Kilobyte gross; alles darueber wird gar
- * nicht erst gelesen. */
+ * 1.2.29: den Eingang prueft das gemeinsame Sicherungsmodul (sicherung_eingang(),
+ * Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich:
+ * zuerst der Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert),
+ * dann is_uploaded_file() (sonst liesse sich jede Datei des Servers
+ * unterschieben) und die Groessengrenze des Moduls (256 KB wie bisher); erst
+ * danach wird die Datei gelesen.
+ *
+ * Das Modul (sicherung_zurueckspielen()) liest, prueft, verwirft Unbekanntes mit
+ * Namen, laesst leere Werte den bisherigen stehen und aendert bei einer
+ * Beanstandung GAR NICHTS (alle Beanstandungen, nicht nur die erste). Die
+ * Miniserver-Nummer, der Heilweg fuer eine unlesbare gardena.cfg (O4), das
+ * Speichern samt Zweitschrift und das Nachziehen des Dienstes liegen in den
+ * Rueckrufen der Beschreibung (gardena_sicherung_quer(),
+ * gardena_sicherung_vorbedingung(), gardena_sicherung_speichern(),
+ * gardena_sicherung_nachziehen()). Die Meldungen sind Klartext und werden bei
+ * der Ausgabe maskiert (gardena_e()).
+ */
 if ($gpost && isset($_POST['gardena_zurueck'])) {
-    if (!isset($_FILES['gardena_sicherung']) || !is_array($_FILES['gardena_sicherung'])
-        || !isset($_FILES['gardena_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['gardena_sicherung']['tmp_name'])) {
-        $gfehler[] = gardena_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['gardena_sicherung']['size'] > 262144) {
-        $gfehler[] = gardena_t('EINST.SICH_ZU_GROSS');
+    list($gardena_roh, $gardena_ab) = sicherung_eingang(gardena_sicherung_klartext(), $_POST, $_FILES, 'gardena_sicherung');
+    if ($gardena_ab !== null) {
+        $gardena_sm = sicherung_meldungen(gardena_sicherung_klartext(), $gardena_ab);
+        foreach ($gardena_sm['fehler'] as $gardena_x) { $gfehler[] = $gardena_x; }
     } else {
-        // Der Stand VOR dem Zurueckspielen - fuer die Frage, ob sich die
-        // Zugangsdaten oder das Token geaendert haben (siehe unten).
-        $gardena_vorher = gardena_cfg_read($gconfigfile);
-        $gardena_namen = array();
-        $gardena_behalten = array();
-        list($gardena_neu, $gardena_mangel, $gardena_n) = gardena_sicherung_lesen(
-            (string) @file_get_contents($_FILES['gardena_sicherung']['tmp_name']), $gardena_namen, $gardena_behalten);
-        /*
-         * MINISERVER gegen die eingerichteten Miniserver (1.2.11, O2) - wie das
-         * Formular. Bis 1.2.10 nahm das Zurueckspielen "99" an, das Formular
-         * wies dieselbe Nummer ab (oberflaeche Befund B4).
-         */
-        if ($gardena_neu !== null) {
-            $gms_z = LBSystem::get_miniservers();
-            if (is_array($gms_z) && $gms_z && !isset($gms_z[(int) $gardena_neu['MINISERVER']])) {
-                $gardena_mangel[] = sprintf(gardena_t('EINST.MS_UNBEKANNT'), (int) $gardena_neu['MINISERVER'],
-                                            implode(', ', array_keys($gms_z)));
-                $gardena_neu = null;
-            }
-        }
-        /*
-         * Das Token (1.2.11, C6/O2). Ein leeres Token in einer Sicherung heisst
-         * "keins gesichert": das geltende bleibt, und die Seite sagt es (Muster
-         * Dashboard 0.9.25). Bis 1.2.10 stand danach TOKEN='' in der Datei, der
-         * naechste Seitenaufruf wuerfelte still ein neues, und jede Adresse in
-         * Loxone bekam 403 (code Befund 6). Ein ANDERES Token wird uebernommen
-         * und gemeldet - die Adressen in Loxone muessen dann angepasst werden.
-         */
-        $gardena_tokentext = '';
-        if ($gardena_neu !== null) {
-            $gtok_alt = (string) $gardena_vorher['TOKEN'];
-            if ((string) $gardena_neu['TOKEN'] === '') {
-                $gardena_neu['TOKEN'] = $gtok_alt;
-                $gardena_tokentext = gardena_t('EINST.SICH_TOKEN_LEER');
-            } elseif ($gtok_alt !== '' && (string) $gardena_neu['TOKEN'] !== $gtok_alt) {
-                $gardena_tokentext = gardena_t('EINST.SICH_TOKEN_ANDERS');
-            }
-            /* Das Ventil-Token (1.2.13, Gardena-1) wie das Aktionstoken: leer in
-             * der Sicherung heisst "keins gesichert", das geltende bleibt; ein
-             * anderes wird uebernommen und gemeldet. */
-            $gvt_alt = (string) $gardena_vorher['VENTIL_TOKEN'];
-            if ((string) $gardena_neu['VENTIL_TOKEN'] === '') {
-                $gardena_neu['VENTIL_TOKEN'] = $gvt_alt;
-            } elseif ($gvt_alt !== '' && (string) $gardena_neu['VENTIL_TOKEN'] !== $gvt_alt) {
-                $gardena_tokentext .= ($gardena_tokentext !== '' ? ' ' : '') . gardena_t('EINST.SICH_VTOKEN_ANDERS');
-            }
-            if ($gardena_behalten) {
-                $gardena_tokentext .= ($gardena_tokentext !== '' ? ' ' : '')
-                    . sprintf(gardena_t('EINST.SICH_BEHALTEN'), implode(', ', $gardena_behalten));
-            }
-        }
-        if ($gardena_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert
-             * wird nichts. */
-            $gfehler[] = gardena_t('EINST.SICH_ABGELEHNT') . ' ' . implode(' ', $gardena_mangel);
-        } else {
-            /*
-             * Heilweg (1.2.11, O4): ist die gardena.cfg unlesbar, wird sie
-             * beiseitegelegt (gardena.cfg.kaputt.<Zeit>, 0600) und die Sicherung
-             * in eine frische Datei geschrieben. In die kaputte Datei
-             * hineinzuschreiben liesse sie unlesbar.
-             */
-            $gheil = true;
-            if (gardena_cfg_zustand($gconfigfile) === 'unlesbar') {
-                $gkaputt = $gconfigfile . '.kaputt.' . date('Ymd_His');
-                if (@rename($gconfigfile, $gkaputt)) {
-                    @chmod($gkaputt, 0600);
-                    gardena_log('INF', 'Unlesbare Konfiguration beiseitegelegt: ' . $gkaputt);
-                } else {
-                    $gheil = false;
-                    $gfehler[] = sprintf(gardena_t('EINST.SICH_KAPUTT_FEST'), $gconfigfile);
-                }
-            }
-            if (!$gheil) {
-                // gemeldet
-            } elseif (gardena_config_speichern($gardena_neu)) {
-                $gsaved = sprintf(gardena_t('EINST.SICH_UEBERNOMMEN'), $gardena_n);
-                /*
-                 * Den Dienst nachziehen und sagen, was mit ihm geschah
-                 * (Regeln/05, Punkt 7). Der Abrufdienst ist ein Cron-Lauf alle
-                 * fuenf Minuten und liest die Datei beim naechsten Lauf ohnehin
-                 * neu. Was er NICHT neu liest, ist das zwischengespeicherte
-                 * OAuth2-Token der Wolke: das gehoert zu den ALTEN Zugangsdaten.
-                 */
-                if ((string) $gardena_vorher['CLIENT_ID'] !== (string) $gardena_neu['CLIENT_ID']
-                    || (string) $gardena_vorher['CLIENT_SECRET'] !== (string) $gardena_neu['CLIENT_SECRET']) {
-                    if (is_file($lbpconfigdir . '/gardena_token.json')) {
-                        @unlink($lbpconfigdir . '/gardena_token.json');
-                    }
-                    $gsaved .= ' ' . gardena_t('EINST.SICH_DIENST_NEU');
-                } else {
-                    $gsaved .= ' ' . gardena_t('EINST.SICH_DIENST_GLEICH');
-                }
-                if ($gardena_tokentext !== '') { $gsaved .= ' ' . $gardena_tokentext; }
-                // Neues Basisthema oder MQTT eingeschaltet: Vollversand (M2).
-                if ((string) $gardena_vorher['MQTT_TOPIC'] !== (string) $gardena_neu['MQTT_TOPIC']
-                    || (string) $gardena_vorher['MQTT_ENABLED'] !== (string) $gardena_neu['MQTT_ENABLED']) {
-                    gardena_status_schreiben($lbpconfigdir, array('signatur' => ''));
-                }
-                gardena_log('INF', 'Einstellungen aus einer Sicherungsdatei zurueckgespielt ('
-                    . $gardena_n . ' Werte' . ((string) $gardena_neu['TOKEN'] !== (string) $gardena_vorher['TOKEN']
-                        ? ', Aktionstoken gewechselt' : '') . ').');
-                $gc = gardena_cfg_read($gconfigfile);
-                $gtokenurl = ((string) $gc['TOKEN'] !== '')
-                    ? '&amp;token=' . rawurlencode($gc['TOKEN']) : '&amp;token=TOKEN';
-            } else {
-                $gfehler[] = gardena_t('EINST.SICH_SCHREIBFEHLER');
-            }
+        $gardena_b = gardena_sicherung_klartext();
+        $gardena_r = sicherung_zurueckspielen($gardena_b, $gardena_roh);
+        $gardena_sm = sicherung_meldungen($gardena_b, $gardena_r);
+        foreach ($gardena_sm['fehler'] as $gardena_x) { $gfehler[] = $gardena_x; }
+        if ($gardena_r['ok'] && !empty($gardena_r['gespeichert']) && $gardena_sm['hinweise']) {
+            /* Der erste Satz des Moduls ist "zurueckgespielt: n Werte" (K_UEBERNOMMEN); er steht mit den
+             * uebrigen im gruenen Kasten, wie bis 1.2.28 die Saetze zu Dienst und Token. */
+            $gsaved = implode(' ', $gardena_sm['hinweise']);
+            $gc = gardena_cfg_read($gconfigfile);
+            $gtokenurl = ((string) $gc['TOKEN'] !== '')
+                ? '&amp;token=' . rawurlencode($gc['TOKEN']) : '&amp;token=TOKEN';
         }
     }
 }
-
 
 /* Jeder POST endet hier mit einer Umleitung (1.2.11, O1) - die Downloads
  * sind oben schon mit exit ausgestiegen. Laesst sich die Einmalmeldung nicht
@@ -2527,6 +2432,7 @@ if ($g_altwerte) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="formtoken" value="<?= gardena_e($gformmerkmal) ?>">
     <input data-role="none" type="file" name="gardena_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(gardena_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gardena_zurueck" value="1"><?= gardena_t('EINST.K_ZURUECK') ?></button>
   </form>
 </div>
