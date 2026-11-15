@@ -221,7 +221,8 @@ function gardena_alter_text($sekunden)
 
 /**
  * Alle Pruefzeilen. Liest nur - kein API-Aufruf, kein Versand, kein
- * Schreiben. Rueckgabe: array('zeilen' => …, 'gut' => n, 'gesamt' => m,
+ * Schreiben (ausgenommen seit 1.2.30 die Probedatei der Zeile "Vervollstaendigen"
+ * in einem eigenen Ordner unter dem temporaeren Verzeichnis, danach entfernt). Rueckgabe: array('zeilen' => …, 'gut' => n, 'gesamt' => m,
  * 'kreuze' => k)
  */
 /**
@@ -800,7 +801,19 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
                                count($k_soll) - count($k_fehlt), count($k_soll),
                                implode(', ', $k_fehlt))
                      : sprintf(gardena_t('TEST.A_VOLLST_OK'), count($k_soll), count($k_soll)));
+        /* 1.2.30 (Regeln/05 "Die Konfigurationslage nennt fehlende und fremde Schluessel; Fremdes bleibt stehen"):
+         * eine Einstellung, die diese Fassung nicht kennt, wird mit Namen genannt, nie mit Wert - als Hinweis, denn
+         * sie stoert nichts und bleibt beim Vervollstaendigen stehen (beim Zurueckspielen faellt sie weg). */
+        $k_fremd = gardena_cfg_fremde_schluessel($cfgdatei);
+        if ($k_fremd) {
+            $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_FREMD'),
+                sprintf(gardena_t('TEST.A_FREMD'), implode(', ', $k_fremd)));
+        }
     }
+
+    /* ---- 1.2.30: Vervollstaendigen an einer Probedatei (Entscheidung des Hausherrn 15.11.2026) ---- */
+    list($v_stand, $v_text) = gardena_vervollstaendigen_probe();
+    $z[] = gardena_pruefzeile($v_stand, gardena_t('TEST.F_VPROBE'), $v_text);
 
     $gut = 0;
     $kreuze = 0;
@@ -1203,7 +1216,7 @@ if ($gpost && isset($_POST['ansage_save'])) {
             $ga_neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rneu);     // 1.2.23
             // 1.2.26: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.2.25 ueberschrieb es der naechste Abgleich.
             $ga_alt_conf = gardena_ansage_conf();
-            $ga_neu['ANSAGE_HERKUNFT'] = gardena_tts_kodieren(ansage_token_herkunft_formular($_POST, $ga_alt_conf['ansage_token_herkunft']));
+            $ga_neu['ANSAGE_HERKUNFT'] = gardena_herkunft_kodieren(ansage_token_herkunft_formular($_POST, $ga_alt_conf['ansage_token_herkunft']));     // 1.2.30: leer = {}, nicht "]"
             if (gardena_cfg_write($gconfigfile, $ga_neu)) {
                 $gsaved = gardena_t('EINST.ANSAGE_GESPEICHERT');
                 foreach ($ga_thinw as $ga_th) { $ga_thl[] = $ga_th['text']; }     // Welle Mehrfach-Ziele: erst nach dem Speichern

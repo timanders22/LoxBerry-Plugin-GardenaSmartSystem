@@ -400,6 +400,15 @@ if [ -f "$BBSH" ]; then
     echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 | head -n 1)"
 fi
 
+# 1.2.30: Was das Update bewusst NICHT ueberlebt (Baustein 1.1.0, Angabe UPGD_OHNE; Entscheidung des Hausherrn
+# 15.11.2026, "Einheitlich ausnehmen", Regeln/06): der Ordner befehle/ der Befehlsbruecke - darin die
+# Mosquitto-Optionsdateien mit dem Broker-Kennwort, zustand.json, waechter.json und die Sperrdateien. Damit liegt
+# das Kennwort in keiner Update-Sicherung. Die Bruecke legt befehle/ samt Optionsdateien beim Start nach dem
+# Update selbst neu an (befehlsbruecke.sh start, bb_optionen() aus config/system/general.json; nachgestellt in
+# WSL 15.11.2026, Pruefung-GardenaSmartSystem-1.2.30/update_nachgestellt/). Einen Ordner antworten/ fuehrt
+# diese Linie nicht.
+UPGD_OHNE="befehle"
+
 zs_schluss
 # [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
 # [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.

@@ -1683,6 +1683,15 @@ function gardena_cfg_eigene_schluessel($cfgfile)
  * die Datei halb gefuellt erwischen oder die Aenderung des anderen
  * ueberschreiben.
  *
+ * 1.2.30: $nur (Feld von Schluesselnamen, ab Werk null = wie bisher). Ist es
+ * gesetzt, fallen im Abschnitt $abschnitt alle Zeilen "SCHLUESSEL=..." weg,
+ * deren Schluessel weder in $werte noch in $nur steht; Kommentare, Leerzeilen
+ * und andere Abschnitte bleiben. So speichert "Einstellungen zurueckspielen"
+ * genau den Stand, den das gemeinsame Sicherungsmodul liefert (Entscheidung
+ * des Hausherrn 15.11.2026, Regeln/05 "Modul 1.2.4"): eine Einstellung, die
+ * diese Fassung nicht kennt, faellt weg - das Modul nennt sie mit Namen.
+ * Alle anderen Aufrufer geben $nur nicht an und behalten Unbekanntes.
+ *
  * Kommentare und Leerzeilen bleiben stehen.
  */
 /**
@@ -1757,7 +1766,7 @@ function gardena_token_schreibbar($v)
     return preg_match('/^[A-Za-z0-9_.\-]{1,64}$/', $s) === 1;
 }
 
-function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
+function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA', $nur = null)
 {
     if (!is_array($werte) || !$werte) { return true; }
     /* Ein leeres oder unbrauchbares Aktionstoken wird nie geschrieben
@@ -1812,6 +1821,14 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
             continue;
         }
         if ($offen !== $abschnitt) { continue; }
+        /* 1.2.30: mit $nur faellt eine Zeile weg, deren Schluessel weder geschrieben noch genannt wird
+         * (Zurueckspielen: genau der Stand des Moduls). Kommentare und Leerzeilen bleiben. */
+        if (is_array($nur) && $roh !== '' && $roh[0] !== ';' && $roh[0] !== '#'
+            && preg_match('/^([^=]*?)\s*=/', $roh, $mn) === 1
+            && !array_key_exists($mn[1], $werte) && !in_array($mn[1], $nur, true)) {
+            unset($zeilen[$i]);
+            continue;
+        }
         if ($roh !== '' && $roh[0] !== ';' && $roh[0] !== '#') {
             $letzte_im_abschnitt = $i;
         }
@@ -1825,6 +1842,17 @@ function gardena_cfg_write($cfgfile, $werte, $abschnitt = 'GARDENA')
         }
     }
 
+    if (is_array($nur)) {
+        // 1.2.30: weggefallene Zeilen schliessen; die Einfuegestelle wandert mit (array_splice zaehlt Stellen)
+        $dicht = array();
+        $stelle = -1;
+        foreach ($zeilen as $i => $zeile) {
+            $dicht[] = $zeile;
+            if ($i <= $letzte_im_abschnitt) { $stelle = count($dicht) - 1; }
+        }
+        if ($letzte_im_abschnitt >= 0) { $letzte_im_abschnitt = $stelle; }
+        $zeilen = $dicht;
+    }
     $neu = array();
     foreach ($werte as $k => $v) {
         if (!isset($erledigt[$k])) { $neu[] = $k . '=' . gardena_ini_wert($v); }
@@ -3170,13 +3198,26 @@ function gardena_cfg_zustand($cfgfile)
  * sein Formular gerade mitschickte (gemessen: 2 von 4 fehlenden).
  *
  * Rueckgabe: die Namen der nachgetragenen Schluessel (leer = nichts zu tun).
+ *
+ * 1.2.30 (Entscheidung des Hausherrn 15.11.2026, "nennen und stehen lassen";
+ * Regeln/05 "fremd -> NENNEN, stehen lassen"): eine Einstellung, die diese
+ * Fassung nicht kennt (gardena_cfg_fremde_schluessel()), bleibt stehen und wird
+ * in der Meldung mit Namen genannt, nie mit Wert. Einen Knopf "Konfiguration
+ * vervollstaendigen" hat diese Linie nicht: vervollstaendigt wird beim Laden der
+ * Oberflaeche und beim Start des Abrufdienstes, gemeldet in der Protokollzeile.
+ * Die Zeile entsteht nur, wenn etwas nachgetragen wird (sonst stuende sie bei
+ * jedem Seitenaufruf da); den Satz gibt $satz zurueck, auch ohne Nachtrag.
+ * $protokoll = false schreibt keine Protokollzeile (Probe im Reiter Test).
  */
-function gardena_cfg_vervollstaendigen($cfgfile)
+function gardena_cfg_vervollstaendigen($cfgfile, &$satz = null, $protokoll = true)
 {
+    $satz = '';
     // Eine unlesbare Datei wird nicht angefasst - auch nicht "ergaenzt".
     if (gardena_cfg_zustand($cfgfile) === 'unlesbar') { return array(); }
     $da = gardena_cfg_eigene_schluessel($cfgfile);
     if (!$da) { return array(); }          // Datei fehlt - der Dienst legt sie an
+    $fremd = gardena_cfg_fremde_schluessel($cfgfile);
+    $fremd_satz = $fremd ? '; unbekannt, stehen gelassen: ' . implode(', ', $fremd) : '';
     $fehlt = array();
     foreach (gardena_vorgaben() as $k => $v) {
         if (!in_array($k, $da, true)) { $fehlt[$k] = $v; }
@@ -3188,11 +3229,83 @@ function gardena_cfg_vervollstaendigen($cfgfile)
     if (!in_array('TTS', $da, true) && function_exists('ansage_werk_block')) {     // 1.2.23: nie gesetzt = ab Werk EIN; eine vorhandene Zeile bleibt
         $fehlt['TTS'] = gardena_tts_kodieren(ansage_werk_block());
     }
-    if (!$fehlt) { return array(); }
+    if (!$fehlt) {
+        $satz = $fremd ? 'Konfiguration vollstaendig, nichts nachgetragen' . $fremd_satz . '.' : '';
+        return array();
+    }
     if (!gardena_cfg_write($cfgfile, $fehlt)) { return array(); }
-    gardena_log('INF', 'Konfiguration vervollstaendigt, nachgetragen: '
-        . implode(', ', array_keys($fehlt)));
+    $satz = 'Konfiguration vervollstaendigt, nachgetragen: ' . implode(', ', array_keys($fehlt)) . $fremd_satz . '.';
+    if ($protokoll) { gardena_log('INF', $satz); }
     return array_keys($fehlt);
+}
+
+/**
+ * 1.2.30: Die Schluessel im Abschnitt [GARDENA], die diese Fassung nicht kennt - weder in gardena_vorgaben() noch die
+ * Zeilen der Sprachausgabe (TTS, ANSAGE_REGELN, ANSAGE_HERKUNFT). Nur Namen, sortiert, durch gardena_name_text().
+ * Rein lesend.
+ */
+function gardena_cfg_fremde_schluessel($cfgfile)
+{
+    $bekannt = array_merge(array_keys(gardena_vorgaben()), array('TTS', 'ANSAGE_REGELN', 'ANSAGE_HERKUNFT'));
+    $aus = array();
+    foreach (gardena_cfg_eigene_schluessel($cfgfile) as $k) {
+        if (!in_array($k, $bekannt, true)) { $aus[] = gardena_name_text($k); }
+    }
+    sort($aus);
+    return $aus;
+}
+
+/**
+ * 1.2.30: Ein Schluesselname fuer Meldung und Protokoll - dieselbe Regel wie sicherung_name() des gemeinsamen
+ * Sicherungsmoduls (nur Namenszeichen, hoechstens 64), das im Abrufdienst nicht geladen ist.
+ */
+function gardena_name_text($n)
+{
+    if (function_exists('sicherung_name')) { return sicherung_name($n); }
+    $n = (string) preg_replace('/[^A-Za-z0-9_.\-\[\]]/', '?', (string) $n);
+    if ($n === '') { $n = '?'; }
+    return strlen($n) > 64 ? substr($n, 0, 64) . '...' : $n;
+}
+
+/**
+ * 1.2.30 (Entscheidung des Hausherrn 15.11.2026): Prueft das Vervollstaendigen mit Wirkung, an einer PROBEDATEI in
+ * einem eigenen Ordner unter dem temporaeren Verzeichnis, nicht an der echten Konfiguration: eine gardena.cfg mit
+ * einem Probe-Token und einer unbekannten Einstellung mit Wert, ohne die uebrigen Schluessel. Gerufen wird derselbe
+ * Kern wie beim Laden der Oberflaeche (gardena_cfg_vervollstaendigen(), ohne Protokollzeile). Verlangt: der Name der
+ * unbekannten Einstellung steht im Satz, ihr Wert nicht; sie steht danach unveraendert in der Datei; INTERVALL ist
+ * nachgetragen. Danach werden Probedatei, Sperrdatei, Zweitschrift und Ordner entfernt.
+ * Rueckgabe: array(stand, Text) mit stand 1 (ja), -1 (nein) oder 0 (nicht messbar).
+ */
+function gardena_vervollstaendigen_probe()
+{
+    $wurzel = rtrim(sys_get_temp_dir(), '/\\') . '/ga_vprobe_' . getmypid() . '_' . mt_rand(100000, 999999);
+    $ord = $wurzel . '/cfg';
+    if (!@mkdir($ord, 0700, true)) {
+        @rmdir($wurzel);
+        return array(0, gardena_t('TEST.A_VPROBE_NICHT'));
+    }
+    $cfg = $ord . '/gardena.cfg';
+    $name = 'ZZ_PROBE_UNBEKANNT';
+    $wert = 'ProbeWert' . mt_rand(100000, 999999);
+    $text = "[GARDENA]\nTOKEN=probe" . substr(md5((string) mt_rand()), 0, 19) . "\n" . $name . '=' . $wert . "\n";
+    $satz = '';
+    $erg = (@file_put_contents($cfg, $text) === strlen($text)) ? gardena_cfg_vervollstaendigen($cfg, $satz, false) : null;
+    $nach = gardena_ini_lesen($cfg);
+    foreach (array_merge(glob($ord . '/*') ?: array(), glob($ord . '/.*') ?: array(), glob($wurzel . '/*') ?: array()) as $f) {
+        if (is_file($f)) { @unlink($f); }
+    }
+    @rmdir($ord);
+    @rmdir($wurzel);
+    if (!is_array($erg)) { return array(0, gardena_t('TEST.A_VPROBE_NICHT')); }
+    $mangel = array();
+    if (strpos($satz, $name) === false) { $mangel[] = gardena_t('TEST.A_VPROBE_M_NAME'); }
+    if (strpos($satz, $wert) !== false) { $mangel[] = gardena_t('TEST.A_VPROBE_M_WERT'); }
+    if (gardena_ini_feld($nach, $name) !== $wert) { $mangel[] = gardena_t('TEST.A_VPROBE_M_WEG'); }
+    if (gardena_ini_feld($nach, 'INTERVALL') === '' || !in_array('INTERVALL', $erg, true)) {
+        $mangel[] = gardena_t('TEST.A_VPROBE_M_ERG');
+    }
+    if ($mangel) { return array(-1, sprintf(gardena_t('TEST.A_VPROBE_FEHL'), implode(' ', $mangel))); }
+    return array(1, sprintf(gardena_t('TEST.A_VPROBE_OK'), $name));
 }
 
 /**
@@ -3339,7 +3452,14 @@ function gardena_sicherung_beschreibung()
     if (function_exists('ansage_werk_block') && function_exists('ansage_regeln_vorgaben')) {
         $vorgaben['tts'] = ansage_werk_block();
         $vorgaben['ansage_regeln'] = ansage_regeln_vorgaben();
-        $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+        /* 1.2.30: der Vermerk steht in den Vorgaben (Regeln/05 "Was ein gemeinsames Modul in die Konfiguration
+         * schreibt ..."; Entscheidung des Hausherrn 15.11.2026): gardena_ansage_token_pflegen() schreibt ihn als
+         * Zeile ANSAGE_HERKUNFT. Bis 1.2.29 fehlte er hier, und die Konfigurationslage des Moduls nannte ihn fremd.
+         * Aus einer Datei kommt er nie ('nie_aus_datei'; das Modul uebergeht ihn dort vor jeder Pruefung); beim
+         * Zurueckspielen behaelt er den geltenden Wert, und gardena_sicherung_speichern() laesst seine Zeile
+         * ANSAGE_HERKUNFT unberuehrt. */
+        $vorgaben['ansage_token_herkunft'] = array();
+        $tts = gardena_sicherung_tts_namen();
         $schluessel['tts'] = sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))
                                                                     + array('fehlt' => 'behalten')))
             + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen',
@@ -3498,6 +3618,15 @@ function gardena_sicherung_regeln_wandeln($w)
 }
 
 /**
+ * 1.2.30: Die Namen, die der Block tts in dieser Fassung kennt (Werkblock des Sprachmoduls samt Liste ziele, dazu die
+ * Sprechtoken) - eine Stelle fuer die Beschreibung und fuer gardena_sicherung_vorbereiten().
+ */
+function gardena_sicherung_tts_namen()
+{
+    return array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+}
+
+/**
  * 1.2.29: Pruefungen an der ganzen Datei (Rueckruf 'quer' des Moduls).
  *  - Die INI-Zeile TTS gehoert in keine Sicherung, denn sie traegt die
  *    Sprechtoken. Traegt die Datei sie mit einem Sprechtoken, wird sie
@@ -3535,12 +3664,20 @@ function gardena_sicherung_quer($neu, $r, $daten = null)
  * wird wie bis 1.2.28 aus der Datei und dem geltenden Block vervollstaendigt,
  * und die geltenden Sprechtoken bleiben (die Sicherung traegt keine). Fehlte er
  * in der Datei, steht dort schon der geltende.
+ *
+ * 1.2.30: aus dem geltenden Block kommen nur Namen, die diese Fassung kennt
+ * (gardena_sicherung_tts_namen()). Bis 1.2.29 trug "+ $jt" auch einen
+ * unbekannten Unterschluessel des geltenden Blocks in den neuen Stand: er blieb
+ * nach dem Zurueckspielen stehen, obwohl das Modul ihn als verworfen nannte
+ * (gemessen 15.11.2026 mit sicherung_pruefstand.py --stamm, Zeile geltend.fremd,
+ * Block tts). Seither faellt er weg, und das Modul nennt ihn einmal.
  */
 function gardena_sicherung_vorbereiten($neu, $jetzt, $r)
 {
     if (!in_array('tts', $r['fehlt_behalten'], true) && isset($neu['tts']) && is_array($neu['tts'])
         && function_exists('ansage_vervollstaendigen')) {
         $jt = (is_array($jetzt) && isset($jetzt['tts']) && is_array($jetzt['tts'])) ? $jetzt['tts'] : array();
+        $jt = array_intersect_key($jt, array_flip(gardena_sicherung_tts_namen()));
         list($tv) = ansage_vervollstaendigen($neu['tts'] + $jt);
         $neu['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
     }
@@ -3570,26 +3707,44 @@ function gardena_sicherung_vorbedingung($neu, $jetzt, $r)
 /**
  * 1.2.29: Speichern (Rueckruf 'speichern' des Moduls) ueber gardena_cfg_write():
  * die einfachen Werte als Zeilen, die Bloecke tts und ansage_regeln als JSON
- * ohne Semikolon (gardena_tts_kodieren()); eine Zeile, die die Datei nicht
- * betrifft, bleibt stehen. Fehlte ein Block in der Datei, bleibt seine Zeile
+ * ohne Semikolon (gardena_tts_kodieren()); bis 1.2.29 blieb eine Zeile, die die
+ * Sicherung nicht betraf, stehen (seit 1.2.30 siehe unten). Fehlte ein Block in der Datei, bleibt seine Zeile
  * unberuehrt wie bis 1.2.28; ANSAGE_HERKUNFT wird nie aus einer Sicherung
  * geschrieben. gardena_cfg_write() zieht die Zweitschrift mit (nur mit Token,
  * nie ein Stand ohne Zugangsdaten ueber einen mit); ob sie mitzog, misst das
  * Modul ('zweitschrift').
+ *
+ * 1.2.30 (Entscheidung des Hausherrn 15.11.2026, Bauform "genau der Stand des
+ * Moduls"): gespeichert wird der Stand, den das Modul liefert. Eine Zeile im
+ * Abschnitt [GARDENA], deren Schluessel dieser Stand nicht traegt, faellt weg
+ * (gardena_cfg_write() mit $nur); das Modul nennt sie mit Namen
+ * (K_JETZT_ENTFERNT). Bis 1.2.29 schrieb die Funktion ueber die geltende Datei,
+ * und eine unbekannte Einstellung blieb stehen, waehrend das Modul 1.2.4 sie als
+ * entfernt gemeldet haette (Regeln/05, "Falsche Meldung"). Unberuehrt bleiben
+ * wie bisher: TOKEN, wenn es sich nicht schreiben laesst (gardena_cfg_write()),
+ * die Zeilen TTS und ANSAGE_REGELN, wenn der Block in der Datei fehlte ('fehlt'
+ * => 'behalten') oder das Sprachmodul nicht geladen ist, und immer die Zeile
+ * ANSAGE_HERKUNFT (der Vermerk behaelt beim Zurueckspielen seinen geltenden
+ * Wert, 'nie_aus_datei').
  */
 function gardena_sicherung_speichern($neu, $jetzt, $r)
 {
     $w = array();
+    $schonen = array('TOKEN');
     foreach (array_keys(gardena_vorgaben()) as $k) {
         if (array_key_exists($k, $neu) && !is_array($neu[$k])) { $w[$k] = (string) $neu[$k]; }
     }
-    if (isset($neu['tts']) && is_array($neu['tts']) && !in_array('tts', $r['fehlt_behalten'], true)) {
-        $w['TTS'] = gardena_tts_kodieren($neu['tts']);
+    foreach (array('tts' => 'TTS', 'ansage_regeln' => 'ANSAGE_REGELN') as $n => $ini) {
+        if (isset($neu[$n]) && is_array($neu[$n]) && !in_array($n, $r['fehlt_behalten'], true)) {
+            $w[$ini] = gardena_tts_kodieren($neu[$n]);
+        } else {
+            $schonen[] = $ini;
+        }
     }
-    if (isset($neu['ansage_regeln']) && is_array($neu['ansage_regeln']) && !in_array('ansage_regeln', $r['fehlt_behalten'], true)) {
-        $w['ANSAGE_REGELN'] = gardena_tts_kodieren($neu['ansage_regeln']);
-    }
-    return (bool) gardena_cfg_write(gardena_konfigdatei(), $w);
+    /* Der Vermerk ist 'nie_aus_datei': das Modul setzt ihn im neuen Stand auf den geltenden Wert, also auf das, was
+     * die Zeile ANSAGE_HERKUNFT schon traegt. Die Zeile bleibt deshalb unberuehrt (auch eine fehlende bleibt weg). */
+    $schonen[] = 'ANSAGE_HERKUNFT';
+    return (bool) gardena_cfg_write(gardena_konfigdatei(), $w, 'GARDENA', $schonen);
 }
 
 /** 1.2.29: Konfiguration und Zweitschrift fuer die Messung des Moduls ('zweitschrift'), Pfad wie gardena_cfg_write(). */
@@ -3720,7 +3875,7 @@ function gardena_ansage_conf_schreiben(array $c)
 {
     if (isset($c['tts']) && is_array($c['tts'])) { $c['TTS'] = gardena_tts_kodieren($c['tts']); }
     if (isset($c['ansage_regeln']) && is_array($c['ansage_regeln'])) { $c['ANSAGE_REGELN'] = gardena_tts_kodieren($c['ansage_regeln']); }
-    if (isset($c['ansage_token_herkunft']) && is_array($c['ansage_token_herkunft'])) { $c['ANSAGE_HERKUNFT'] = gardena_tts_kodieren($c['ansage_token_herkunft']); }
+    if (isset($c['ansage_token_herkunft']) && is_array($c['ansage_token_herkunft'])) { $c['ANSAGE_HERKUNFT'] = gardena_herkunft_kodieren($c['ansage_token_herkunft']); }     // 1.2.30: leer = {}
     unset($c['tts'], $c['ansage_regeln'], $c['ansage_token_herkunft']);
     return (bool) gardena_cfg_write(gardena_konfigdatei(), $c);
 }
@@ -3957,6 +4112,18 @@ function gardena_tts_kodieren($tts)
 {
     $js = json_encode(is_array($tts) ? $tts : array(), JSON_UNESCAPED_SLASHES);
     return is_string($js) ? str_replace(';', '\u003b', $js) : '';
+}
+
+/**
+ * 1.2.30: Den Vermerk ansage_token_herkunft fuer die Zeile ANSAGE_HERKUNFT kodieren. Ein leerer Vermerk wird "{}",
+ * nicht "[]": gardena_ini_wert() nimmt ein fuehrendes '[' weg (sonst eroeffnete die Zeile einen Abschnitt), und bis
+ * 1.2.29 stand nach jedem Speichern der Sprachausgabe ohne uebernommenes Token "ANSAGE_HERKUNFT=]" in der Datei -
+ * kein JSON; das Plugin las es als leeren Vermerk (gemessen 15.11.2026 an 1.2.29 unter PHP 7.4 und 8.4,
+ * Pruefung-GardenaSmartSystem-1.2.30/proben/herkunft_leer_1.2.29.txt). Gelesen wird "{}" wie bisher als leeres Feld.
+ */
+function gardena_herkunft_kodieren($h)
+{
+    return (is_array($h) && $h) ? gardena_tts_kodieren($h) : '{}';
 }
 
 /**

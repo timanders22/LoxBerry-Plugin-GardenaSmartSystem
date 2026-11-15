@@ -1,5 +1,19 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.30
+
+- **Verhalten geändert – „Einstellungen zurückspielen“ speichert genau den Stand der Sicherung:** Gemeinsames Sicherungsmodul 1.2.6 (bisher 1.2.3).
+  - Eine Einstellung, die in der `gardena.cfg` steht, dieser Fassung aber unbekannt ist (etwa der Rest einer älteren Fassung oder eine Bearbeitung von Hand), fällt beim Zurückspielen weg – oben in der Datei wie im Block der Sprachausgabe (`tts`). Meldung und Protokollzeile nennen sie mit Namen, nie mit Wert. Bis 1.2.29 blieb sie stehen.
+  - Jede unbekannte Einstellung wird genau einmal genannt: als verworfen, wenn sie in der Sicherungsdatei steht, sonst als aus den geltenden Einstellungen entfernt.
+  - Unberührt bleiben wie bisher: das Zugriffstoken, wenn die Sicherung keines trägt; die Zeilen der Sprachausgabe, wenn die Sicherung aus einer Fassung stammt, die sie noch nicht kannte; der Vermerk, welches Sprechtoken aus Alexa-NG oder Chromecast4lox übernommen wurde.
+- **Vermerk der übernommenen Sprechtoken in den Vorgaben:** `ansage_token_herkunft` steht jetzt in den Vorgaben der Sicherungsbeschreibung, wie bei den übrigen Plugins mit Sprachausgabe. In einer Sicherung steht er weiterhin nicht, beim Zurückspielen behält er seinen geltenden Wert. Für den Anwender ändert sich nichts.
+- **Vervollständigen nennt unbekannte Einstellungen:** Fehlende Einstellungen werden wie bisher beim Laden der Oberfläche und beim Start des Abrufdienstes nachgetragen; unbekannte bleiben stehen. Die Protokollzeile dazu nennt sie jetzt mit Namen, nie mit Werten. Einen eigenen Knopf dafür hat dieses Plugin nicht.
+  - Reiter *Test*: Eine neue Zeile nennt unbekannte Einstellungen in der `gardena.cfg` als Hinweis. Eine weitere Zeile misst das Vervollständigen an einer Probedatei in einem eigenen Ordner im temporären Verzeichnis (Name genannt, Wert nicht genannt, Einstellung geblieben, fehlender Schlüssel ergänzt); die echte Konfiguration bleibt dabei unberührt, die Probedatei wird wieder entfernt.
+- **Berichtigt – leerer Vermerk in der `gardena.cfg`:** Bis 1.2.29 stand nach dem Speichern der Sprachausgabe ohne übernommenes Sprechtoken `ANSAGE_HERKUNFT=]` in der Datei – kein gültiges JSON; das Plugin las es als leeren Vermerk. Jetzt steht dort `{}`. Am Verhalten ändert sich nichts.
+- **Verhalten geändert – die Befehlsbrücke ist nicht mehr Teil der Update-Sicherung:** `preupgrade.sh` nimmt den Ordner `befehle/` im Datenordner nicht mehr mit (gemeinsamer Baustein `upgrade_daten.sh` 1.1.0, Angabe `UPGD_OHNE="befehle"`; einheitlich in allen Plugins mit Befehlsbrücke). Darin liegen die Optionsdateien für Mosquitto mit dem Kennwort des MQTT-Brokers; sie stehen damit in keiner Update-Sicherung mehr.
+  - Die Befehlsbrücke legt den Ordner beim Start nach dem Update selbst neu an, mit Benutzer und Kennwort aus den MQTT-Einstellungen des LoxBerry. Nachgestellt unter Linux (WSL) mit den Installationsskripten dieser Fassung in der Reihenfolge des Installers und der echten Befehlsbrücke, ohne Broker: Ordner 0700, Optionsdateien 0600 mit dem geltenden Kennwort. Auf einem LoxBerry ist das nicht gemessen.
+  - Neu beginnt dabei der Zustand des Wächters (`waechter.json`, die Bremse gegen zu häufige Neustarts).
+
 ## Neu in 1.2.29
 
 - **Verhalten geändert – Einstellungen sichern und zurückspielen über das gemeinsame Sicherungsmodul 1.2.3:** Die Knöpfe im Reiter *Einstellungen* arbeiten jetzt mit dem gemeinsamen Sicherungsmodul.

@@ -86,6 +86,62 @@
  *      Datei als "keine lesbare Sicherung" ab; Abfahrtsassistent hatte die BOM
  *      bis 1.6.40 selbst entfernt (Wunsch der Gruppe 4a, 14.11.2026). Eine Datei
  *      ohne BOM bleibt byte-gleich behandelt.
+ *  13. Seit 1.2.4 (Entscheidung des Hausherrn 15.11.2026: "Ja, so umsetzen"):
+ *      Schluessel der GELTENDEN Konfiguration, die die Beschreibung nicht kennt
+ *      (oben: nicht in 'vorgaben' und kein Teil; in einem Block: ein
+ *      Unterschluessel, den der Knoten nicht nennt), fallen beim Zurueckspielen
+ *      weiter weg, werden aber mit Namen genannt, nie mit Wert
+ *      ($r['jetzt_entfernt'], Text K_JETZT_ENTFERNT, Protokollzeile) - in allen
+ *      Linien gleich, ohne Wahl je Linie. Bis 1.2.3 begann der neue Stand bei
+ *      den Vorgaben, und ein solcher Schluessel (etwa aus einer Bearbeitung von
+ *      Hand) fiel oben still weg; im Block nur dann nicht still, wenn die Datei
+ *      ihn selbst trug (dann als verworfen genannt). Genannt wird, was nach
+ *      'vorbereiten' nicht mehr im neuen Stand steht; ein Vermerk
+ *      ('nie_aus_datei') bleibt seit 1.2.1 und wird deshalb nicht genannt.
+ *      Was die Lesefunktion der Linie ('jetzt') nicht liefert, kann das Modul
+ *      nicht nennen; was ihre Speicherfunktion ueber den neuen Stand hinaus
+ *      behaelt, faellt nicht weg - beides misst der Pruefstand (geltend.fremd).
+ *      Nicht nachgemessen ueber 'jetzt': das ist in Linien ein Schnappschuss
+ *      vor dem Zurueckspielen (gemessen 15.11.2026, MGiSmart 1.1.45).
+ *      Ohne Speichern (halb gueltig, Vorbedingung, Schreibfehler) ist die Liste
+ *      leer, denn dann wurde nichts entfernt.
+ *  14. Seit 1.2.5 (Entscheidung des Hausherrn 15.11.2026: "Modul 1.2.5 mit
+ *      huelle"): eine Linie, deren fruehere Sicherungen die Einstellungen unter
+ *      EINEM Schluessel ablegten (Huelle; Zendure SolarFlow bis 0.9.48:
+ *      konfiguration), nennt ihn in 'huelle'. Traegt eine Datei, die Regel 1
+ *      als eigene annimmt (Kennzeichen, frueheres Kennzeichen oder vom
+ *      Uebersetzer erkannt), diesen Schluessel, wird er ausgepackt: sein Inhalt
+ *      tritt an die oberste Ebene, der Kopf (_-Schluessel) bleibt, und danach
+ *      gelten alle Regeln wie bei einer flachen Datei (umbenennen, Regel 2 und
+ *      3, vorbehandeln, Regel 4, fehlende Schluessel, Vermerke). Als Ganzes
+ *      abgewiesen wird sie, wenn oben neben der Huelle ein weiterer Schluessel
+ *      ohne _ steht, die Huelle kein Feld mit Namen oder leer ist, oder ein
+ *      _-Schluessel in ihr einen Kopfschluessel oben doppelt; die Meldung nennt
+ *      Grund und Namen, nie Werte (K_HUELLE_*). Ausgepackt wird einmal, nicht
+ *      verschachtelt. Eine Datei ohne den Schluessel wird wie bisher gelesen;
+ *      sicherung_bauen() schreibt weiter flach. Ohne 'huelle' bleibt alles wie
+ *      in 1.2.4. Bis 1.2.4 verwarf das Modul die Huelle als unbekannten
+ *      Schluessel, und die Datei wurde mangels jeder Einstellung abgewiesen
+ *      (gemessen 15.11.2026 an der Form von Zendure SolarFlow 0.9.47).
+ *  15. Seit 1.2.5 (Entscheidung des Hausherrn 15.11.2026: "Ja, so umsetzen"):
+ *      eine unbekannte Einstellung wird in Meldung und Protokollzeile genau
+ *      einmal genannt. Ein Name, der schon als verworfen genannt ist (aus der
+ *      Datei, Regel 2), steht nicht noch einmal in 'jetzt_entfernt'
+ *      (sicherung_ohne_verworfen()). Bis 1.2.4 erschien ein unbekannter
+ *      Blockschluessel zweimal, wenn die Sicherung aus dem Stand mit diesem
+ *      Schluessel stammte. Ein Name, der nur in der geltenden Konfiguration
+ *      steht, wird weiter mit K_JETZT_ENTFERNT genannt; Werte nie.
+ *  16. Seit 1.2.6 (Entscheidung des Hausherrn 15.11.2026: Entwurf
+ *      'neben_huelle' angenommen): eine Linie, deren fruehere Sicherungen neben
+ *      der Huelle Datenbestaende als eigene Abschnitte trugen (Midea2Lox:
+ *      geraete; Bewaesserung: zonen, quellen; Sprachsteuerung: saetze;
+ *      Hausansicht: modell), nennt diese Teile in 'neben_huelle'. Ein solcher
+ *      Teil darf oben neben der Huelle stehen; er bleibt beim Auspacken oben und
+ *      laeuft danach wie jeder Teil ('teile'). Steht derselbe Name zugleich in
+ *      der Huelle, wird die Datei als Ganzes abgewiesen (K_HUELLE_DOPPELT,
+ *      gesammelt mit den uebrigen Gruenden der Regel 14; Namen, nie Werte). Jeder
+ *      andere Schluessel ohne _ neben der Huelle bleibt "gemischt". Ohne
+ *      'neben_huelle' bleibt alles wie in 1.2.5.
  *
  * Die Funktionen tragen das neutrale Kuerzel 'sicherung_' (wie 'ansage_' in
  * sprachausgabe.php). Laufen zwei Abschriften in einem PHP-Prozess, laedt sich
@@ -108,6 +164,21 @@
  *                  Kennzeichen, die einen Teil der Anlage trugen (Ordner).
  *   'umbenennen'   (1.2.0) Name in der Datei => heutiger Name, vor allen Regeln;
  *                  nur wenn der heutige Name in der Datei fehlt (z. B. _amazon).
+ *   'huelle'       (1.2.5) Name des Schluessels, unter dem fruehere Sicherungen
+ *                  der Linie die Einstellungen ablegten (z. B. 'konfiguration');
+ *                  Regel 14 im Kopf. Ein Name in Namensform ohne fuehrendes _,
+ *                  der keine Vorgabe, kein Teil, kein Feld eines flachen Teils,
+ *                  kein Schluessel aus 'alt' oder 'nie_aus_datei' und kein alter
+ *                  Name aus 'umbenennen' ist - sonst ist die Beschreibung
+ *                  mangelhaft ('huelle'), denn eine flache Datei koennte ihn
+ *                  oben tragen. Wahlfrei; ohne ihn wie in 1.2.4.
+ *   'neben_huelle' (1.2.6) Liste von Teilnamen (Schluessel aus 'teile'), die in
+ *                  frueheren Sicherungen oben NEBEN der Huelle standen
+ *                  (Datenbestaende in eigenen Dateien); Regel 16 im Kopf. Nur
+ *                  mit tauglicher 'huelle'; eine nicht leere Liste ohne Doppel,
+ *                  jeder Name ein Teil (damit nie die Huelle) - sonst ist die
+ *                  Beschreibung mangelhaft ('neben_huelle'). null gilt als nicht
+ *                  angegeben. Wahlfrei; ohne sie wie in 1.2.5.
  *   'teile_flach'  (1.2.0) Teil => Praefix: der Teil steht in der Datei als
  *                  flache Schluessel <praefix><feld> (BYD zugang_benutzer ...);
  *                  Regel 2, 3 und 'fehlt' gelten je Feld wie in einem Block,
@@ -197,7 +268,9 @@
  *   'neu'           die neue Konfiguration (null, wenn nicht ok)
  *   'anzahl'        uebernommene Schluessel der obersten Ebene
  *   'eigen'         'kennzeichen' | 'frueher' | 'uebersetzt' | ''
- *   'fremd'         '' | 'form' | 'gross' | 'kennzeichen' | 'ohne'
+ *   'fremd'         '' | 'form' | 'gross' | 'kennzeichen' | 'ohne' ('form' seit
+ *                   1.2.5 auch: die Huelle passt nicht, Regel 14; seit 1.2.6 auch:
+ *                   ein Teil steht neben und in der Huelle, Regel 16)
  *   'kennzeichen_datei'  Kennzeichen der Datei (nur in Namensform, sonst '?')
  *   'fassung_datei' _fassung der Datei (nur in Namensform)
  *   'beanstandet'   Liste von array('name' => ..., 'text' => ...)
@@ -209,6 +282,12 @@
  *                   gesetzt hat ('fehlt' => 'behalten'; Uebergangsregel der Linie)
  *   'teile'         Ergebnisse der Teile
  *   'teile_hinweise' (1.2.0) Hinweise der Teile (fertige Saetze)
+ *   'jetzt_entfernt' (1.2.4) Namen der Schluessel der geltenden Konfiguration, die
+ *                   die Beschreibung nicht kennt und die der neue Stand nicht mehr
+ *                   traegt (oben: Name; im Block: block.feld); in
+ *                   sicherung_zurueckspielen() nach 'vorbereiten' gebildet; leer, wenn nicht
+ *                   zurueckgespielt oder nicht gespeichert wurde; seit 1.2.5 ohne
+ *                   die Namen, die schon in 'verworfen' stehen (Regel 15)
  * Ein Ergebnis von sicherung_zurueckspielen() traegt seit 1.2.0 dazu
  *   'vorbedingung'  Saetze der Vorbedingung (leer = erfuellt oder nicht gefragt)
  * Ein Ergebnis von sicherung_eingang(), das vor dem Lesen endete, traegt dazu
@@ -235,7 +314,7 @@ if (PHP_SAPI !== 'cli') {
 
 if (!defined('SICHERUNG_FASSUNG')) {
 
-define('SICHERUNG_FASSUNG', '1.2.3');
+define('SICHERUNG_FASSUNG', '1.2.6');
 /** Groesste Sicherungsdatei, die gelesen wird (Byte). */
 define('SICHERUNG_MAX_BYTE', 262144);
 /** Feldname des Hakens "Zurueckspielen bestaetigen" (seit 1.1.0; Wert 1). */
@@ -384,7 +463,67 @@ function sicherung_beschreibung_mangel(array $b)
         && (!is_string($b['kennzeichen_frueher_muster']) || @preg_match($b['kennzeichen_frueher_muster'], '') === false)) {
         $m[] = 'kennzeichen_frueher_muster';
     }
+    // 1.2.5: die Huelle muss ein Name sein, den eine flache Datei oben nie traegt (sonst waere sie nicht zu unterscheiden)
+    if (isset($b['huelle']) && !sicherung_huelle_taugt($b)) { $m[] = 'huelle'; }
+    // 1.2.6: Teile neben der Huelle nur als Liste von Teilen und nur mit tauglicher Huelle
+    if (isset($b['neben_huelle']) && !sicherung_neben_huelle_taugt($b)) { $m[] = 'neben_huelle'; }
     return $m;
+}
+
+/**
+ * 1.2.6: taugt $b['neben_huelle']? Eine nicht leere Liste (Schluessel 0..n-1) von Zeichenketten ohne Doppel, jede ein
+ * Schluessel aus 'teile' (damit nie der Name der Huelle); dazu eine taugliche 'huelle'. Sonst fiele ein Tippfehler still
+ * durch, oder eine Einstellung stuende neben der Huelle, und welche gilt, waere nicht zu entscheiden.
+ */
+function sicherung_neben_huelle_taugt(array $b)
+{
+    $n = isset($b['neben_huelle']) ? $b['neben_huelle'] : null;
+    if (!is_array($n) || $n === array() || array_keys($n) !== range(0, count($n) - 1)) { return false; }
+    if (!isset($b['huelle']) || !sicherung_huelle_taugt($b)) { return false; }
+    $teile = isset($b['teile']) && is_array($b['teile']) ? $b['teile'] : array();
+    $gesehen = array();
+    foreach ($n as $x) {
+        // (Der Name der Huelle ist nie ein Teil - das sichert schon sicherung_huelle_taugt().)
+        if (!is_string($x) || !array_key_exists($x, $teile) || isset($gesehen[$x])) { return false; }
+        $gesehen[$x] = true;
+    }
+    return true;
+}
+
+/** 1.2.6: die Teile, die neben der Huelle stehen duerfen (leer = keine; nur nach bestandener Beschreibungspruefung). */
+function sicherung_neben_huelle(array $b)
+{
+    return (isset($b['neben_huelle']) && is_array($b['neben_huelle'])) ? array_values($b['neben_huelle']) : array();
+}
+
+/** 1.2.5: der Name der Huelle aus der Beschreibung, '' = keine. */
+function sicherung_huelle(array $b)
+{
+    return (isset($b['huelle']) && is_string($b['huelle'])) ? $b['huelle'] : '';
+}
+
+/**
+ * 1.2.5: taugt $b['huelle'] als Name einer Huelle? Ein Name in Namensform ohne fuehrendes _, den eine flache Datei
+ * dieser Linie oben nicht tragen kann: keine Vorgabe, kein Teil, kein Feld eines flachen Teils, kein Schluessel aus
+ * 'alt' oder 'nie_aus_datei', kein alter Name aus 'umbenennen'.
+ */
+function sicherung_huelle_taugt(array $b)
+{
+    $h = isset($b['huelle']) ? $b['huelle'] : null;
+    if (!is_string($h) || !sicherung_namensform($h) || $h[0] === '_') { return false; }
+    if (isset($b['vorgaben']) && is_array($b['vorgaben']) && array_key_exists($h, $b['vorgaben'])) { return false; }
+    if (isset($b['teile']) && is_array($b['teile']) && array_key_exists($h, $b['teile'])) { return false; }
+    foreach (array('alt', 'nie_aus_datei') as $f) {
+        if (isset($b[$f]) && is_array($b[$f]) && in_array($h, $b[$f], true)) { return false; }
+    }
+    if (isset($b['umbenennen']) && is_array($b['umbenennen']) && array_key_exists($h, $b['umbenennen'])) { return false; }
+    if (isset($b['teile_flach']) && is_array($b['teile_flach'])) {
+        foreach ($b['teile_flach'] as $px) {
+            $px = (string) $px;
+            if ($px !== '' && strpos($h, $px) === 0 && strlen($h) > strlen($px)) { return false; }
+        }
+    }
+    return true;
 }
 
 /* ==================================================================
@@ -486,7 +625,7 @@ function sicherung_ergebnis()
                  'kennzeichen_datei' => '', 'fassung_datei' => '', 'beanstandet' => array(),
                  'verworfen' => array(), 'leer_behalten' => array(), 'fehlt_behalten' => array(),
                  'fehlt_vorgabe' => array(), 'teile' => array(), 'teile_hinweise' => array(),
-                 'fehlt_uebergang' => array());
+                 'fehlt_uebergang' => array(), 'jetzt_entfernt' => array());
 }
 
 /** Eine Beanstandung aufnehmen ($text: '' | Text | Liste). */
@@ -557,6 +696,127 @@ function sicherung_knoten_reinigen(array $knoten, $w, $j, $pfad, array &$r, $tre
 }
 
 /**
+ * 1.2.4: die Namen der Schluessel der geltenden Konfiguration $jetzt, die die Beschreibung nicht kennt und die der
+ * neue Stand $neu nicht mehr traegt - nur Namen, nie Werte (Regel 13 im Kopf). Oben: nicht in 'vorgaben', kein Teil
+ * ('teile') und kein Feld eines flachen Teils ('teile_flach'). In einem Block (Knoten 'block'): ein Unterschluessel,
+ * den der Knoten nicht nennt; Bloecke in Bloecken ebenso. Listen und 'offen' werden nicht untersucht (ihre Eintraege
+ * lassen sich keinem Gegenstueck sicher zuordnen bzw. tragen dynamische Namen).
+ */
+function sicherung_jetzt_entfernt(array $b, array $jetzt, $neu)
+{
+    $aus = array();
+    if (!is_array($neu)) { return $aus; }
+    $vorgaben = isset($b['vorgaben']) && is_array($b['vorgaben']) ? $b['vorgaben'] : array();
+    $teile = isset($b['teile']) && is_array($b['teile']) ? $b['teile'] : array();
+    $flach = isset($b['teile_flach']) && is_array($b['teile_flach']) ? $b['teile_flach'] : array();
+    foreach ($jetzt as $k => $w) {
+        $k = (string) $k;
+        if (isset($teile[$k])) { continue; }
+        if (!array_key_exists($k, $vorgaben)) {
+            $teil_feld = false;
+            foreach ($flach as $px) {
+                $px = (string) $px;
+                if ($px !== '' && strpos($k, $px) === 0 && strlen($k) > strlen($px)) { $teil_feld = true; break; }
+            }
+            if (!$teil_feld && !array_key_exists($k, $neu)) { $aus[] = sicherung_name($k); }
+            continue;
+        }
+        if (is_array($w) && isset($neu[$k]) && is_array($neu[$k])) {
+            sicherung_jetzt_entfernt_block(sicherung_knoten($b, $k), $w, $neu[$k], sicherung_name($k), $aus);
+        }
+    }
+    return $aus;
+}
+
+/** 1.2.4: wie sicherung_jetzt_entfernt() fuer die Unterschluessel eines Blocks ($pfad: Name des Blocks). */
+function sicherung_jetzt_entfernt_block(array $knoten, array $j, array $n, $pfad, array &$aus)
+{
+    if (!isset($knoten['art']) || $knoten['art'] !== 'block') { return; }
+    $schl = isset($knoten['schluessel']) && is_array($knoten['schluessel']) ? $knoten['schluessel'] : array();
+    foreach ($j as $sk => $sw) {
+        $name = $pfad . '.' . sicherung_name($sk);
+        if (!array_key_exists((string) $sk, $schl)) {
+            if (!array_key_exists($sk, $n)) { $aus[] = $name; }
+            continue;
+        }
+        if (is_array($sw) && is_array($schl[(string) $sk]) && isset($n[$sk]) && is_array($n[$sk])) {
+            sicherung_jetzt_entfernt_block($schl[(string) $sk], $sw, $n[$sk], $name, $aus);
+        }
+    }
+}
+
+/**
+ * 1.2.5 (Entscheidung des Hausherrn 15.11.2026: "Ja, so umsetzen"): ein Name, den $r schon als verworfen nennt (aus
+ * der Datei), wird nicht noch einmal als entfernt genannt (aus der geltenden Konfiguration) - in Meldung und
+ * Protokollzeile genau einmal (Regel 15 im Kopf). Bis 1.2.4 nannte die Meldung einen unbekannten Blockschluessel
+ * zweimal, wenn die Sicherung aus dem Stand mit diesem Schluessel stammte.
+ */
+function sicherung_ohne_verworfen(array $namen, array $r)
+{
+    $verworfen = isset($r['verworfen']) && is_array($r['verworfen']) ? $r['verworfen'] : array();
+    $aus = array();
+    foreach ($namen as $n) { if (!in_array($n, $verworfen, true)) { $aus[] = $n; } }
+    return $aus;
+}
+
+/**
+ * 1.2.5: eine Datei mit Huelle $hn auspacken (Regel 14 im Kopf). Rueckgabe: die Datei mit dem Inhalt der Huelle an
+ * der obersten Ebene und dem Kopf (_-Schluessel) davor - oder null, dann ist $r beanstandet ('fremd' = 'form') und
+ * die ganze Datei abgewiesen. Die Meldung nennt den Grund, den Namen der Huelle und Namen aus der Datei, nie Werte.
+ */
+function sicherung_huelle_auspacken(array $b, array $daten, $hn, array &$r)
+{
+    $kopf = array();
+    $andere = array();
+    $neben = sicherung_neben_huelle($b);       // 1.2.6: Teile, die neben der Huelle stehen duerfen
+    $daneben = array();
+    foreach ($daten as $k => $w) {
+        $k = (string) $k;
+        if ($k === $hn) { continue; }
+        if ($k !== '' && $k[0] === '_') { $kopf[$k] = $w; continue; }
+        if (in_array($k, $neben, true)) { $daneben[$k] = $w; continue; }
+        $andere[] = sicherung_name($k);
+    }
+    $inhalt = $daten[$hn];
+    $name = sicherung_e(sicherung_name($hn), $b);
+    $texte = array();       // alle Gruende gesammelt, nicht nur der erste
+    if ($andere) {
+        // neben der Huelle oben noch eine Einstellung: welche gilt, ist nicht zu entscheiden
+        $texte[] = sprintf(sicherung_t('K_HUELLE_GEMISCHT', $b), $name,
+                           sicherung_e(implode(', ', array_slice(sicherung_einmal($andere), 0, 20)), $b));
+    }
+    if (!is_array($inhalt)) {
+        $texte[] = sprintf(sicherung_t('K_HUELLE_KEIN_OBJEKT', $b), $name);
+    } elseif ($inhalt === array()) {
+        $texte[] = sprintf(sicherung_t('K_HUELLE_LEER', $b), $name);
+    } elseif (array_keys($inhalt) === range(0, count($inhalt) - 1)) {
+        $texte[] = sprintf(sicherung_t('K_HUELLE_KEIN_OBJEKT', $b), $name);     // eine Liste, keine Einstellungen mit Namen
+    } else {
+        $doppelt = array();
+        foreach (array_keys($inhalt) as $k) {
+            if (array_key_exists($k, $kopf)) { $doppelt[] = sicherung_name($k); }
+        }
+        if ($doppelt) {
+            $texte[] = sprintf(sicherung_t('K_HUELLE_KOPF', $b), $name, sicherung_e(implode(', ', $doppelt), $b));
+        }
+        // 1.2.6: ein Teil neben der Huelle und zugleich darin - welcher gilt, ist nicht zu entscheiden
+        $beide = array();
+        foreach (array_keys($inhalt) as $k) {
+            if (array_key_exists((string) $k, $daneben)) { $beide[] = sicherung_name($k); }
+        }
+        if ($beide) {
+            $texte[] = sprintf(sicherung_t('K_HUELLE_DOPPELT', $b), $name, sicherung_e(implode(', ', $beide), $b));
+        }
+    }
+    if ($texte) {
+        $r['fremd'] = 'form';
+        sicherung_beanstanden($r, sicherung_name($hn), $texte);
+        return null;
+    }
+    return $kopf + $daneben + $inhalt;
+}
+
+/**
  * Eine Sicherungsdatei lesen und pruefen, ohne etwas zu schreiben.
  * $jetzt: die geltende Konfiguration (fuer Regel 3 und 'behalten'); ohne
  * Angabe $b['jetzt'](). Rueckgabe: das Ergebnis $r (siehe Kopf).
@@ -618,6 +878,13 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
         $r['eigen'] = 'uebersetzt';
     }
     if (isset($daten['_fassung']) && sicherung_namensform($daten['_fassung'])) { $r['fassung_datei'] = $daten['_fassung']; }
+    /* 1.2.5: eine eigene Datei mit Huelle ('huelle') auspacken - nach Regel 1, vor allen anderen Regeln; danach ist sie
+     * eine flache Datei. Eine Datei ohne den Schluessel bleibt, wie sie ist. */
+    $hn = sicherung_huelle($b);
+    if ($hn !== '' && array_key_exists($hn, $daten)) {
+        $daten = sicherung_huelle_auspacken($b, $daten, $hn, $r);
+        if ($daten === null) { return $r; }
+    }
 
     $vorgaben = $b['vorgaben'];
     $alt = isset($b['alt']) && is_array($b['alt']) ? $b['alt'] : array();
@@ -770,6 +1037,8 @@ function sicherung_lesen(array $b, $roh, $jetzt = null)
     $r['ok'] = !$r['beanstandet'];
     $r['neu'] = $r['ok'] ? $neu : null;
     if (!$r['ok']) { $r['teile'] = array(); $r['teile_hinweise'] = array(); }
+    // 1.2.4: was aus der geltenden Konfiguration wegfaellt, weil die Beschreibung es nicht kennt (nur Namen)
+    $r['jetzt_entfernt'] = $r['ok'] ? sicherung_ohne_verworfen(sicherung_jetzt_entfernt($b, $jetzt, $neu), $r) : array();
     return $r;
 }
 
@@ -801,6 +1070,8 @@ function sicherung_zurueckspielen(array $b, $roh)
             if (is_array($vb)) { $neu = $vb; }
         }
         $r['neu'] = $neu;
+        // 1.2.4: gegen den Stand nach 'vorbereiten' - was die Linie dort aus der geltenden Konfiguration behaelt, faellt nicht weg
+        $r['jetzt_entfernt'] = sicherung_ohne_verworfen(sicherung_jetzt_entfernt($b, $jetzt, $neu), $r);
         if (isset($b['vorbedingung']) && is_callable($b['vorbedingung'])) {
             // 1.2.0: was vor dem Speichern erfuellt sein muss; nicht erfuellt heisst nicht gespeichert, mit diesen Saetzen
             foreach ((array) call_user_func($b['vorbedingung'], $neu, $jetzt, $r) as $s) {
@@ -809,6 +1080,7 @@ function sicherung_zurueckspielen(array $b, $roh)
         }
         $r['gespeichert'] = (!$r['vorbedingung'] && isset($b['speichern']) && is_callable($b['speichern']))
             ? (bool) call_user_func($b['speichern'], $neu, $jetzt, $r) : false;
+        if (!$r['gespeichert']) { $r['jetzt_entfernt'] = array(); }     // 1.2.4: nicht gespeichert, nichts entfernt
         if ($r['gespeichert'] && isset($b['zweitschrift']) && is_callable($b['zweitschrift'])) {
             $r['zweitschrift'] = sicherung_zweitschrift_lage(call_user_func($b['zweitschrift']));
         }
@@ -847,7 +1119,9 @@ function sicherung_protokollzeile(array $r)
     $z = 'Sicherung zurueckgespielt: ' . (int) $r['anzahl'] . ' Werte'
        . ($r['eigen'] === 'uebersetzt' ? ', aeltere Sicherung ohne Kennzeichen' : '')
        . ($r['fassung_datei'] !== '' ? ', aus Fassung ' . $r['fassung_datei'] : '');
-    foreach (array('verworfen' => 'verworfen', 'leer_behalten' => 'leer, bisheriger Wert bleibt',
+    foreach (array('verworfen' => 'verworfen',
+                   'jetzt_entfernt' => 'unbekannt, aus der geltenden Konfiguration entfernt',
+                   'leer_behalten' => 'leer, bisheriger Wert bleibt',
                    'fehlt_behalten' => 'fehlt, bisheriger Wert bleibt',
                    'fehlt_uebergang' => 'fehlt, Wert aus einer Uebergangsregel der Linie') as $f => $t) {
         if (!empty($r[$f])) { $z .= '; ' . $t . ': ' . implode(', ', array_slice($r[$f], 0, 20)); }
@@ -892,7 +1166,8 @@ function sicherung_meldungen(array $b, array $r)
     if (!empty($r['teile_hinweise']) && is_array($r['teile_hinweise'])) {
         foreach ($r['teile_hinweise'] as $s) { $h[] = (string) $s; }     // 1.2.0: Hinweise der Teile, fertige Saetze
     }
-    $listen = array('verworfen' => 'K_VERWORFEN', 'leer_behalten' => 'K_LEER_BEHALTEN', 'fehlt_behalten' => 'K_FEHLT_BEHALTEN',
+    $listen = array('verworfen' => 'K_VERWORFEN', 'jetzt_entfernt' => 'K_JETZT_ENTFERNT',
+                    'leer_behalten' => 'K_LEER_BEHALTEN', 'fehlt_behalten' => 'K_FEHLT_BEHALTEN',
                     'fehlt_uebergang' => 'K_FEHLT_UEBERGANG', 'fehlt_vorgabe' => 'K_FEHLT_VORGABE');
     foreach ($listen as $feld => $id) {
         if (!empty($r[$feld])) { $h[] = sprintf(sicherung_t($id, $b), sicherung_e(implode(', ', $r[$feld]), $b)); }
@@ -995,7 +1270,8 @@ function sicherung_sprachschluessel()
                  'K_FREMD_OHNE_NAME', 'K_OHNE_KENNZEICHEN', 'K_FEHLEND', 'K_LEER', 'K_WERT', 'K_ABGELEHNT',
                  'K_SCHREIBFEHLER', 'K_UEBERNOMMEN', 'K_ALT_ERKANNT', 'K_VERWORFEN', 'K_LEER_BEHALTEN',
                  'K_FEHLT_BEHALTEN', 'K_ZWEITSCHRIFT', 'K_HAKEN', 'K_HAKEN_FEHLT', 'K_KEINE_DATEI', 'K_FEHLT_VORGABE',
-                 'K_FEHLT_UEBERGANG');
+                 'K_FEHLT_UEBERGANG', 'K_JETZT_ENTFERNT', 'K_HUELLE_GEMISCHT', 'K_HUELLE_KEIN_OBJEKT', 'K_HUELLE_LEER',
+                 'K_HUELLE_KOPF', 'K_HUELLE_DOPPELT');
 }
 
 /* ==================================================================
@@ -1234,8 +1510,8 @@ function sicherung_selbsttest()
     $pruef('beschreibung ohne kennzeichen', sicherung_beschreibung_mangel(array('vorgaben' => array('a' => 1))), array('kennzeichen'));
     $pruef('fassung ohne quelle', sicherung_fassung_lesen(array()), '');
     $pruef('namensform', array(sicherung_namensform('a.b-c_1'), sicherung_namensform("a\n"), sicherung_namensform('')), array(true, false, false));
-    $pruef('schluessel zahl', count(sicherung_sprachschluessel()), 24);
-    $pruef('schluessel eindeutig', count(array_unique(sicherung_sprachschluessel())), 24);
+    $pruef('schluessel zahl', count(sicherung_sprachschluessel()), 30);     // 1.2.6: K_HUELLE_DOPPELT (bis 1.2.5: 29)
+    $pruef('schluessel eindeutig', count(array_unique(sicherung_sprachschluessel())), 30);
 
     // --- 1.2.0 (a) Rohwert an 'pruefen' und 'quer' ---
     $gesehen = array();
@@ -1448,6 +1724,426 @@ function sicherung_selbsttest()
     $pruef('bom: Datei mit UTF-8-BOM wird gelesen wie ohne', array($r['ok'], $r['fremd']), array(true, ''));
     $r = sicherung_lesen($b, "\xEF\xBB" . json_encode($daten), $jetzt);
     $pruef('bom: eine halbe BOM bleibt kein JSON', array($r['ok'], $r['fremd']), array(false, 'form'));
+
+    // --- 1.2.4: Schluessel der geltenden Konfiguration, die die Beschreibung nicht kennt, fallen weg und werden genannt ---
+    $WO = 'GeltendOben-Wert-91';
+    $WT = 'GeltendTief-Wert-92';
+    $jf = $jetzt;
+    $jf['tts']['zz_geltend_tief'] = $WT;
+    $jf['zz_geltend_oben'] = $WO;
+    $r = sicherung_lesen($b, $js, $jf);
+    $pruef('geltend: oben und im Block genannt, Reihenfolge der Konfiguration', array($r['ok'], $r['jetzt_entfernt']),
+           array(true, array('tts.zz_geltend_tief', 'zz_geltend_oben')));
+    $pruef('geltend: beide fehlen im neuen Stand', array(array_key_exists('zz_geltend_oben', $r['neu']),
+           array_key_exists('zz_geltend_tief', $r['neu']['tts'])), array(false, false));
+    $pruef('geltend: Vermerk bleibt und wird nicht genannt', array($r['neu']['vermerk'], in_array('vermerk', $r['jetzt_entfernt'], true)),
+           array('v', false));
+    $pruef('geltend: ohne Zusatzschluessel nichts genannt', sicherung_lesen($b, $js, $jetzt)['jetzt_entfernt'], array());
+    $r = sicherung_lesen($b, $js, $jf + array('zugang' => array('kennwort' => $GEHEIM)));
+    $pruef('geltend: ein Teil der geltenden Konfiguration wird nicht genannt', $r['jetzt_entfernt'],
+           array('tts.zz_geltend_tief', 'zz_geltend_oben'));
+    $r = sicherung_lesen($b, $js, $jetzt + array('_notiz' => 'x', 'altschluessel' => 1, "zz\nX;Y" => 1));
+    $pruef('geltend: _-Schluessel, frueherer Schluessel und bereinigter Name genannt', $r['jetzt_entfernt'],
+           array('_notiz', 'altschluessel', 'zz?X?Y'));
+    $jo = $jetzt;
+    $jo['frei']['z_neu'] = 3;
+    $jo['liste'][0]['zz_zeile'] = 1;
+    $r = sicherung_lesen($b, $js, $jo);
+    $pruef('geltend: offen und Listen werden nicht untersucht', array($r['ok'], $r['jetzt_entfernt']), array(true, array()));
+    $r = sicherung_lesen($bf, json_encode($df), array('x' => 1, 'z_a' => 'Alt-A', 'zz_f' => 1));
+    $pruef('geltend: Feld eines flachen Teils nicht genannt, anderes schon', $r['jetzt_entfernt'], array('zz_f'));
+    $bt = array('kennzeichen' => 'tief', 'vorgaben' => array('a' => array('b' => array('c' => 1))),
+                'schluessel' => array('a' => sicherung_block(array(), array('b' => sicherung_block(array('c'))))),
+                't' => function ($s) { return $s . ' [%s]'; });
+    $r = sicherung_lesen($bt, json_encode(array('_plugin' => 'tief', 'a' => array('b' => array('c' => 2)))),
+                         array('a' => array('b' => array('c' => 1, 'zz' => 2), 'zz2' => 3)));
+    $pruef('geltend: Block im Block', array($r['ok'], $r['jetzt_entfernt']), array(true, array('a.b.zz', 'a.zz2')));
+    $r = sicherung_lesen($b, sicherung_json(sicherung_bauen($b, $jf)), $jf);
+    // 1.2.5 (Entscheidung des Hausherrn 15.11.2026): bis 1.2.4 hier array('tts.zz_geltend_tief', 'zz_geltend_oben')
+    $pruef('geltend: Datei aus diesem Stand - im Block verworfen (seit 1.2.5 nicht auch entfernt), oben entfernt',
+           array($r['ok'], $r['verworfen'], $r['jetzt_entfernt']),
+           array(true, array('tts.zz_geltend_tief'), array('zz_geltend_oben')));
+    // --- 1.2.5: ein Name genau einmal - verworfen (aus der Datei) geht vor entfernt (aus der geltenden Konfiguration) ---
+    $alle = array_merge($r['verworfen'], $r['jetzt_entfernt']);
+    $pruef('einmal: Datei aus diesem Stand - jeder Name genau einmal',
+           array(count(array_keys($alle, 'tts.zz_geltend_tief', true)), count(array_keys($alle, 'zz_geltend_oben', true))), array(1, 1));
+    $r = sicherung_lesen($b, $js, $jf);
+    $pruef('einmal: Gegenprobe - nur geltend, weiter als entfernt genannt', array($r['verworfen'], $r['jetzt_entfernt']),
+           array(array(), array('tts.zz_geltend_tief', 'zz_geltend_oben')));
+    $r = sicherung_lesen($b, json_encode($daten + array('zz_geltend_oben' => 'aus-der-datei')), $jf);
+    $pruef('einmal: oben in Datei und geltend - nur verworfen', array($r['verworfen'], $r['jetzt_entfernt']),
+           array(array('zz_geltend_oben'), array('tts.zz_geltend_tief')));
+    $r = sicherung_lesen($b, json_encode($d4), $jf);
+    $pruef('geltend: halb gueltig - nichts genannt', array($r['ok'], $r['jetzt_entfernt']), array(false, array()));
+    $prot = array();
+    $stand = $jf;       // die geltende Konfiguration der erfundenen Linie: vor dem Speichern $jf, danach das Gespeicherte
+    $bj = $b;
+    $bj['jetzt'] = function () use (&$stand) { return $stand; };
+    $bj['speichern'] = function ($neu) use (&$gespeichert, &$stand) { $gespeichert[] = $neu; $stand = $neu; return true; };
+    $bj['log'] = function ($z) use (&$prot) { $prot[] = $z; };
+    $n = count($gespeichert);
+    $r = sicherung_zurueckspielen($bj, $js);
+    $m = sicherung_meldungen($bj, $r);
+    $alles = implode("\n", array_merge($m['fehler'], $m['hinweise'], $prot));
+    $pruef('geltend zurueck: gespeichert ohne beide', array($r['gespeichert'], count($gespeichert) - $n,
+           isset($gespeichert[$n]) && !array_key_exists('zz_geltend_oben', $gespeichert[$n])
+           && !array_key_exists('zz_geltend_tief', $gespeichert[$n]['tts'])), array(true, 1, true));
+    $pruef('geltend zurueck: Meldung nennt beide mit K_JETZT_ENTFERNT',
+           in_array('SICHERUNG.K_JETZT_ENTFERNT [tts.zz_geltend_tief, zz_geltend_oben]', $m['hinweise'], true), true);
+    $pruef('geltend zurueck: Protokoll nennt beide',
+           strpos(implode("\n", $prot), 'unbekannt, aus der geltenden Konfiguration entfernt: tts.zz_geltend_tief, zz_geltend_oben') !== false, true);
+    $pruef('geltend zurueck: kein Wert in Meldung und Protokoll', array(strpos($alles, $WO), strpos($alles, $WT)), array(false, false));
+    $bj2 = $bj;
+    $bj2['vorbereiten'] = function ($neu, $jetzt) { $neu['zz_geltend_oben'] = $jetzt['zz_geltend_oben']; return $neu; };
+    $stand = $jf;
+    $r = sicherung_zurueckspielen($bj2, $js);
+    $pruef('geltend zurueck: was vorbereiten behaelt, wird nicht genannt', $r['jetzt_entfernt'], array('tts.zz_geltend_tief'));
+    $stand = $jf;
+    $bj3 = $bj;
+    $bj3['speichern'] = function () { return false; };
+    $r = sicherung_zurueckspielen($bj3, $js);
+    $m = sicherung_meldungen($bj3, $r);
+    $pruef('geltend zurueck: Schreibfehler - nichts entfernt, nichts genannt',
+           array($r['jetzt_entfernt'], strpos(implode("\n", $m['fehler']), 'K_JETZT_ENTFERNT')), array(array(), false));
+    $bj4 = $bj;
+    $bj4['vorbedingung'] = function () { return array('Vorher geht etwas nicht.'); };
+    $r = sicherung_zurueckspielen($bj4, $js);
+    $pruef('geltend zurueck: Vorbedingung - nichts entfernt', $r['jetzt_entfernt'], array());
+    $prot = array();
+    $n = count($gespeichert);
+    $r = sicherung_zurueckspielen($bj, json_encode($d4));
+    $pruef('geltend zurueck: halb gueltig - nichts gespeichert, Protokoll ohne die Namen',
+           array(count($gespeichert) - $n, $r['jetzt_entfernt'], strpos(implode("\n", $prot), 'zz_geltend')), array(0, array(), false));
+    // 1.2.5: zurueckgespielt aus dem Stand mit dem Blockschluessel - in Meldung und Protokoll genau einmal genannt, als verworfen
+    $prot = array();
+    $stand = $jf;
+    $r = sicherung_zurueckspielen($bj, sicherung_json(sicherung_bauen($b, $jf)));
+    $m = sicherung_meldungen($bj, $r);
+    $h = implode("\n", $m['hinweise']);
+    $pz = implode("\n", $prot);
+    $pruef('einmal zurueck: Meldung nennt den Blockschluessel genau einmal, als verworfen',
+           array(substr_count($h, 'tts.zz_geltend_tief'), strpos($h, 'K_VERWORFEN [tts.zz_geltend_tief]') !== false,
+                 in_array('SICHERUNG.K_JETZT_ENTFERNT [zz_geltend_oben]', $m['hinweise'], true)), array(1, true, true));
+    $pruef('einmal zurueck: Protokoll nennt ihn genau einmal', array(substr_count($pz, 'tts.zz_geltend_tief'),
+           strpos($pz, 'verworfen: tts.zz_geltend_tief') !== false), array(1, true));
+    $pruef('einmal zurueck: kein Wert', array(strpos($h . $pz, $WO), strpos($h . $pz, $WT)), array(false, false));
+    $prot = array();
+    $stand = $jf;
+    $r = sicherung_zurueckspielen($bj, $js);
+    $m = sicherung_meldungen($bj, $r);
+    $pruef('einmal zurueck: Gegenprobe - Datei von vorher, beide als entfernt genannt',
+           in_array('SICHERUNG.K_JETZT_ENTFERNT [tts.zz_geltend_tief, zz_geltend_oben]', $m['hinweise'], true), true);
+
+    // --- 1.2.5: Huelle ('huelle') - fruehere Sicherungen mit den Einstellungen unter einem Schluessel ---
+    $HN = 'konfiguration';
+    // eine flache Datei in die Form frueherer Fassungen legen: Kopf (_-Schluessel) oben, alles andere in die Huelle
+    $huellen = function ($d, $hn = 'konfiguration') {
+        $kopf = array();
+        $in = array();
+        foreach ($d as $k => $w) {
+            if (is_string($k) && $k !== '' && $k[0] === '_') { $kopf[$k] = $w; } else { $in[$k] = $w; }
+        }
+        return $kopf + array($hn => $in);
+    };
+    $bh = $b + array('huelle' => $HN);
+    $pruef('huelle: die vier Texte stehen in sicherung_sprachschluessel()', array_values(array_intersect(sicherung_sprachschluessel(),
+           array('K_HUELLE_GEMISCHT', 'K_HUELLE_KEIN_OBJEKT', 'K_HUELLE_LEER', 'K_HUELLE_KOPF'))),
+           array('K_HUELLE_GEMISCHT', 'K_HUELLE_KEIN_OBJEKT', 'K_HUELLE_LEER', 'K_HUELLE_KOPF'));
+    $pruef('huelle: Beschreibung mit gueltigem Namen ohne Mangel', sicherung_beschreibung_mangel($bh), array());
+    $pruef('huelle: null gilt als nicht angegeben', sicherung_beschreibung_mangel($b + array('huelle' => null)), array());
+    foreach (array(array('x'), false, 0, '', '_konfiguration', 'a b', 'thema', 'zugang', 'altschluessel', 'vermerk') as $x) {
+        $pruef('huelle: Mangel bei ' . str_replace("\n", '', var_export($x, true)),
+               sicherung_beschreibung_mangel($b + array('huelle' => $x)), array('huelle'));
+    }
+    $bum = $b;
+    $bum['umbenennen'] = array('konf_alt' => 'thema');
+    $pruef('huelle: Mangel bei einem alten Namen aus umbenennen', sicherung_beschreibung_mangel($bum + array('huelle' => 'konf_alt')),
+           array('huelle'));
+    $pruef('huelle: Mangel bei einem Feld eines flachen Teils', sicherung_beschreibung_mangel($bf + array('huelle' => 'z_x')),
+           array('huelle'));
+    $r = sicherung_lesen($b + array('huelle' => 'thema'), json_encode($huellen($daten)), $jetzt);
+    $pruef('huelle: mangelhafte Beschreibung liest nichts', array($r['ok'], $r['fremd']), array(false, 'form'));
+
+    // angenommen: das ganze Ergebnis gleich dem der flachen Datei
+    $dh = $huellen($daten);
+    $pruef('huelle: die Datei der Probe hat die Form frueherer Fassungen',
+           array(array_keys($dh), count($dh[$HN])), array(array('_hinweis', '_plugin', '_fassung', '_stand', $HN), count($daten) - 4));
+    $r = sicherung_lesen($bh, json_encode($dh), $jetzt);
+    $pruef('huelle: angenommen, Ergebnis gleich dem der flachen Datei', $r, sicherung_lesen($b, $js, $jetzt));
+    $pruef('huelle: angenommen mit Werten und Teil', array($r['ok'], $r['eigen'], $r['anzahl'], $r['neu']['thema'],
+           $r['teile']['zugang']['kennwort'], $r['neu']['vermerk']), array(true, 'kennzeichen', 10, 'alt', $GEHEIM, 'v'));
+    $pruef('huelle: flache Datei wie bisher', sicherung_lesen($bh, $js, $jetzt), sicherung_lesen($b, $js, $jetzt));
+    $r = sicherung_lesen($b, json_encode($dh), $jetzt);
+    $pruef('huelle: ohne Angabe wie in 1.2.4 - verworfen, abgewiesen', array($r['ok'], $r['fremd'], $r['verworfen']),
+           array(false, '', array($HN)));
+    // danach gelten alle Regeln wie bei der flachen Datei
+    foreach (array('Regel 2' => $d2, 'Regel 2 im Teil' => $d2t, 'Name bereinigt' => $d2b, 'Regel 3' => $d3,
+                   'halb gueltig' => $d4, 'quer' => $d4b, 'fehlt' => $d5, 'Pflicht fehlt' => $dp, 'Vermerk' => $dn,
+                   'alt still' => $daten + array('altschluessel' => 1)) as $n => $dx) {
+        $pruef('huelle: wie flach - ' . $n, sicherung_lesen($bh, json_encode($huellen($dx)), $jetzt),
+               sicherung_lesen($b, json_encode($dx), $jetzt));
+    }
+    $pruef('huelle: wie flach - geltende Konfiguration mit unbekannten Schluesseln',
+           sicherung_lesen($bh, json_encode($dh), $jf), sicherung_lesen($b, $js, $jf));
+    $pruef('huelle: wie flach - Uebergangsregel (vorbehandeln)',
+           sicherung_lesen($bu2 + array('huelle' => $HN), json_encode($huellen($du)), $jetzt),
+           sicherung_lesen($bu2, json_encode($du), $jetzt));
+    $pruef('huelle: wie flach - flacher Teil', sicherung_lesen($bf + array('huelle' => 'konf'), json_encode($huellen($df2, 'konf')),
+           array('x' => 1)), sicherung_lesen($bf, json_encode($df2), array('x' => 1)));
+    $dum = $daten;
+    $dum['_zugang'] = $dum['zugang'];
+    unset($dum['zugang']);
+    $r = sicherung_lesen($bu + array('huelle' => $HN), json_encode($huellen($dum)), $jetzt);
+    $pruef('huelle: umbenennen nach dem Auspacken (alter Name im Kopf)', array($r['ok'], $r['teile']['zugang']['kennwort']),
+           array(true, $GEHEIM));
+    $dum2 = $huellen($daten);
+    $dum2[$HN]['_zugang'] = $dum2[$HN]['zugang'];
+    unset($dum2[$HN]['zugang']);
+    $r = sicherung_lesen($bu + array('huelle' => $HN), json_encode($dum2), $jetzt);
+    $pruef('huelle: umbenennen nach dem Auspacken (alter Name in der Huelle)', array($r['ok'], $r['teile']['zugang']['kennwort']),
+           array(true, $GEHEIM));
+    $dn2 = $dh;
+    $dn2[$HN]['_notiz'] = 'x';
+    $pruef('huelle: _-Schluessel in der Huelle ohne Doppel wird Kopf', sicherung_lesen($bh, json_encode($dn2), $jetzt),
+           sicherung_lesen($b, json_encode($daten + array('_notiz' => 'x')), $jetzt));
+
+    // Kennzeichen: Regel 1 vor der Huelle
+    $df_ = $dh;
+    $df_['_plugin'] = 'octopus';
+    $r = sicherung_lesen($bh, json_encode($df_), $jetzt);
+    $pruef('huelle: fremdes Kennzeichen mit Huelle abgewiesen wie bisher', array($r['ok'], $r['fremd'], $r['kennzeichen_datei']),
+           array(false, 'kennzeichen', 'octopus'));
+    $df_[$HN . '_daneben'] = 1;
+    $r = sicherung_lesen($bh, json_encode($df_), $jetzt);
+    $pruef('huelle: fremdes Kennzeichen, gemischt - Grund bleibt das Kennzeichen', array($r['ok'], $r['fremd']),
+           array(false, 'kennzeichen'));
+    $d1 = $daten;
+    $d1['_plugin'] = 'selbsttest';
+    $r = sicherung_lesen($bh, json_encode($huellen($d1)), $jetzt);
+    $pruef('huelle: frueheres Kennzeichen mit Huelle angenommen', $r, sicherung_lesen($b, json_encode($d1), $jetzt));
+    $pruef('huelle: frueheres Kennzeichen - eigen frueher', array($r['ok'], $r['eigen']), array(true, 'frueher'));
+    $d1['_plugin'] = 'Selbsttest (meinordner)';
+    $bk['kennzeichen_frueher_muster'] = '/^Selbsttest \([a-z0-9_-]{1,40}\)\z/';
+    $r = sicherung_lesen($bk + array('huelle' => $HN), json_encode($huellen($d1)), $jetzt);
+    $pruef('huelle: frueheres Kennzeichen nach Muster mit Huelle angenommen', array($r['ok'], $r['eigen'], $r['neu']['thema']),
+           array(true, 'frueher', 'alt'));
+    $d1 = $daten;
+    unset($d1['_plugin']);
+    $d1['_hinweis'] = 'Selbsttest-Sicherung von frueher';
+    $r = sicherung_lesen($bh, json_encode($huellen($d1)), $jetzt);
+    $pruef('huelle: vom Uebersetzer erkannt, dann ausgepackt', array($r['ok'], $r['eigen'], $r['neu']['thema']),
+           array(true, 'uebersetzt', 'alt'));
+    unset($d1['_hinweis']);
+    $r = sicherung_lesen($bh, json_encode($huellen($d1)), $jetzt);
+    $pruef('huelle: ohne Kennzeichen und nicht erkannt - abgewiesen wie bisher', array($r['ok'], $r['fremd']), array(false, 'ohne'));
+
+    // abgewiesen: gemischt, kein Feld mit Namen, leer, Kopf doppelt - Grund und Namen, nie Werte
+    $th = function ($s) {
+        return (substr($s, -9) === '_GEMISCHT' || substr($s, -5) === '_KOPF') ? $s . ' [%s] (%s)' : $s . ' [%s]';
+    };
+    $bht = array('t' => $th) + $bh;
+    $abgewiesen = function ($bx, $roh, $id) use ($jetzt, $HN) {
+        $r = sicherung_lesen($bx, $roh, $jetzt);
+        $t = implode(' ', array_map(function ($x) { return $x['text']; }, $r['beanstandet']));
+        return array($r['ok'], $r['fremd'], $r['neu'], isset($r['beanstandet'][0]['name']) ? $r['beanstandet'][0]['name'] : '',
+                     strpos($t, 'SICHERUNG.' . $id . ' [' . $HN . ']') !== false);
+    };
+    $soll = function () use ($HN) { return array(false, 'form', null, $HN, true); };
+    $dg = $dh;
+    $dg['thema'] = 'neu';
+    $pruef('huelle: gemischt mit einer Einstellung oben abgewiesen', $abgewiesen($bht, json_encode($dg), 'K_HUELLE_GEMISCHT'),
+           $soll('K_HUELLE_GEMISCHT'));
+    $r = sicherung_lesen($bht, json_encode($dg), $jetzt);
+    $pruef('huelle: gemischt - der Name daneben genannt', strpos($r['beanstandet'][0]['text'], '(thema)') !== false, true);
+    $dg = $dh;
+    $dg['zz_unbekannt'] = $GEHEIM;
+    $pruef('huelle: gemischt mit einem unbekannten Schluessel oben abgewiesen',
+           $abgewiesen($bht, json_encode($dg), 'K_HUELLE_GEMISCHT'), $soll('K_HUELLE_GEMISCHT'));
+    $dg = $dh;
+    $dg[''] = 1;
+    $pruef('huelle: gemischt mit leerem Namen oben abgewiesen', $abgewiesen($bht, json_encode($dg), 'K_HUELLE_GEMISCHT'),
+           $soll('K_HUELLE_GEMISCHT'));
+    $dg = $dh;
+    $dg["zz\nX;Y"] = 1;
+    $r = sicherung_lesen($bht, json_encode($dg), $jetzt);
+    $pruef('huelle: gemischt - Name bereinigt', strpos($r['beanstandet'][0]['text'], '(zz?X?Y)') !== false, true);
+    foreach (array('Text' => 'text', 'Zahl' => 5, 'null' => null, 'wahr' => true, 'Liste' => array(1, 2),
+                   'Liste mit Feld' => array($dh[$HN])) as $n => $x) {
+        $dk = $dh;
+        $dk[$HN] = $x;
+        $pruef('huelle: kein Feld mit Namen (' . $n . ') abgewiesen', $abgewiesen($bht, json_encode($dk), 'K_HUELLE_KEIN_OBJEKT'),
+               $soll('K_HUELLE_KEIN_OBJEKT'));
+    }
+    $dk = $dh;
+    $dk[$HN] = new stdClass();
+    $pruef('huelle: leer ({}) abgewiesen', $abgewiesen($bht, json_encode($dk), 'K_HUELLE_LEER'), $soll('K_HUELLE_LEER'));
+    $dk[$HN] = array();
+    $pruef('huelle: leer ([]) abgewiesen', $abgewiesen($bht, json_encode($dk), 'K_HUELLE_LEER'), $soll('K_HUELLE_LEER'));
+    $dk = $dh;
+    $dk[$HN]['_plugin'] = 'octopus';
+    $pruef('huelle: _plugin in der Huelle doppelt den Kopf - abgewiesen', $abgewiesen($bht, json_encode($dk), 'K_HUELLE_KOPF'),
+           $soll('K_HUELLE_KOPF'));
+    $r = sicherung_lesen($bht, json_encode($dk), $jetzt);
+    $pruef('huelle: Kopf doppelt - der Name genannt, nicht der Wert', array(strpos($r['beanstandet'][0]['text'], '(_plugin)') !== false,
+           strpos($r['beanstandet'][0]['text'], 'octopus')), array(true, false));
+    $dk = $dh;
+    $dk[$HN]['_fassung'] = '0.0.1';
+    $pruef('huelle: _fassung in der Huelle doppelt den Kopf - abgewiesen', $abgewiesen($bht, json_encode($dk), 'K_HUELLE_KOPF'),
+           $soll('K_HUELLE_KOPF'));
+    $dk = $dh;
+    $dk['thema'] = 'neu';
+    $dk[$HN] = 'text';
+    $r = sicherung_lesen($bht, json_encode($dk), $jetzt);
+    $pruef('huelle: alle Gruende gesammelt (gemischt und kein Feld)', count($r['beanstandet']), 2);
+    $r = sicherung_lesen($bht, json_encode($huellen($dh)), $jetzt);
+    $pruef('huelle: einmal ausgepackt, nicht verschachtelt', array($r['ok'], in_array($HN, $r['verworfen'], true)), array(false, true));
+
+    // Zurueckspielen: halb gueltig aendert nichts; keine Werte in Meldung und Protokoll; flach und Huelle speichern dasselbe
+    $prot = array();
+    $bhz = array('log' => function ($z) use (&$prot) { $prot[] = $z; }, 't' => $th) + $bh;     // $th: Namen daneben im Text
+    $n = count($gespeichert);
+    $dg = $dh;
+    $dg['zz_unbekannt'] = $GEHEIM;
+    $dg[$HN]['_plugin'] = $GEHEIM;
+    $r = sicherung_zurueckspielen($bhz, json_encode($dg));
+    $m = sicherung_meldungen($bhz, $r);
+    $alles = implode("\n", array_merge($m['fehler'], $m['hinweise'], $prot));
+    $pruef('huelle zurueck: abgewiesen - nichts gespeichert, eine Meldung', array($r['gespeichert'], count($gespeichert) - $n,
+           count($m['fehler'])), array(false, 0, 1));
+    $pruef('huelle zurueck: kein Wert in Meldung und Protokoll', array(strpos($alles, $GEHEIM), strpos($alles, $TOK)), array(false, false));
+    $pruef('huelle zurueck: Protokoll nennt Form und Huelle', strpos(implode("\n", $prot), 'Sicherung abgewiesen (form): ' . $HN) !== false,
+           true);
+    $r = sicherung_zurueckspielen($bhz, json_encode($huellen($d4)));
+    $pruef('huelle zurueck: halb gueltig in der Huelle - nichts gespeichert', array($r['gespeichert'], count($gespeichert) - $n),
+           array(false, 0));
+    $r = sicherung_zurueckspielen($bhz, json_encode($dh));
+    $r0 = sicherung_zurueckspielen(array('log' => function () {}) + $b, $js);
+    $pruef('huelle zurueck: angenommen - gespeichert wie die flache Datei', array($r['gespeichert'], count($gespeichert) - $n,
+           $gespeichert[$n] === $gespeichert[$n + 1]), array(true, 2, true));
+    $pruef('huelle: sicherung_bauen() schreibt weiter flach', array(array_keys(sicherung_bauen($bh, $jetzt, array('zugang' => array('kennwort' => $GEHEIM)))),
+           isset($dh[$HN]['thema'])), array(array_keys($daten), true));
+
+    // --- 1.2.6: Teile neben der Huelle ('neben_huelle', Regel 16) - Datenbestaende, die frueher oben neben der Huelle standen ---
+    $NB = array('zugang');
+    $bn = $bh + array('neben_huelle' => $NB);
+    // die Form frueherer Fassungen mit Datenbestand: Kopf oben, die Huelle, daneben der Teil 'zugang'
+    $neben_legen = function ($d) use ($HN) {
+        $kopf = array();
+        $dn = array();
+        $in = array();
+        foreach ($d as $k => $w) {
+            if (is_string($k) && $k !== '' && $k[0] === '_') { $kopf[$k] = $w; } elseif ($k === 'zugang') { $dn[$k] = $w; } else { $in[$k] = $w; }
+        }
+        return $kopf + array($HN => $in) + $dn;
+    };
+    $dnb = $neben_legen($daten);
+    $pruef('neben: die Datei der Probe traegt den Teil neben der Huelle', array(array_keys($dnb), isset($dnb[$HN]['zugang']),
+           isset($dnb[$HN]['thema'])), array(array('_hinweis', '_plugin', '_fassung', '_stand', $HN, 'zugang'), false, true));
+    $pruef('neben: der Text steht in sicherung_sprachschluessel()', in_array('K_HUELLE_DOPPELT', sicherung_sprachschluessel(), true), true);
+    $pruef('neben: Beschreibung ohne Mangel', sicherung_beschreibung_mangel($bn), array());
+    $pruef('neben: null gilt als nicht angegeben', sicherung_beschreibung_mangel($bh + array('neben_huelle' => null)), array());
+    foreach (array('Text' => 'zugang', 'leere Liste' => array(), 'Einstellung' => array('thema'), 'Huelle' => array($HN),
+                   'unbekannt' => array('zz'), 'Doppel' => array('zugang', 'zugang'), 'Zahl' => array(5),
+                   'Feld mit Namen' => array('a' => 'zugang'), 'false' => false, 'Liste ab 1' => array(1 => 'zugang'),
+                   'Feld in der Liste' => array(array('zugang'))) as $n => $x) {
+        $pruef('neben: Mangel bei ' . $n, sicherung_beschreibung_mangel($bh + array('neben_huelle' => $x)), array('neben_huelle'));
+    }
+    $pruef('neben: Mangel ohne Huelle', sicherung_beschreibung_mangel($b + array('neben_huelle' => $NB)), array('neben_huelle'));
+    $pruef('neben: Mangel bei untauglicher Huelle', sicherung_beschreibung_mangel($b + array('huelle' => 'thema', 'neben_huelle' => $NB)),
+           array('huelle', 'neben_huelle'));
+    $r = sicherung_lesen($b + array('neben_huelle' => $NB), json_encode($dnb), $jetzt);
+    $pruef('neben: mangelhafte Beschreibung liest nichts', array($r['ok'], $r['fremd'], $r['neu']), array(false, 'form', null));
+
+    // angenommen: das ganze Ergebnis gleich dem der flachen Datei
+    $r = sicherung_lesen($bn, json_encode($dnb), $jetzt);
+    $pruef('neben: angenommen, Ergebnis gleich dem der flachen Datei', $r, sicherung_lesen($b, $js, $jetzt));
+    $pruef('neben: angenommen mit Werten und Teil', array($r['ok'], $r['eigen'], $r['neu']['thema'], $r['teile']['zugang']['kennwort']),
+           array(true, 'kennzeichen', 'alt', $GEHEIM));
+    $pruef('neben: ohne Angabe wie in 1.2.5 - gemischt abgewiesen', $abgewiesen($bht, json_encode($dnb), 'K_HUELLE_GEMISCHT'),
+           $soll('K_HUELLE_GEMISCHT'));
+    $pruef('neben: Teil nur in der Huelle wie in 1.2.5', sicherung_lesen($bn, json_encode($dh), $jetzt), sicherung_lesen($b, $js, $jetzt));
+    $pruef('neben: flache Datei wie bisher', sicherung_lesen($bn, $js, $jetzt), sicherung_lesen($b, $js, $jetzt));
+    $dohne = $daten;
+    unset($dohne['zugang']);
+    $pruef('neben: Huelle ohne den Teil wie flach ohne ihn', sicherung_lesen($bn, json_encode($neben_legen($dohne)), $jetzt),
+           sicherung_lesen($b, json_encode($dohne), $jetzt));
+    foreach (array('Regel 2' => $d2, 'Regel 2 und 3 im Teil daneben' => $d2t, 'Regel 3' => $d3, 'halb gueltig' => $d4, 'quer' => $d4b,
+                   'fehlt' => $d5, 'Pflicht fehlt' => $dp) as $n => $dx) {
+        $pruef('neben: wie flach - ' . $n, sicherung_lesen($bn, json_encode($neben_legen($dx)), $jetzt),
+               sicherung_lesen($b, json_encode($dx), $jetzt));
+    }
+    $dzt = $daten;
+    $dzt['zugang'] = 'kein Feld';
+    $r = sicherung_lesen($bn, json_encode($neben_legen($dzt)), $jetzt);
+    $pruef('neben: Teil daneben beanstandet - die ganze Datei abgewiesen', array($r['ok'], $r['neu'], $r['teile'],
+           isset($r['beanstandet'][0]['name']) ? $r['beanstandet'][0]['name'] : ''), array(false, null, array(), 'zugang'));
+    // Kennzeichen: Regel 1 vor der Huelle, auch mit Teil daneben
+    $df_ = $dnb;
+    $df_['_plugin'] = 'octopus';
+    $r = sicherung_lesen($bn, json_encode($df_), $jetzt);
+    $pruef('neben: fremdes Kennzeichen abgewiesen wie bisher', array($r['ok'], $r['fremd']), array(false, 'kennzeichen'));
+    $d1 = $daten;
+    unset($d1['_plugin']);
+    $d1['_hinweis'] = 'Selbsttest-Sicherung von frueher';
+    $r = sicherung_lesen($bn, json_encode($neben_legen($d1)), $jetzt);
+    $pruef('neben: vom Uebersetzer erkannt, ausgepackt, Teil daneben gelesen', array($r['ok'], $r['eigen'], $r['neu']['thema'],
+           $r['teile']['zugang']['kennwort']), array(true, 'uebersetzt', 'alt', $GEHEIM));
+
+    // abgewiesen: derselbe Teil neben und in der Huelle - Grund und Namen, nie Werte; alle Gruende gesammelt
+    $thn = function ($s) {
+        foreach (array('_GEMISCHT', '_KOPF', '_DOPPELT') as $e) { if (substr($s, -strlen($e)) === $e) { return $s . ' [%s] (%s)'; } }
+        return $s . ' [%s]';
+    };
+    $bnt = array('t' => $thn) + $bn;
+    $dd = $dnb;
+    $dd[$HN]['zugang'] = array('kennwort' => $GEHEIM);
+    $pruef('neben: Teil daneben und in der Huelle - abgewiesen', $abgewiesen($bnt, json_encode($dd), 'K_HUELLE_DOPPELT'),
+           $soll('K_HUELLE_DOPPELT'));
+    $r = sicherung_lesen($bnt, json_encode($dd), $jetzt);
+    $pruef('neben: doppelt - der Name genannt, nicht der Wert', array(strpos($r['beanstandet'][0]['text'], '(zugang)') !== false,
+           strpos($r['beanstandet'][0]['text'], $GEHEIM)), array(true, false));
+    $pruef('neben: doppelt - kein Teil gelesen', $r['teile'], array());
+    $bx = $bnt;
+    $bx['teile']["zz;x"] = $b['teile']['zugang'];
+    $bx['neben_huelle'] = array("zz;x");
+    $dx = $dh;
+    $dx["zz;x"] = array('kennwort' => 'a');
+    $dx[$HN]["zz;x"] = array('kennwort' => 'b');
+    $r = sicherung_lesen($bx, json_encode($dx), $jetzt);
+    $t = implode(' ', array_map(function ($x) { return $x['text']; }, $r['beanstandet']));
+    $pruef('neben: doppelt - Name bereinigt', array($r['ok'], count($r['beanstandet']), strpos($t, '(zz?x)') !== false,
+           strpos($t, 'zz;x')), array(false, 1, true, false));
+    $dg = $dnb;
+    $dg['zz_unbekannt'] = $GEHEIM;
+    $r = sicherung_lesen($bnt, json_encode($dg), $jetzt);
+    $pruef('neben: gemischt nennt nur den fremden Schluessel, nicht den Teil', array($r['ok'], $r['fremd'],
+           strpos($r['beanstandet'][0]['text'], '(zz_unbekannt)') !== false, strpos($r['beanstandet'][0]['text'], 'zugang')),
+           array(false, 'form', true, false));
+    $dg = $dd;
+    $dg['thema'] = 'neu';
+    $dg[$HN]['_plugin'] = 'x';
+    $r = sicherung_lesen($bnt, json_encode($dg), $jetzt);
+    $pruef('neben: alle Gruende gesammelt (gemischt, Kopf doppelt, Teil doppelt)', count($r['beanstandet']), 3);
+
+    // Zurueckspielen: doppelt aendert nichts; keine Werte in Meldung und Protokoll; angenommen speichert wie flach
+    $prot = array();
+    $bnz = array('log' => function ($z) use (&$prot) { $prot[] = $z; }, 't' => $thn) + $bn;
+    $n = count($gespeichert);
+    $r = sicherung_zurueckspielen($bnz, json_encode($dd));
+    $m = sicherung_meldungen($bnz, $r);
+    $alles = implode("\n", array_merge($m['fehler'], $m['hinweise'], $prot));
+    $pruef('neben zurueck: doppelt - nichts gespeichert, eine Meldung', array($r['gespeichert'], count($gespeichert) - $n,
+           count($m['fehler'])), array(false, 0, 1));
+    $pruef('neben zurueck: kein Wert in Meldung und Protokoll', array(strpos($alles, $GEHEIM), strpos($alles, $TOK)), array(false, false));
+    $pruef('neben zurueck: Protokoll nennt Form und Huelle', strpos(implode("\n", $prot), 'Sicherung abgewiesen (form): ' . $HN) !== false,
+           true);
+    $r = sicherung_zurueckspielen($bnz, json_encode($dnb));
+    sicherung_zurueckspielen(array('log' => function () {}) + $b, $js);
+    $pruef('neben zurueck: angenommen - gespeichert wie die flache Datei, Teil im Ergebnis', array($r['gespeichert'],
+           count($gespeichert) - $n, $gespeichert[$n] === $gespeichert[$n + 1], $r['teile']['zugang']['kennwort']),
+           array(true, 2, true, $GEHEIM));
+    $pruef('neben: sicherung_bauen() schreibt weiter flach, Teil oben',
+           array_keys(sicherung_bauen($bn, $jetzt, array('zugang' => array('kennwort' => $GEHEIM)))), array_keys($daten));
 
     // --- 1.1.0: der Haken und der Eingang des Knopfes (ohne hochgeladene Datei: __FILE__ steht fuer eine Datei) ---
     // Die Texte kommen ueber $b['t'] (hier: Kennung mit Anhang); keine Kennung steht woertlich im Code, damit die
