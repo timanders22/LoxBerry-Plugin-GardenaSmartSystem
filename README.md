@@ -1,5 +1,11 @@
 # LoxBerry-Plugin: GARDENA smart system
 
+## Neu in 1.2.31
+
+- **Einstellungen sichern und zurückspielen mit dem gemeinsamen Sicherungsmodul 1.2.9 statt 1.2.6:** Die übrigen Neuerungen der Modulfassungen bis 1.2.9 betreffen Fähigkeiten, die dieses Plugin nicht nutzt; an ihm ändert sich dadurch nichts.
+- **Knopf „Dokumentation“:** `plugin.cfg` nennt jetzt `WEBSITE=` mit diesem Repository; LoxBerry übernimmt die Adresse bei der Installation und zeigt sie in der Plugin-Verwaltung als Knopf.
+- Sicherungen der früheren Fassungen werden weiter angenommen wie bisher; gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt und 4 Vorfassungen zurückspielt. Am Gerät nicht gemessen.
+
 ## Neu in 1.2.30
 
 - **Verhalten geändert – „Einstellungen zurückspielen“ speichert genau den Stand der Sicherung:** Gemeinsames Sicherungsmodul 1.2.6 (bisher 1.2.3).
