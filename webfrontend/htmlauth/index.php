@@ -815,6 +815,13 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
     list($v_stand, $v_text) = gardena_vervollstaendigen_probe();
     $z[] = gardena_pruefzeile($v_stand, gardena_t('TEST.F_VPROBE'), $v_text);
 
+    /* Gemeinsames Uhrmodul (Frage 95): Systemuhr gegen die Kopfzeile Date der Cloud - nur melden (Stand 0 = Hinweis). */
+    list($uhr_s, $uhr_t) = uhr_pruefzeile(array('ordner' => defined('LBPDATADIR') ? (string) LBPDATADIR : '',
+        'dienst' => 'Gardena', 't' => 'gardena_t'));
+    $uhr_z = gardena_pruefzeile($uhr_s === 1 ? 1 : 0, uhr_frage(array('t' => 'gardena_t')), $uhr_t);
+    $uhr_z['uhr'] = $uhr_s;
+    $z[] = $uhr_z;
+
     $gut = 0;
     $kreuze = 0;
     foreach ($z as $zeile) {
@@ -3144,6 +3151,7 @@ $gpruef = gardena_selbstpruefung($gc, $gconfigfile, $gcachefile, $gcache, $gbind
 <?php foreach ($gpruef['zeilen'] as $gz) {
     $gk = ($gz['stand'] === 1) ? 'sm-ja' : (($gz['stand'] === 0) ? 'sm-hm' : 'sm-nein');
     $gzeichen = ($gz['stand'] === 1) ? '&#10003;' : (($gz['stand'] === 0) ? '&#8226;' : '&#10007;');
+    if (isset($gz['uhr'])) { $gk = ''; $gzeichen = uhr_zeichen($gz['uhr']); }   // Uhrmodul (Frage 95)
 ?>
 <tr><td class="<?= $gk ?>"><?= $gzeichen ?></td><td><?= gardena_e($gz['frage']) ?></td><td><?= gardena_e($gz['antwort']) ?></td></tr>
 <?php } ?>

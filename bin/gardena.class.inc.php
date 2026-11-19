@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /**
  * GARDENA smart system API v2 (Husqvarna Group Cloud)
  *
@@ -110,6 +111,8 @@ class gardena
             if ($body !== null) { curl_setopt($ch, CURLOPT_POSTFIELDS, $body); }
             $result = curl_exec($ch);
             $http = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            uhr_merken(defined('LBPDATADIR') ? (string) LBPDATADIR : '', uhr_aus_koepfen($kopf),
+                (int) round(1000 * (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)), (string) parse_url($url, PHP_URL_HOST));   // Uhrmodul (Frage 95)
             $err = ($result === false) ? ('cURL-Fehler: ' . curl_error($ch)) : '';
             if (PHP_VERSION_ID < 80000) { curl_close($ch); }
             $this->last_http = $http;
