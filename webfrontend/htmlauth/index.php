@@ -1940,7 +1940,8 @@ if (isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST') 
  * Notfallgeheimnis (O4). */
 $gformmerkmal = ($gcfg_zustand === 'unlesbar') ? gardena_formtoken_notfall() : gardena_formtoken($gc);
 
-LBWeb::lbheader('Gardena Smart System', 'https://developer.husqvarnagroup.cloud/', 'help.html');
+require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+LBWeb::lbheader(plugin_kopftitel('Gardena Smart System', __DIR__), 'https://developer.husqvarnagroup.cloud/', 'help.html');
 
 ?>
 <style>
