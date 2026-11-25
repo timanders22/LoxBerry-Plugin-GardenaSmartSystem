@@ -160,6 +160,7 @@ if (empty($g['ENABLED']) || $g['ENABLED'] == '0') {
 }
 
 $mqtt_topic = !empty($g['MQTT_TOPIC']) ? rtrim($g['MQTT_TOPIC'], '/') : 'gardena';
+gardena_praefix_haus_melden($g);   // 1.2.37: Praefix im gemeinsamen Bereich? melden, nicht anhalten
 $udp_enabled = $g['UDP_ENABLED'] != '0';
 $mqtt_enabled = $g['MQTT_ENABLED'] == '1';
 

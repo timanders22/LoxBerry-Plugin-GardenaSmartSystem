@@ -438,6 +438,10 @@ function gardena_selbstpruefung($cfg, $cfgdatei, $cachedatei, $cache, $bindir, $
         $z[] = gardena_pruefzeile(0, gardena_t('TEST.F_GATEWAY'), gardena_t('TEST.A_GATEWAY_UNNOETIG'));
     }
 
+    // ---- 1.2.37: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)? ----
+    $ghb = gardena_pruef_praefix_haus($cfg);
+    $z[] = gardena_pruefzeile($ghb[0], gardena_t('HAUSBEREICH.F_TEST'), $ghb[1]);
+
     // ---- Takt und Ruecknahme ----
     $st = gardena_status_lesen($cfgdir);
     if (!empty($st['sperre_bis']) && time() < (int) $st['sperre_bis']) {
@@ -1192,7 +1196,7 @@ if ($gpost && isset($_POST['ventil_save'])) {
  * Tokenfeld heisst "behalten", der Haken loescht, beides zugleich ist ein
  * Widerspruch (ansage_formular_lesen()).
  */
-if ($gpost && isset($_POST['ansage_save'])) {
+if ($gpost && isset($_POST['ansage_save']) && !isset($_POST['meld_test'])) {     // 1.2.37: der Knopf Testmeldung (im selben Formular) speichert nicht
     $gneu_form = 'ansage';
     $g_tab = 'tab-settings';
     if (!function_exists('ansage_formular_lesen')) {
@@ -1205,6 +1209,8 @@ if ($gpost && isset($_POST['ansage_save'])) {
         $ga_tts = ansage_formular_lesen($_POST, gardena_tts(), $ga_mangel, $ga_bean,
                                         gardena_ansage_opt() + array('ziele' => ga_mit_zielen(), 'token_vor_ort' => true, 'aus_gewinnt' => true), ga_ansage_k(), $ga_thinw);
         list($ga_rneu) = ansage_regeln_formular($_POST, gardena_ansage_regeln(gardena_ansage_conf()), array(), $ga_mangel, $ga_bean, ga_ansage_k());     // 1.2.23: Wann gesprochen wird (Stamm)
+        // 1.2.37: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das Speichern an, wie die Ansage)
+        $ga_meld = function_exists('meld_formular_lesen') ? meld_formular_lesen($_POST, gardena_ansage_conf()['meldung'], gardena_meld_anlaesse(), $ga_mangel, $ga_bean, gardena_meld_k(), gardena_meld_haken_vorgabe()) : null;
         foreach ($ga_mangel as $ga_m) { $gfehler[] = gardena_t('EINST.H_ANSAGE_KURZ') . ': ' . $ga_m['text']; }
         foreach ($ga_bean as $ga_b) { $gneu_mark[] = ga_ziele_x2_name($ga_b); }     // 1.2.22: name[N] -> name.N
         $ga_neu = array();
@@ -1221,6 +1227,7 @@ if ($gpost && isset($_POST['ansage_save'])) {
         if (!$gfehler) {
             $ga_neu['TTS'] = gardena_tts_kodieren($ga_tts);
             $ga_neu['ANSAGE_REGELN'] = gardena_tts_kodieren($ga_rneu);     // 1.2.23
+            if (is_array($ga_meld)) { $ga_neu['MELDUNG'] = gardena_tts_kodieren($ga_meld); }     // 1.2.37
             // 1.2.26: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.2.25 ueberschrieb es der naechste Abgleich.
             $ga_alt_conf = gardena_ansage_conf();
             $ga_neu['ANSAGE_HERKUNFT'] = gardena_herkunft_kodieren(ansage_token_herkunft_formular($_POST, $ga_alt_conf['ansage_token_herkunft']));     // 1.2.30: leer = {}, nicht "]"
@@ -1242,6 +1249,12 @@ if ($gpost && isset($_POST['ansage_save'])) {
  * Kurzform ohne Text und Token. */
 /* Welle Mehrfach-Ziele (Sprachmodul 1.2.1): die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n - es spricht
  * nur dieses Ziel; der bisherige Knopf spricht an alle Ziele gleichzeitig. Eine unbrauchbare Nummer spricht nichts. */
+/* 1.2.37: Testmeldung an SignalBot (Knopf unter den Ansage-Regeln). */
+if ($gpost && isset($_POST['meld_test'])) {
+    list($meld_ok, $meld_satz) = gardena_meld_test();
+    if ($meld_ok) { $gsaved = $meld_satz; } else { $gfehler[] = $meld_satz; }
+    $g_tab = 'tab-test';
+}
 if ($gpost && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     $g_tab = 'tab-test';
     if (!function_exists('ansage_testansage')) {
@@ -1435,6 +1448,14 @@ if ($gpost && isset($_POST['mqtt_save'])) {
         // gardena_e() in die Beanstandungsliste, und ein Text mit
         // <span class='sm-mono'> stuende dort im Wortlaut auf dem Bildschirm.
         $gfehler[] = gardena_t('EINST.MQTT_TOPIC') . ': ' . gardena_t('EINST.MQTT_ZEICHEN_FEHL');
+        $gneu_mark[] = 'mqtt_topic';
+    } elseif (hb_bereich($gtopic_roh) !== ''
+              && rtrim($gtopic_roh, '/') !== rtrim((string) gardena_config()['MQTT_TOPIC'], '/')) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 1.2.37 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $gfehler[] = sprintf(gardena_t('HAUSBEREICH.FEHLER'), $gtopic_roh, hb_bereich($gtopic_roh));
         $gneu_mark[] = 'mqtt_topic';
     }
     /* Nr. 16/19 (1.2.13): ein Wert ausser 0 und 1 wird beanstandet - bis
@@ -2417,6 +2438,7 @@ if ($gmesser_int > 0) {
     'm' => function ($n) { return gmark('ansage', $n); },
     'c' => function ($n, $g) { global $geingaben, $geingaben_form; return $geingaben_form === 'ansage' ? isset($geingaben[$n]) : (bool) $g; },
     'token_vor_ort' => true), ga_ansage_k()) ?>
+<?= function_exists('meld_block') ? gardena_meld_form_html(gardena_ansage_conf()) : '' ?>
 <label><?= gardena_t('EINST.ANSAGE_ANLAESSE') ?></label>
 <?php foreach (gardena_ansage_anlaesse() as $ga_feld => $ga_schl) {
     $ga_an = ($geingaben_form === 'ansage') ? isset($geingaben[$ga_feld]) : ((string) $gc[$ga_schl] === '1'); ?>

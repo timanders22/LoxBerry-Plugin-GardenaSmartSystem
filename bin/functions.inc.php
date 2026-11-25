@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.2.37, Regeln/07)
 /**
  * Gardena Smart System - gemeinsame Hilfsfunktionen
  *
@@ -3385,6 +3386,11 @@ function gardena_wert_pruefen($k, $v)
             ? '' : gardena_t('EINST.PRUEF_TOKEN');
     }
     if ($k === 'MQTT_TOPIC') {
+        /* 1.2.37: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular;
+         * fuer MQTT_TOPIC ruft nur das Zurueckspielen diese Pruefung. */
+        if (hb_bereich($v) !== '') {
+            return sprintf(gardena_t('HAUSBEREICH.SICH_W'), hb_bereich($v));
+        }
         return preg_match('#^[A-Za-z0-9_/\-]{1,120}$#', $v) === 1
             ? '' : gardena_t('EINST.PRUEF_THEMA');
     }
@@ -3468,6 +3474,10 @@ function gardena_sicherung_beschreibung()
             + array('fehlt' => 'behalten', 'pruefen' => 'gardena_sicherung_regeln_pruefen',
                     'wandeln' => 'gardena_sicherung_regeln_wandeln');
     }
+    if (function_exists('meld_vorgaben')) {     // 1.2.37: Meldungen an SignalBot
+        $vorgaben['meldung'] = meld_vorgaben(gardena_meld_anlaesse(), gardena_meld_haken_vorgabe());
+        $schluessel['meldung'] = meld_sicherung_knoten(gardena_meld_anlaesse(), gardena_meld_k());
+    }
     $ordner = isset($GLOBALS['lbpplugindir']) ? (string) $GLOBALS['lbpplugindir'] : '';
     if ($ordner === '') { $ordner = (string) getenv('LBPPLUGINDIR'); }
     return array(
@@ -3510,7 +3520,7 @@ function gardena_sicherung_jetzt()
 {
     $c = gardena_ansage_conf();
     if (function_exists('ansage_regeln_wert')) { $c['ansage_regeln'] = gardena_ansage_regeln($c); }
-    unset($c['TTS'], $c['ANSAGE_REGELN'], $c['ANSAGE_HERKUNFT']);
+    unset($c['TTS'], $c['ANSAGE_REGELN'], $c['ANSAGE_HERKUNFT'], $c['MELDUNG']);     // 1.2.37: MELDUNG reist als Block meldung
     return $c;
 }
 
@@ -3734,7 +3744,7 @@ function gardena_sicherung_speichern($neu, $jetzt, $r)
     foreach (array_keys(gardena_vorgaben()) as $k) {
         if (array_key_exists($k, $neu) && !is_array($neu[$k])) { $w[$k] = (string) $neu[$k]; }
     }
-    foreach (array('tts' => 'TTS', 'ansage_regeln' => 'ANSAGE_REGELN') as $n => $ini) {
+    foreach (array('tts' => 'TTS', 'ansage_regeln' => 'ANSAGE_REGELN', 'meldung' => 'MELDUNG') as $n => $ini) {     // 1.2.37: dazu MELDUNG
         if (isset($neu[$n]) && is_array($neu[$n]) && !in_array($n, $r['fehlt_behalten'], true)) {
             $w[$ini] = gardena_tts_kodieren($neu[$n]);
         } else {
@@ -3867,6 +3877,11 @@ function gardena_ansage_conf()
     if (is_array($r)) { $c['ansage_regeln'] = $r; }
     $h = isset($c['ANSAGE_HERKUNFT']) ? json_decode((string) $c['ANSAGE_HERKUNFT'], true) : null;
     $c['ansage_token_herkunft'] = is_array($h) ? $h : array();
+    /* 1.2.37: der Block der Meldungen an SignalBot als Zeile MELDUNG (JSON); eine unlesbare Zeile bleibt als Text stehen
+     * (meld_block() nennt sie ungueltig und behandelt die Meldung als aus), eine fehlende = die Vorgabe (aus). */
+    $m = isset($c['MELDUNG']) ? json_decode((string) $c['MELDUNG'], true) : null;
+    $c['meldung'] = isset($c['MELDUNG']) ? (is_array($m) ? $m : (string) $c['MELDUNG'])
+        : (function_exists('meld_vorgaben') ? meld_vorgaben(gardena_meld_anlaesse(), gardena_meld_haken_vorgabe()) : null);
     return $c;
 }
 
@@ -3876,7 +3891,8 @@ function gardena_ansage_conf_schreiben(array $c)
     if (isset($c['tts']) && is_array($c['tts'])) { $c['TTS'] = gardena_tts_kodieren($c['tts']); }
     if (isset($c['ansage_regeln']) && is_array($c['ansage_regeln'])) { $c['ANSAGE_REGELN'] = gardena_tts_kodieren($c['ansage_regeln']); }
     if (isset($c['ansage_token_herkunft']) && is_array($c['ansage_token_herkunft'])) { $c['ANSAGE_HERKUNFT'] = gardena_herkunft_kodieren($c['ansage_token_herkunft']); }     // 1.2.30: leer = {}
-    unset($c['tts'], $c['ansage_regeln'], $c['ansage_token_herkunft']);
+    if (isset($c['meldung']) && is_array($c['meldung'])) { $c['MELDUNG'] = gardena_tts_kodieren($c['meldung']); }     // 1.2.37
+    unset($c['tts'], $c['ansage_regeln'], $c['ansage_token_herkunft'], $c['meldung']);
     return (bool) gardena_cfg_write(gardena_konfigdatei(), $c);
 }
 
@@ -4034,6 +4050,8 @@ function gardena_ansage_senden($jetzt = null)
         $conf = gardena_ansage_conf();
         gardena_ansage_token_pflegen($conf);
         $conf = gardena_ansage_conf();
+        gardena_meld_senden($frisch, $conf);     // 1.2.37: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = gardena_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, gardena_ansage_tts($conf), gardena_ansage_regeln($conf), gardena_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -4224,7 +4242,7 @@ function gardena_ansage_lauf($cache, $g)
 {
     if (!function_exists('ansage_sprechen')) { return; }       // beim Laden gemeldet
     $tts = gardena_tts_aus_cfg($g);
-    if (!gardena_ansage_an($tts)) { return; }
+    if (!gardena_ansage_an($tts) && !(function_exists('meld_block') && gardena_meld_aktiv(gardena_ansage_conf()))) { return; }     // 1.2.37: auch fuer die Meldung an SignalBot
     $datei = gardena_ansage_merker_datei();
     if ($datei === '') {
         gardena_log_gebremst('ansage_merker', 'ERR', 'Sprachausgabe: kein Datenordner bekannt - ohne Merker '
@@ -4237,8 +4255,10 @@ function gardena_ansage_lauf($cache, $g)
     $frisch = ((int) $alt['t'] > 0 && $jetzt - (int) $alt['t'] <= max(1800, 3 * 60 * gardena_intervall($g)));
     $aus = gardena_ausgenommen($g);
     $haken = array();
+    $ga_mc = gardena_ansage_conf();     // 1.2.37: Ansage (Ausgabeart und Haken) oder Meldung an SignalBot
     foreach (gardena_ansage_anlaesse() as $feld => $schl) {
-        $haken[substr($feld, 7)] = (isset($g[$schl]) && (string) $g[$schl] === '1');
+        $haken[substr($feld, 7)] = function_exists('meld_block') ? gardena_meld_will(substr($feld, 7), $ga_mc)
+            : (isset($g[$schl]) && (string) $g[$schl] === '1');
     }
     $saetze = array();
     $zahl = array('beendet' => 0, 'stoerung' => 0, 'batterie' => 0);
@@ -4399,6 +4419,15 @@ if (!function_exists('ansage_sprechen')) {
             . 'gefunden, gesucht in: ' . implode(', ', gardena_ansage_kandidaten()) . ' - es gibt keine Ansage, '
             . 'alles andere laeuft weiter.');
     }
+}
+/* 1.2.37: Statusmeldungen an SignalBot - das gemeinsame Modul meldung.php liegt neben sprachausgabe.php (dieselbe
+ * Suchliste). Fehlt es, bleibt alles wie bisher: jede Stelle fragt vorher function_exists('meld_block'). */
+if (!function_exists('meld_fassung')) {
+    foreach (gardena_ansage_kandidaten() as $gak) {
+        $gak = dirname($gak) . '/meldung.php';
+        if (is_file($gak)) { require_once $gak; break; }
+    }
+    unset($gak);
 }
 
 
@@ -5393,4 +5422,160 @@ function gardena_bruecke_pruefzeilen()
     bb_pruefen();
     $aus = (string) ob_get_clean();
     return array_values(array_filter(explode("\n", $aus), 'strlen'));
+}
+
+/**
+ * 1.2.37 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function gardena_pruef_praefix_haus($cfg)
+{
+    $p = gardena_mqtt_basis($cfg);
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!((string) (isset($cfg['MQTT_ENABLED']) ? $cfg['MQTT_ENABLED'] : '0') === '1')) {
+            return array(-1, sprintf(gardena_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(gardena_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(gardena_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.2.37: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function gardena_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = gardena_mqtt_basis($cfg);
+    if ($merk === null) {
+        $merk = ((isset($GLOBALS['lbpdatadir']) && (string) $GLOBALS['lbpdatadir'] !== '') ? (string) $GLOBALS['lbpdatadir'] : (defined('LBPDATADIR') ? (string) LBPDATADIR : '.')) . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        gardena_log('ERR', hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('gardena_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.2.37, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23./24.11.2026: dieselben Anlaesse wie die Ansage, eigener Haken je
+ * Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung laeuft auch ohne Ausgabeart, wenn eine Meldung
+ * eingeschaltet ist (gardena_meld_aktiv()), und legt einen Anlass hin, wenn Ansage ODER Meldung ihn will
+ * (gardena_meld_will()); der Sender trennt die Wege wieder (gardena_meld_nur_ansage()).
+ */
+
+/** Die meldbaren Anlaesse: Name => Beschriftung (dieselben wie die Ansage). */
+function gardena_meld_anlaesse()
+{
+    return array('beendet' => gardena_t('EINST.ANSAGE_BEENDET'), 'stoerung' => gardena_t('EINST.ANSAGE_STOERUNG'), 'batterie' => gardena_t('EINST.ANSAGE_BATTERIE'));
+}
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function gardena_meld_haken_vorgabe()
+{
+    return array('beendet' => 1, 'stoerung' => 1, 'batterie' => 1);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? */
+function gardena_ansage_anlass_sprache($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $anl = gardena_ansage_anlaesse(); $f = 'ansage_' . $a;
+    return isset($anl[$f]) && is_array($cfg) && isset($cfg[$anl[$f]]) && (string) $cfg[$anl[$f]] === '1'
+        && gardena_ansage_an(gardena_ansage_tts($cfg));
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function gardena_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    list($b) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, gardena_meld_anlaesse(), gardena_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function gardena_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    list(, $f) = meld_block(is_array($cfg) && array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, gardena_meld_anlaesse(), gardena_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Ist irgendein Anlass zur Meldung eingeschaltet? Dann laeuft die Erkennung auch ohne Ausgabeart. */
+function gardena_meld_aktiv($cfg = null)
+{
+    return meld_irgendein_an(gardena_meld_block($cfg));
+}
+
+/** Will die Ansage ODER die Meldung diesen Anlass? */
+function gardena_meld_will($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    return gardena_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(gardena_meld_block($cfg), (string) $a);
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function gardena_meld_k()
+{
+    return gardena_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function gardena_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $anl = gardena_meld_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !gardena_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function gardena_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $b = gardena_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, gardena_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        gardena_ansage_zeile(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function gardena_meld_test()
+{
+    $r = meld_testmeldung(gardena_meld_k());
+    gardena_ansage_zeile('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
+
+/** Der Block im Einstellungsformular (unter den Ansage-Regeln, im selben Formular), mit Lage und Knopf. */
+function gardena_meld_form_html($cfg = null)
+{
+    if ($cfg === null) { $cfg = gardena_ansage_conf(); }
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $k = gardena_meld_k();
+    $o = array();
+    /* 1.2.37: unsichtbarer Doppel des Speicherknopfs VOR dem Knopf Testmeldung - die Eingabetaste in einem Textfeld
+     * loest den ersten Absendeknopf des Formulars aus; sie soll speichern wie bisher, nicht die Testmeldung senden. */
+    $o[] = '<button data-role="none" type="submit" tabindex="-1" aria-hidden="true" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden"></button>';
+    $o[] = '<h3>' . $e(meld_t('TITEL', $k)) . '</h3>';
+    $o[] = meld_formular_html(gardena_meld_block($cfg), gardena_meld_anlaesse(), array(), $k);
+    list(, $lage) = meld_pruefzeile(gardena_meld_block($cfg), gardena_meld_bean($cfg), $k);
+    $o[] = '<div class="sm-hilfe">' . $e(meld_t('F_TEST', $k) . ' ' . $lage) . '</div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">'
+         . $e(meld_t('K_TEST', $k)) . '</button></div>';
+    return implode("\n", $o) . "\n";
+}
 }
